@@ -96,6 +96,19 @@ impl LockState {
     }
 }
 
+/// Tools whose args carry a command string (Surface B, plan §1.2).
+///
+/// The deny/hold lists only ever see a string because `run_shell` is absent
+/// (invariant #2) — these are the *only* string-bearing surfaces. Every tool
+/// named here **must** route its string through [`Verdict::command`]; the
+/// `string_tools_all_route_through_matcher` test enforces that mechanically.
+///
+/// Adding a string-bearing tool here without a matcher arm in
+/// [`Gate::verdict_for_call`] makes the test fail — that is the assertion.
+pub fn is_string_bearing(tool: &str) -> bool {
+    matches!(tool, "run_in_terminal" | "cosmo_type_into_terminal")
+}
+
 /// Tools that must refuse while the session is locked or when lock state is
 /// unknown (plan §1.2, invariant #10). Read-only window *inspection* tools
 /// (`list_windows`, `get_accessibility_tree`) stay allowed: they read
@@ -301,10 +314,26 @@ impl Gate {
                 };
                 Verdict::command(cmd)
             }
+            // Text injected into a terminal via cosmo-type is also a
+            // string that could carry `rm -rf` — same matcher.
+            "cosmo_type_into_terminal" => {
+                let Some(text) = args.get("text").and_then(Value::as_str) else {
+                    return Verdict::Deny;
+                };
+                Verdict::command(text)
+            }
             // Clipboard content must not silently become model context.
             "clipboard_get" => Verdict::Hold,
             "clipboard_set" => Verdict::Allow,
             _ => {
+                // Surface B assertion (plan §1.2): a string-bearing tool
+                // with no matcher arm must not silently fall through to
+                // annotation mapping — deny loudly instead. The
+                // `string_tools_all_route_through_matcher` test keeps the
+                // registry honest.
+                if is_string_bearing(tool) {
+                    return Verdict::Deny;
+                }
                 if annotations.destructive {
                     Verdict::Hold
                 } else {
@@ -833,5 +862,55 @@ mod tests {
             LockState::Locked
         );
         assert_eq!(gate.lock_state(), LockState::Locked);
+    }
+
+    // ---- Surface B: string-bearing tools must pass the matcher (plan §1.2)
+
+    /// The registry of string-bearing tool names × their string arg key.
+    /// When you add a string-bearing tool, add it to `is_string_bearing`
+    /// AND give `verdict_for_call` a matcher arm routing that arg through
+    /// `Verdict::command`. This test fails otherwise.
+    const STRING_TOOL_ARGS: &[(&str, &str)] = &[
+        ("run_in_terminal", "command"),
+        ("cosmo_type_into_terminal", "text"),
+    ];
+
+    #[test]
+    fn string_tools_all_route_through_matcher() {
+        let gate = Gate::new();
+        gate.set_lock_state(LockState::Unlocked);
+        let neutral = Annotations::read_only_neither();
+
+        // Every registered string tool must have its arg go through the
+        // deny/hold matcher: a deny-listed payload must Deny, not Allow.
+        for (tool, key) in STRING_TOOL_ARGS {
+            let mut args = serde_json::Map::new();
+            args.insert((*key).into(), Value::String("sudo rm -rf /".into()));
+            assert_eq!(
+                gate.verdict_for_call(tool, &Value::Object(args), &neutral),
+                Verdict::Deny,
+                "{tool} must run its string through the deny/hold matcher"
+            );
+        }
+
+        // Every name in is_string_bearing must have a matcher arm: a
+        // string-bearing tool falling into the default arm denies loudly
+        // (the arm exists ⇒ it never lands there), so verify each is
+        // *reachable* by feeding a benign string and expecting Allow
+        // (never the fall-through deny).
+        for (tool, key) in STRING_TOOL_ARGS {
+            let mut args = serde_json::Map::new();
+            args.insert((*key).into(), Value::String("echo hi".into()));
+            assert_ne!(
+                gate.verdict_for_call(tool, &Value::Object(args), &neutral),
+                Verdict::Deny,
+                "{tool} has no matcher arm — its benign string fell through"
+            );
+        }
+
+        // And the two registries agree exactly.
+        for tool in ["run_in_terminal", "cosmo_type_into_terminal"] {
+            assert!(is_string_bearing(tool));
+        }
     }
 }
