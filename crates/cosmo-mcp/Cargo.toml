@@ -6,5 +6,11 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[dependencies]
+rmcp = { workspace = true, features = ["client", "transport-child-process"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+serde_json.workspace = true
+anyhow.workspace = true
+
 [lints]
 workspace = true

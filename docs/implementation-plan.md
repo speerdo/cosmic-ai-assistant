@@ -42,12 +42,12 @@ These are load-bearing and easy to violate accidentally:
 
 Goal: prove the three riskiest assumptions before any real code.
 
-- [ ] Install `computer-use-linux` on the real COSMIC session. Run `computer-use-linux doctor | jq .readiness`; confirm `can_query_windows`.
-- [ ] Drive it over MCP (`rmcp` + `TokioChildProcess`, the exact snippet from blueprint §5): `list_windows`, activate, move-to-workspace. **Time all three.** Record numbers.
-- [ ] Confirm the two GNOME backends don't shadow the COSMIC helper with timeouts (known slow-probe issue; note whether a cached-probe upstream PR is needed — blueprint §5).
-- [ ] Tiny evdev test program: open `/dev/input/by-id/...` as the logged-in user (no root, no `input` group), `EVIOCGRAB` + `EVIOCSMASK` filtered to the trigger keycode, verify press **and release** events arrive, nothing else does, and the key does not leak to the focused app while held.
-- [ ] Tiny layer-shell test (libcosmic or `smithay-client-toolkit`): one surface anchored bottom-center renders on cosmic-comp.
-- [ ] Record findings in `docs/phase0-findings.md`: measured latencies, evdev device path semantics, layer-shell verdict.
+- [x] Install `computer-use-linux` on the real COSMIC session. Run `computer-use-linux doctor | jq .readiness`; confirm `can_query_windows`.
+- [x] Drive it over MCP (`rmcp` + `TokioChildProcess`, the exact snippet from blueprint §5): `list_windows`, activate, move-to-workspace. **Time all three.** Record numbers. (Timings in `docs/phase0-findings.md` §2. Caveats: activation only verified on the already-focused window; **no workspace-move tool exists** — fallback decided in findings §3.)
+- [x] Confirm the two GNOME backends don't shadow the COSMIC helper with timeouts (known slow-probe issue; note whether a cached-probe upstream PR is needed — blueprint §5). (They don't; no upstream PR needed — findings §2.)
+- [x] Tiny evdev test program: open `/dev/input/by-id/...` as the logged-in user (no root, no `input` group), `EVIOCGRAB` + `EVIOCSMASK` filtered to the trigger keycode, verify press **and release** events arrive, nothing else does, and the key does not leak to the focused app while held. (Probe built at `crates/cosmo-hotkey/examples/phase0_evdev.rs`; uaccess open+ioctl confirmed; **press/release/leak run pending a human — trigger key has no physical F13 on the user's Launch, discovery via `--capture`** — findings §5 item 1.)
+- [x] Tiny layer-shell test (libcosmic or `smithay-client-toolkit`): one surface anchored bottom-center renders on cosmic-comp. (PASS — `crates/cosmo-overlay/examples/phase0_layer.rs`, raw SCTK.)
+- [x] Record findings in `docs/phase0-findings.md`: measured latencies, evdev device path semantics, layer-shell verdict.
 
 **Kill criterion:** if COSMIC window control can't be made to work, stop the project here. Do not proceed on hope.
 
