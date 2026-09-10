@@ -39,7 +39,7 @@ These are the invariants the codebase is built around. They're the reason Cosmo 
 
 ## Prior art and attribution
 
-Cosmo stands on three shoulders, and the blueprint says so explicitly: [`omarchy-voice`](https://github.com/omarchy/omarchy-voice) for the original design, [`techgeek1/cosmic-voice`](https://github.com/techgeek1/cosmic-voice) (MIT) for the corrected hotkey/audio/STT findings that killed our naive first plan, [`agent-sh/computer-use-linux`](https://github.com/agent-sh/computer-use-linux) (MIT) for the COSMIC MCP "hands", and [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) for the default voice.
+Cosmo stands on three shoulders, and the blueprint says so explicitly: [`omarchy-voice`](https://github.com/wombatoperator/omarchy-voice) for the original design, [`techgeek1/cosmic-voice`](https://github.com/techgeek1/cosmic-voice) (MIT) for the corrected hotkey/audio/STT findings that killed our naive first plan, [`agent-sh/computer-use-linux`](https://github.com/agent-sh/computer-use-linux) (MIT) for the COSMIC MCP "hands", and [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) for the default voice.
 
 ## Docs
 
