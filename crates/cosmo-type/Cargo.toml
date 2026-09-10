@@ -8,3 +8,12 @@ repository.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+wayland-client = { workspace = true, features = ["log"] }
+wayland-protocols = { workspace = true, features = ["client"] }
+wayland-protocols-misc = { workspace = true, features = ["client"] }
+rustix = { workspace = true, features = ["fs"] }
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

@@ -26,6 +26,8 @@ tracing-subscriber = "0.3"
 # FFI / JSON
 libc = "0.2"
 serde_json = "1"
+# memfd for virtual-keyboard keymap upload (cosmo-type)
+rustix = "1.1"
 
 # MCP host (no default features: we are a client only; server features are
 # pulled in explicitly if ever needed)
@@ -50,6 +52,7 @@ xkbcommon = "0.9"
 
 # Wayland / COSMIC
 wayland-client = "0.31"
+wayland-protocols = { version = "0.32", default-features = false }
 # xkbcommon/calloop off by default: the overlay needs neither (no keyboard
 # interactivity, blocking_dispatch loop). Re-enable per-crate when needed.
 smithay-client-toolkit = { version = "0.21", default-features = false }

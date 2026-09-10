@@ -474,6 +474,15 @@ version = "0.1.0"
 [[package]]
 name = "cosmo-type"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rustix",
+ "thiserror",
+ "tracing",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-misc",
+]
 
 [[package]]
 name = "crossbeam-utils"
@@ -1564,6 +1573,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3c36a0f861ad76d0901f2800b46321410d9f73f2ea88aac0650d86c32688073"
 dependencies = [
  "bitflags",
+ "log",
  "rustix",
  "wayland-backend",
  "wayland-scanner",
