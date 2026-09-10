@@ -100,6 +100,10 @@ version = "0.1.0"
 [[package]]
 name = "cosmo-gate"
 version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "cosmo-hotkey"
@@ -111,6 +115,9 @@ dependencies = [
 [[package]]
 name = "cosmo-ipc"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "cosmo-mcp"
