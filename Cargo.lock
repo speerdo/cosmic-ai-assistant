@@ -424,9 +424,13 @@ name = "cosmo-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "cosmo-config",
+ "cosmo-gate",
  "rmcp",
  "serde_json",
+ "thiserror",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

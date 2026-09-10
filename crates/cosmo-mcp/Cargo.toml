@@ -7,10 +7,14 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-rmcp = { workspace = true, features = ["client", "transport-child-process"] }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-io"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "process"] }
 serde_json.workspace = true
 anyhow.workspace = true
+thiserror.workspace = true
+cosmo-config.workspace = true
+cosmo-gate.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true
