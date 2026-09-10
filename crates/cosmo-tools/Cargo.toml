@@ -8,3 +8,16 @@ repository.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+tokio = { workspace = true, features = ["process", "time", "fs", "sync", "macros", "io-util"] }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+cosmo-config.workspace = true
+cosmo-gate.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }

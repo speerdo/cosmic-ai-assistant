@@ -456,6 +456,16 @@ version = "0.1.0"
 [[package]]
 name = "cosmo-tools"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cosmo-config",
+ "cosmo-gate",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "cosmo-tts"
