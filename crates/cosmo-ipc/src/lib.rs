@@ -82,7 +82,6 @@ pub enum State {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
     pub id: u64,
-    #[serde(flatten)]
     pub cmd: Command,
 }
 
@@ -110,16 +109,9 @@ pub enum Command {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DaemonMessage {
     /// Reply to a [`Request`]; `id` matches the request.
-    Response {
-        id: u64,
-        #[serde(flatten)]
-        response: Response,
-    },
+    Response { id: u64, response: Response },
     /// Broadcast event; sent to every connected client.
-    Event {
-        #[serde(flatten)]
-        event: Event,
-    },
+    Event { event: Event },
 }
 
 /// Daemon reply to a specific [`Command`].
@@ -128,7 +120,7 @@ pub enum DaemonMessage {
 pub enum Response {
     Status(StatusInfo),
     Doctor(DoctorReport),
-    Said(TurnResult),
+    Said { result: TurnResult },
     Confirm(ConfirmOutcome),
     Cancelled { ok: bool, reason: Option<String> },
     Toggled { paused: bool },

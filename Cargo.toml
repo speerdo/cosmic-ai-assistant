@@ -73,6 +73,7 @@ clap = { version = "4.6", features = ["derive"] }
 
 # Internal crates
 cosmo-ipc = { path = "crates/cosmo-ipc" }
+cosmo-config = { path = "crates/cosmo-config" }
 cosmo-hotkey = { path = "crates/cosmo-hotkey" }
 cosmo-audio = { path = "crates/cosmo-audio" }
 cosmo-stt = { path = "crates/cosmo-stt" }

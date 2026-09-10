@@ -8,3 +8,20 @@ repository.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "signal", "sync", "time", "fs"] }
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+cosmo-ipc.workspace = true
+cosmo-gate.workspace = true
+cosmo-config.workspace = true
+
+[[bin]]
+name = "cosmod"
+path = "src/main.rs"

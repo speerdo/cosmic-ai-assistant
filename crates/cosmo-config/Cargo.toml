@@ -1,6 +1,6 @@
 [package]
-name = "cosmo-ipc"
-description = "Control-socket protocol types shared by the cosmo daemon, CLI, applet, and overlay"
+name = "cosmo-config"
+description = "config.ron: loading, commented-default first-run write, validation"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,7 +10,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+ron.workspace = true
 serde.workspace = true
-serde_json.workspace = true
-
-[dev-dependencies]
+thiserror.workspace = true
+dirs = "6"

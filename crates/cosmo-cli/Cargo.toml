@@ -9,6 +9,14 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+cosmo-ipc.workspace = true
+
 [[bin]]
 name = "cosmo"
 path = "src/main.rs"
