@@ -2,7 +2,7 @@
 
 A personal voice assistant for the [COSMIC](https://system76.com/cosmic/) desktop. All Rust.
 
-> **Status:** pre-code blueprint and implementation plan. Phases, invariants, and latency budgets below are the *design contract* — code lands in the order described in [`docs/implementation-plan.md`](docs/implementation-plan.md).
+> **Status:** feasibility proven, spine not yet built. The phase 0 probes passed on a real COSMIC session — window control at 35–45ms per operation, layer shell renders, evdev reads without root ([`docs/phase0-findings.md`](docs/phase0-findings.md)) — so the kill criterion is cleared. What exists today is a 15-crate workspace of documented stubs and three probe programs; phase 1 is next. Phases, invariants, and latency budgets below are the *design contract* — code lands in the order described in [`docs/implementation-plan.md`](docs/implementation-plan.md).
 
 The goal is not another chatbot with a mic glued on. The goal is a Jarvis: fast enough that commands feel like reflexes, honest enough that it never runs anything scary without asking, and polished enough that it looks like it belongs on COSMIC — in a voice *you* picked, including an actual accent rather than the five voices an API decided to offer.
 

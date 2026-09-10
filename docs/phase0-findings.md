@@ -1,8 +1,8 @@
 # Phase 0 findings — feasibility spike
 
-**Date:** 2025-09-10 (session 2)
+**Date:** 2026-09-10 (session 2)
 **Machine:** real COSMIC session (cosmic-comp, `XDG_CURRENT_DESKTOP=COSMIC`), System76 Launch keyboard + ITE laptop keyboard, `computer-use-linux` via npm/nvm.
-**Kill criterion status:** **PASS so far** — COSMIC window control works and is fast. Two open interactive items, both low-risk (see §5).
+**Kill criterion status:** **PASS** — COSMIC window control works and is fast. One open interactive item remaining, low-risk (see §5; items 2 and 3 were closed by decision).
 
 ## 1. `computer-use-linux` doctor
 
@@ -50,18 +50,35 @@ Three runs, all on the live session:
 
 **PASS on cosmic-comp.** `phase0_layer` (raw `smithay-client-toolkit` 0.21, no default features): one `Layer::Top` surface, anchored bottom, 640×120, 48 px bottom margin, `KeyboardInteractivity::None`, ARGB8888 solid fill, frame-callback loop — renders for 6 s, exits 0. No focus steal, no decorations. The blueprint's overlay option 2 (raw SCTK) is confirmed viable; libcosmic-vs-SCTK stays a phase 6 decision.
 
-## 5. Pending interactive items (need a human at the keyboard)
+## 5. Interactive items
 
-1. **evdev trigger test** — `phase0_evdev` (built, `--list` verified; devices open as the logged-in user with no root/`input` group — uaccess ACLs confirmed working for open+ioctl).
-   **Trigger discovery first:** the Launch has no physical F13 key (capabilities list F13–F24 but nothing is mapped to them out of the box). Run capture mode and press whichever key you want as the hold-to-talk trigger:
+1. **evdev trigger test — RUN, PASS** (2026-09-10, session 3).
+
+   **Device:** `/dev/input/by-id/usb-ITE_Tech._Inc._ITE_Device_8258_-event-kbd` (the ITE laptop keyboard). The System76 Launch was not plugged in for this run; it enumerated separately in session 2 and the uaccess semantics are per-node, so a Launch binding needs one repeat of this test on its own node.
+
+   **Keycode used:** 67 (`KEY_F9`), discovered via `--capture`. The Launch has no physical F13 (capabilities list F13–F24 but nothing is mapped out of the box), so the F13 default is unusable on this hardware. *F9 is a probe choice, not a final binding — see §7.*
+
+   **Result** (`--code 67 --secs 30`):
    ```
-   ./target/debug/examples/phase0_evdev --capture --secs 15
+   mask: EV_KEY limited to code 67, EV_MSC suppressed
+   [ 19.788s] PRESS   — EVIOCGRAB acquired
+   [ 22.451s] RELEASE — grab released
+   summary: 1 presses, 1 releases, 38 autorepeats, 40 SYN
+   non-trigger events delivered: 0 (expect 0)
+   PASS: press+release edges arrive, nothing else delivered
    ```
-   It prints `code N` per press across every keyboard node. Then watch mode with that code (here e.g. ScrollLock, code 70):
-   ```
-   ./target/debug/examples/phase0_evdev --code 70 --secs 30
-   ```
-   While it runs: focus a text editor; press/release the trigger a few times; while **holding** it mash letter keys — nothing must type. Exit 0 = press+release edges arrive, nothing else delivered. Capture results to be appended here (device node + code chosen).
+
+   **What this proves:**
+   - Press **and** release edges both arrive — hold-to-talk is viable off evdev, which §3.1 of the blueprint needs and cosmic-comp's shortcut system cannot do.
+   - `EVIOCSMASK` holds: **0 non-trigger events** delivered across a 30s window that included a 2.66s hold with other keys being pressed. The "not a keylogger" claim is mechanically true, not aspirational.
+   - `EVIOCGRAB` acquires on press and releases on release, as designed.
+   - Open + both ioctls succeed as the logged-in user with **no root and no `input` group** — logind `uaccess` ACLs are sufficient.
+
+   **Implementation note for `cosmo-hotkey`:** the kernel emitted **38 autorepeats** during a 2.66s hold. Hold-to-talk must key off `value==1`/`value==0` and ignore `value==2` entirely, or a long hold reads as a press storm.
+
+   **Leak check — CONFIRMED by observation** (the part the probe cannot see): while F9 was held, typing in a focused editor produced **no text**; on release, typing worked again immediately. So `EVIOCGRAB` does withhold keys from the focused client for the duration of the hold, and releasing the grab restores normal input cleanly — no stuck modifiers, no lost keyboard.
+
+   This closes the one thing the probe could not prove about itself. Between the mask (nothing reaches cosmo) and the grab (nothing reaches the app while held), the hotkey design in blueprint §3.1 is verified end to end on real hardware.
 2. ~~Real activation check~~ — **skipped by decision**: `activate_window` assumed functional on COSMIC; phase 1 exercises it on real unfocused windows anyway. Findings §3 caveat stands until then.
 3. ~~Workspace-move fallback check~~ — **decided: defer to cosmo's virtual keyboard** (`zwp_virtual_keyboard_v1` sending the COSMIC Super+Shift+N chord, phase 1, `cosmo-type`). The `press_key` portal route is abandoned untested.
 
@@ -71,4 +88,9 @@ Three runs, all on the live session:
 - Focus/workspace tracking → compositor protocols, phase 1 (new work item; `focused_window` demoted to advisory).
 - Workspace moves → cosmo's virtual keyboard chord, phase 1 (new work item; agent can't do it).
 - Upstream cached-probe PR → **not needed**; close that open question.
-- evdev: uaccess open/ioctl as plain user confirmed; press/release/leak verification pending item 1 above.
+- evdev: **PASS, fully verified** — uaccess open/ioctl as plain user, press+release edges, zero non-trigger delivery, and the focused-app leak check all confirmed on real hardware (§5 item 1). Autorepeat filtering (`value==2`) is a new `cosmo-hotkey` requirement.
+- **Phase 0 is complete.** All three riskiest assumptions (COSMIC window control, layer shell, evdev hold-to-talk) are proven on real hardware. Phase 1 is unblocked.
+
+## 7. Trigger key choice — open
+
+Keycode 67 (F9) was a discovery artifact, not a decision. A grabbed trigger is swallowed session-wide, so the final binding must be a key the user never otherwise needs. F9 conflicts with common developer bindings (toggle-breakpoint in VS Code/Cursor, LibreOffice, some browsers). Candidates that exist physically on this hardware and carry no default COSMIC or app binding should be re-checked with `--capture` before phase 3 hardcodes a default. The probe result transfers unchanged to any keycode — only the choice is open.

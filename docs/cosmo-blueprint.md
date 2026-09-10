@@ -241,6 +241,7 @@ cosmo/
     cosmo-stt/                  # sherpa-onnx: streaming + offline, hotwords
     cosmo-tts/                  # VoiceProvider trait, kokoro/piper/melo/openai/eleven, phrase cache
     cosmo-mcp/                  # rmcp host, discovery, tool filtering
+    cosmo-type/                 # zwp_virtual_keyboard_v1, synthesised keymap (§3.4)
     cosmo-reflex/               # intent matcher, confidence, escalation
     cosmo-reason/               # Realtime WS client (tokio-tungstenite), text-out
     cosmo-gate/                 # deny / hold / allow, annotation mapping
