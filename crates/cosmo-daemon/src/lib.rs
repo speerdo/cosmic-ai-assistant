@@ -41,6 +41,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     let (events_tx, _) = broadcast::channel::<Event>(256);
     let engine = Arc::new(engine::Engine::new(cfg, events_tx.clone()));
+    engine.refresh_lock();
     engine.set_state(State::Idle);
 
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;

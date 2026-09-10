@@ -62,6 +62,67 @@ pub struct Gate {
     turn: std::sync::atomic::AtomicU64,
     /// Counter+time-derived entropy for confirm tokens.
     token_entropy: std::sync::atomic::AtomicU64,
+    /// Lock-screen state as seen by the most recent [`LockSource`] probe
+    /// (invariant #10). `Unknown` until a source reports; deny then.
+    lock: std::sync::atomic::AtomicU8,
+}
+
+/// Lock-screen state (invariant #10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockState {
+    /// A trusted source says the session is not locked.
+    Unlocked,
+    /// A trusted source says the session is locked.
+    Locked,
+    /// No trusted source, or the source errored. Fail closed.
+    Unknown,
+}
+
+impl LockState {
+    fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::Unlocked,
+            1 => Self::Locked,
+            _ => Self::Unknown,
+        }
+    }
+
+    fn to_u8(self) -> u8 {
+        match self {
+            Self::Unlocked => 0,
+            Self::Locked => 1,
+            Self::Unknown => 2,
+        }
+    }
+}
+
+/// Tools that must refuse while the session is locked or when lock state is
+/// unknown (plan §1.2, invariant #10). Read-only window *inspection* tools
+/// (`list_windows`, `get_accessibility_tree`) stay allowed: they read
+/// structure, not user input, and the agent needs them to report state.
+pub fn is_lock_sensitive(tool: &str) -> bool {
+    matches!(
+        tool,
+        "screenshot"
+            | "click"
+            | "double_click"
+            | "right_click"
+            | "type_text"
+            | "press_key"
+            | "scroll"
+            | "drag"
+            | "clipboard_get"
+            | "clipboard_set"
+            | "run_in_terminal"
+            | "set_value"
+            | "perform_action"
+    )
+}
+
+/// A probe for lock state. Implemented by the daemon (logind `LockedHint`
+/// today); the gate only stores what it is told — it never blocks.
+pub trait LockSource: Send + Sync {
+    fn probe(&self) -> LockState;
 }
 
 impl Default for Gate {
@@ -76,7 +137,28 @@ impl Gate {
             holds: Mutex::new(HoldQueueInner::default()),
             turn: std::sync::atomic::AtomicU64::new(0),
             token_entropy: std::sync::atomic::AtomicU64::new(splitmix_seed()),
+            lock: std::sync::atomic::AtomicU8::new(LockState::Unknown.to_u8()),
         }
+    }
+
+    /// Current lock state; the daemon refreshes this between turns and on a
+    /// lock-source signal.
+    pub fn lock_state(&self) -> LockState {
+        LockState::from_u8(self.lock.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
+    /// Store what a [`LockSource`] probe reported.
+    pub fn set_lock_state(&self, state: LockState) {
+        self.lock
+            .store(state.to_u8(), std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Probe now via the given source and store the result. Returns the
+    /// stored state for logging.
+    pub fn refresh_lock(&self, source: &dyn LockSource) -> LockState {
+        let state = source.probe();
+        self.set_lock_state(state);
+        state
     }
 
     /// Advance to a new user turn; returns the new turn number.
@@ -200,7 +282,17 @@ impl Gate {
     /// - `run_in_terminal` additionally runs the command string through
     ///   [`Verdict::command`] — the deny/hold lists apply.
     /// - `clipboard` reads leave the machine, so they hold.
+    /// - sensitive input tools consult [`Gate::lock_state`] (invariant #10:
+    ///   fail-closed — `Unknown` denies).
     pub fn verdict_for_call(&self, tool: &str, args: &Value, annotations: &Annotations) -> Verdict {
+        // Lock-screen fail-closed check (invariant #10). Sensitive tools
+        // refuse when locked *or* when lock state cannot be determined.
+        if is_lock_sensitive(tool) {
+            match self.lock_state() {
+                LockState::Unlocked => {}
+                LockState::Locked | LockState::Unknown => return Verdict::Deny,
+            }
+        }
         match tool {
             // Terminal: the command string carries the verdict.
             "run_in_terminal" => {
@@ -611,6 +703,9 @@ mod tests {
     #[test]
     fn annotation_mapping() {
         let gate = Gate::new();
+        // Annotation semantics are tested unlocked; the lock check itself
+        // has its own tests.
+        gate.set_lock_state(LockState::Unlocked);
         let ro = Annotations {
             read_only: true,
             destructive: false,
@@ -659,5 +754,84 @@ mod tests {
         assert_eq!(Verdict::command("FOO=1 rm -rf /"), Verdict::Deny);
         assert_eq!(Verdict::command("/usr/bin/sudo id"), Verdict::Deny);
         assert_eq!(Verdict::command("/usr/sbin/reboot"), Verdict::Hold);
+    }
+
+    // ---- invariant #10: lock-screen fail-closed ----
+
+    #[test]
+    fn lock_unknown_denies_sensitive_tools() {
+        let gate = Gate::new();
+        // No source has ever reported: state is Unknown. Deny everything
+        // lock-sensitive even though annotations say read-only.
+        let ro = Annotations::read_only_neither();
+        for tool in ["screenshot", "type_text", "click", "clipboard_get"] {
+            assert_eq!(
+                gate.verdict_for_call(tool, &Value::Null, &ro),
+                Verdict::Deny,
+                "Unknown lock state must deny {tool}"
+            );
+        }
+        // Structure-only inspection tools stay available.
+        assert_eq!(
+            gate.verdict_for_call("list_windows", &Value::Null, &ro),
+            Verdict::Allow
+        );
+    }
+
+    #[test]
+    fn lock_unlocked_restores_annotation_verdicts() {
+        let gate = Gate::new();
+        gate.set_lock_state(LockState::Unlocked);
+        let ro = Annotations::read_only_neither();
+        // screenshot: agent annotates it non-destructive; gate agrees while
+        // unlocked (but holds it while locked — see the locked test).
+        assert_eq!(
+            gate.verdict_for_call("screenshot", &Value::Null, &ro),
+            Verdict::Allow
+        );
+        // type_text carries destr=true in practice → hold.
+        let destr = Annotations {
+            read_only: false,
+            destructive: true,
+        };
+        assert_eq!(
+            gate.verdict_for_call("type_text", &Value::Null, &destr),
+            Verdict::Hold
+        );
+    }
+
+    #[test]
+    fn lock_locked_denies_even_when_unchecked_elsewhere() {
+        let gate = Gate::new();
+        gate.set_lock_state(LockState::Locked);
+        let ro = Annotations::read_only_neither();
+        for tool in ["screenshot", "clipboard_get", "run_in_terminal"] {
+            assert_eq!(
+                gate.verdict_for_call(tool, &Value::Null, &ro),
+                Verdict::Deny,
+                "locked session must deny {tool}"
+            );
+        }
+    }
+
+    #[test]
+    fn lock_source_probe_is_stored() {
+        struct Fixed(LockState);
+        impl LockSource for Fixed {
+            fn probe(&self) -> LockState {
+                self.0
+            }
+        }
+        let gate = Gate::new();
+        assert_eq!(
+            gate.refresh_lock(&Fixed(LockState::Unlocked)),
+            LockState::Unlocked
+        );
+        assert_eq!(gate.lock_state(), LockState::Unlocked);
+        assert_eq!(
+            gate.refresh_lock(&Fixed(LockState::Locked)),
+            LockState::Locked
+        );
+        assert_eq!(gate.lock_state(), LockState::Locked);
     }
 }

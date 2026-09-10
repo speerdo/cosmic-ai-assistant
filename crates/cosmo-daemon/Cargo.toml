@@ -21,6 +21,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 cosmo-ipc.workspace = true
 cosmo-gate.workspace = true
 cosmo-config.workspace = true
+zbus.workspace = true
 
 [[bin]]
 name = "cosmod"
