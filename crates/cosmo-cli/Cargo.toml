@@ -1,0 +1,14 @@
+[package]
+name = "cosmo-cli"
+description = "The cosmo binary"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "cosmo"
+path = "src/main.rs"

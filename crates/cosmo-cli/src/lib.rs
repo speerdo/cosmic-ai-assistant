@@ -1,0 +1,1 @@
+//! The `cosmo` binary.

@@ -1,0 +1,10 @@
+[package]
+name = "cosmo-hotkey"
+description = "Global trigger key via evdev EVIOCGRAB + EVIOCSMASK, with udev hotplug re-attach"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
