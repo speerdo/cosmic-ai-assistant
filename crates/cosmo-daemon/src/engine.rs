@@ -18,9 +18,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::broadcast;
+use tracing::Instrument;
 
 use cosmo_config::Config;
 use cosmo_gate::{ConfirmResult, Gate, LockSource, LockState};
+use cosmo_mcp::McpHost;
+use cosmo_reason::secret::DefaultKeySource;
+use cosmo_reason::tools::ToolHost;
+
+use crate::toolhost::DaemonToolHost;
 
 /// Lock policy mode (findings §L).
 #[derive(Debug, Clone, Copy)]
@@ -84,9 +90,6 @@ use cosmo_ipc::{
 };
 
 pub struct Engine {
-    /// Config for the phase-1.4 reasoning client (read once `cosmo-reason`
-    /// is wired; kept here so the engine owns exactly one copy).
-    #[allow(dead_code)]
     cfg: Config,
     gate: Arc<Gate>,
     events: broadcast::Sender<Event>,
@@ -99,6 +102,11 @@ pub struct Engine {
     /// the logind probe is not trusted).
     lock_mode: LockMode,
     logind: Option<LogindLock>,
+    /// Combined agent + native tool host (None until the agent connects).
+    tools: Mutex<Option<Arc<DaemonToolHost>>>,
+    /// Conversation history for the reasoning loop (compacted per turn by
+    /// keeping only the tail; phase 5 replaces with the Realtime session).
+    history: Mutex<Vec<serde_json::Value>>,
 }
 
 impl Engine {
@@ -117,7 +125,23 @@ impl Engine {
             version: env!("CARGO_PKG_VERSION"),
             lock_mode,
             logind,
+            tools: Mutex::new(None),
+            history: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Connect the MCP agent and register the combined tool host. Called at
+    /// startup; a failure is not fatal — doctor reports it and `say` errors
+    /// per turn (graceful absence, plan §1.3).
+    pub async fn connect_tools(&self) -> anyhow::Result<()> {
+        let cfg = Arc::new(self.cfg.clone());
+        let host = McpHost::connect(cfg)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let tmux_session = cosmo_config::load()?.tmux_session;
+        *self.tools.lock().unwrap() =
+            Some(Arc::new(DaemonToolHost::new(Arc::new(host), &tmux_session)));
+        Ok(())
     }
 
     /// Refresh the gate's lock state according to the active policy and
@@ -202,6 +226,17 @@ impl Engine {
     fn doctor(&self) -> DoctorReport {
         let cfg_ok = cosmo_config::load().is_ok();
         let socket_ok = std::path::Path::new(&cosmo_ipc::socket_path()).exists();
+        let tools = self.tools.lock().unwrap().clone();
+        let (agent_ok, agent_detail) = match tools.as_ref() {
+            Some(host) => {
+                let n = host.agent_tool_count();
+                (true, format!("agent connected, {n} tools allowlisted"))
+            }
+            None => (
+                false,
+                "agent not connected — is computer-use-linux installed? (plan §1.3)".to_owned(),
+            ),
+        };
         let (lock_ok, lock_detail) = match (self.lock_mode, self.gate.lock_state()) {
             (LockMode::LogindHint, LockState::Unlocked) => (
                 true,
@@ -222,6 +257,18 @@ impl Engine {
                  unavailable until upstream greeter sets LockedHint"
                     .to_owned(),
             ),
+        };
+        // Key presence: the doctor's third distinct state set (plan §1.4).
+        let key_detail = if std::env::var("OPENAI_API_KEY")
+            .map(|k| !k.trim().is_empty())
+            .unwrap_or(false)
+        {
+            (true, "key present (source: env — dev/CI only)".to_owned())
+        } else {
+            (
+                false,
+                "no key in env; keyring checked at first turn".to_owned(),
+            )
         };
         DoctorReport {
             checks: vec![
@@ -245,21 +292,26 @@ impl Engine {
                     detail: lock_detail,
                 },
                 DoctorCheck {
+                    name: "api key".into(),
+                    ok: key_detail.0,
+                    detail: key_detail.1,
+                },
+                DoctorCheck {
                     name: "reasoning".into(),
-                    ok: false,
-                    detail: "cosmo-reason not wired yet (phase 1 in progress)".into(),
+                    ok: true,
+                    detail: "cosmo-reason wired (chat-completions v1)".into(),
                 },
                 DoctorCheck {
                     name: "agent (MCP)".into(),
-                    ok: false,
-                    detail: "cosmo-mcp not wired yet (phase 1 in progress)".into(),
+                    ok: agent_ok,
+                    detail: agent_detail,
                 },
             ],
         }
     }
 
-    /// A user turn. Phase 1: the model round trip is a stub; gate checks on
-    /// locally-recognised tool verbs still run so the hold path is live.
+    /// A user turn: whole-utterance confirms resolve locally; everything
+    /// else runs the reasoning tool loop.
     async fn say(&self, text: String) -> Response {
         if self.paused.load(Ordering::SeqCst) {
             return Response::Said {
@@ -269,7 +321,7 @@ impl Engine {
             };
         }
 
-        let _turn = tracing::info_span!("turn").entered();
+        let turn_span = tracing::info_span!("turn");
         self.gate.begin_turn();
         // Refresh lock state before every turn (plan §1.2: between turns
         // and on lock-source signals).
@@ -278,7 +330,7 @@ impl Engine {
         // Whole-utterance confirm: resolve locally, no model round trip.
         if let ConfirmResult::Executed(parked) = self.gate.confirm_utterance(&text) {
             self.set_state(State::Acting);
-            let summary = execute_stub(&parked.tool, &parked.args);
+            let summary = self.execute_parked(&parked.tool, &parked.args).await;
             let _ = self.events.send(Event::HoldResolved {
                 token: parked.token.clone(),
                 executed: true,
@@ -293,24 +345,103 @@ impl Engine {
             };
         }
 
+        // Reasoning path.
+        let Some(tools) = self.tools.lock().unwrap().clone() else {
+            return Response::Said {
+                result: cosmo_ipc::TurnResult::Failed {
+                    reason: "agent not connected — check `cosmo doctor`".into(),
+                },
+            };
+        };
+
+        // Key resolution is lazy (first reasoning turn) — a locked keyring
+        // at boot must not have killed the daemon (plan §1.4).
+        let key_source = DefaultKeySource;
+        let mut reasoner =
+            match cosmo_reason::Reasoner::new(Arc::new(self.cfg.clone()), &key_source) {
+                Ok(r) => r,
+                Err(cosmo_reason::ReasonError::NoKey(msg)) => {
+                    return Response::Said {
+                        result: cosmo_ipc::TurnResult::Failed { reason: msg },
+                    };
+                }
+                Err(e) => {
+                    return Response::Said {
+                        result: cosmo_ipc::TurnResult::Failed {
+                            reason: e.to_string(),
+                        },
+                    };
+                }
+            };
+
         self.set_state(State::Thinking);
-        // TODO(phase 1.4): cosmo-reason round trip replaces this stub.
+        let mut history = self.history.lock().unwrap().clone();
+        let outcome = reasoner
+            .turn(&text, &self.gate, tools.as_ref(), &mut history)
+            .instrument(turn_span)
+            .await;
+        // Persist a bounded tail of the history (phase 5 replaces this).
+        {
+            let mut hist = self.history.lock().unwrap();
+            *hist = history;
+            let tail_from = hist.len().saturating_sub(20);
+            hist.drain(0..tail_from);
+        }
+
         self.set_state(State::Idle);
-        Response::Said {
-            result: cosmo_ipc::TurnResult::Completed {
-                reply: format!("(stub) received: {text}"),
-                held: self
-                    .gate
-                    .pending()
-                    .into_iter()
-                    .map(|p| PendingHold {
-                        token: p.token,
-                        action: p.description,
-                        parked_at_ms: p.parked_at_ms,
-                    })
-                    .collect(),
+        match outcome {
+            Ok(cosmo_reason::ToolOutcome::Reply(reply)) => {
+                let _ = self.events.send(Event::Reply {
+                    text: reply.clone(),
+                });
+                Response::Said {
+                    result: cosmo_ipc::TurnResult::Completed {
+                        reply,
+                        held: self.pending_ipc_holds(),
+                    },
+                }
+            }
+            Ok(cosmo_reason::ToolOutcome::Held { token, tool }) => {
+                self.set_state(State::Waiting);
+                let action = format!("{tool} — confirm with: cosmo confirm {token}");
+                let _ = self.events.send(Event::Held {
+                    token: token.clone(),
+                    action: action.clone(),
+                });
+                Response::Said {
+                    result: cosmo_ipc::TurnResult::Completed {
+                        reply: action,
+                        held: self.pending_ipc_holds(),
+                    },
+                }
+            }
+            Ok(cosmo_reason::ToolOutcome::ToolRan { .. }) => Response::Said {
+                result: cosmo_ipc::TurnResult::Completed {
+                    reply: "tool ran".into(),
+                    held: self.pending_ipc_holds(),
+                },
+            },
+            Err(cosmo_reason::ReasonError::NoKey(msg)) => Response::Said {
+                result: cosmo_ipc::TurnResult::Failed { reason: msg },
+            },
+            Err(e) => Response::Said {
+                result: cosmo_ipc::TurnResult::Failed {
+                    reason: e.to_string(),
+                },
             },
         }
+    }
+
+    fn pending_ipc_holds(&self) -> Vec<PendingHold> {
+        self.gate
+            .pending()
+            .into_iter()
+            .map(|p| PendingHold {
+                token: p.token,
+                action: p.description,
+                parked_at_ms: p.parked_at_ms,
+            })
+            .collect()
     }
 
     /// `cosmo confirm <token>` — executes the parked call locally (invariant
@@ -320,7 +451,7 @@ impl Engine {
         match result {
             ConfirmResult::Executed(parked) => {
                 self.set_state(State::Acting);
-                let summary = execute_stub(&parked.tool, &parked.args);
+                let summary = self.execute_parked(&parked.tool, &parked.args).await;
                 let _ = self.events.send(Event::HoldResolved {
                     token: parked.token.clone(),
                     executed: true,
@@ -338,10 +469,17 @@ impl Engine {
             ConfirmResult::NotAConfirm => Response::Confirm(IpcConfirmOutcome::Unknown),
         }
     }
-}
 
-/// Phase 1 executor placeholder: nothing dangerous runs until cosmo-mcp and
-/// cosmo-tools land. Every parked call reports what *would* run.
-fn execute_stub(tool: &str, args: &serde_json::Value) -> String {
-    format!("would execute {tool} with {args}")
+    /// Execute a parked (confirmed) call through the same tool host the loop
+    /// uses. Sensitive tools still respect the lock policy: the gate denied
+    /// them at park time, so anything parked here passed Surface A/B.
+    async fn execute_parked(&self, tool: &str, args: &serde_json::Value) -> String {
+        let Some(tools) = self.tools.lock().unwrap().clone() else {
+            return "agent not connected".into();
+        };
+        tools
+            .execute(tool, args.clone())
+            .instrument(tracing::info_span!("tool", tool = %tool, confirmed = true))
+            .await
+    }
 }

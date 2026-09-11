@@ -23,10 +23,7 @@ async fn spawn_fake_api() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        loop {
-            let Ok((mut sock, _)) = listener.accept().await else {
-                break;
-            };
+        if let Ok((mut sock, _)) = listener.accept().await {
             loop {
                 // per-socket: serve keep-alive requests until EOF
                 // Read headers, then exactly content-length body bytes.
@@ -144,8 +141,11 @@ async fn deny_in_same_response_as_confirmation() {
     let host = FakeHost;
 
     let addr = spawn_fake_api().await;
-    // SAFETY: unique var name, single-threaded test body.
-    unsafe { std::env::set_var("COSMO_API_BASE", &addr) };
+    // SAFETY: unique var name; tests run their own process.
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::set_var("COSMO_API_BASE", &addr)
+    };
 
     let cfg = Arc::new(cosmo_config::Config {
         model: "test-model".into(),

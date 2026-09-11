@@ -21,6 +21,7 @@
 //!   codes 3 and 4)
 
 mod engine;
+pub mod toolhost;
 
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
@@ -42,6 +43,11 @@ pub async fn run() -> anyhow::Result<()> {
     let (events_tx, _) = broadcast::channel::<Event>(256);
     let engine = Arc::new(engine::Engine::new(cfg, events_tx.clone()));
     engine.refresh_lock();
+    // Agent connection: failure is not fatal (graceful absence; doctor
+    // reports it and `say` errors per turn).
+    if let Err(e) = engine.connect_tools().await {
+        tracing::warn!(error = %e, "agent connect failed; native tools still available");
+    }
     engine.set_state(State::Idle);
 
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;

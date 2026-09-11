@@ -40,6 +40,13 @@ enum Cmd {
     Cancel { token: String },
     /// Pause/resume new turns.
     Toggle,
+    /// Open the OpenAI key page, read the key from stdin (echo disabled),
+    /// store it in the Secret Service.
+    AuthLogin,
+    /// Delete the stored key from the Secret Service.
+    AuthLogout,
+    /// Report whether a key is resolvable and from which source.
+    AuthStatus,
 }
 
 fn main() {
@@ -50,6 +57,16 @@ fn main() {
 }
 
 async fn run(cmd: Cmd) -> i32 {
+    // Auth commands are local (Secret Service), not daemon round trips.
+    match cmd {
+        Cmd::AuthLogin => return auth_login().await,
+        Cmd::AuthLogout => return auth_logout().await,
+        Cmd::AuthStatus => {
+            println!("{}", cosmo_reason::secret::auth_status().await);
+            return 0;
+        }
+        _ => {}
+    }
     let path = socket_path();
     let stream = match UnixStream::connect(&path).await {
         Ok(s) => s,
@@ -85,6 +102,9 @@ async fn exchange(
             Cmd::Confirm { token } => Command::Confirm { token },
             Cmd::Cancel { token } => Command::Cancel { token },
             Cmd::Toggle => Command::Toggle,
+            Cmd::AuthLogin | Cmd::AuthLogout | Cmd::AuthStatus => {
+                unreachable!("auth subcommands are handled before the daemon connection")
+            }
         },
     };
     let mut line = serde_json::to_string(&request)?;
@@ -246,4 +266,92 @@ async fn read_line(stream: &mut UnixStream, buf: &mut Vec<u8>) -> std::io::Resul
         }
         buf.push(byte[0]);
     }
+}
+
+/// `cosmo auth login`: open the key-creation page, read the key with echo
+/// disabled, store it in the Secret Service (plan §1.4 — the whole browser
+/// story; there is deliberately no OAuth flow).
+async fn auth_login() -> i32 {
+    println!("Opening https://platform.openai.com/api-keys — create or copy an API key.");
+    let _ = std::process::Command::new("xdg-open")
+        .arg("https://platform.openai.com/api-keys")
+        .spawn();
+
+    let key = read_line_echo_disabled().expect("read key from stdin");
+    let key = key.trim().to_string();
+    if key.is_empty() {
+        eprintln!("no key entered");
+        return 1;
+    }
+    match cosmo_reason::secret::store_key(&key).await {
+        Ok(()) => {
+            println!("key stored in the Secret Service (application=cosmo, provider=openai)");
+            0
+        }
+        Err(e) => {
+            eprintln!("storing the key failed: {e}");
+            1
+        }
+    }
+}
+
+/// `cosmo auth logout`: delete the stored key.
+async fn auth_logout() -> i32 {
+    match cosmo_reason::secret::delete_key().await {
+        Ok(()) => {
+            println!("key deleted from the Secret Service");
+            0
+        }
+        Err(e) => {
+            eprintln!("deleting the key failed: {e}");
+            1
+        }
+    }
+}
+
+/// Read one line from stdin with terminal echo disabled (tty) or plain
+/// (piped — CI). The raw key never hits the terminal.
+///
+/// The `unsafe` blocks here are libc termios calls: single-threaded CLI,
+/// save/restore around exactly one read, fd 0 only.
+#[allow(unsafe_code)]
+fn read_line_echo_disabled() -> std::io::Result<String> {
+    use std::io::{BufRead, Write};
+    let stdin = std::io::stdin();
+    let mut line = String::new();
+    let mut stdout = std::io::stdout();
+    write!(stdout, "API key: ")?;
+    stdout.flush()?;
+    if let Some(term) = std::env::var("TERM").ok().filter(|_| {
+        // Only disable echo when stdin is a TTY; piped input (CI) reads plain.
+        unsafe { libc::isatty(0) == 1 }
+    }) {
+        let _ = term;
+        // SAFETY: single-threaded CLI; termios save/restore around one read.
+        let mut saved = libc::termios {
+            c_iflag: 0,
+            c_oflag: 0,
+            c_cflag: 0,
+            c_lflag: 0,
+            c_line: 0,
+            c_cc: [0; 32],
+            c_ispeed: 0,
+            c_ospeed: 0,
+        };
+        unsafe {
+            libc::tcgetattr(0, &mut saved);
+            let mut noecho = saved;
+            noecho.c_lflag &= !libc::ECHO;
+            libc::tcsetattr(0, libc::TCSANOW, &noecho);
+        }
+        let res = stdin.lock().read_line(&mut line);
+        unsafe {
+            libc::tcsetattr(0, libc::TCSANOW, &saved);
+        }
+        println!();
+        res?;
+    } else {
+        stdin.lock().read_line(&mut line)?;
+    }
+    Ok(line)
 }
