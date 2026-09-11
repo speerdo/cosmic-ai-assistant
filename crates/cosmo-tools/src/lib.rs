@@ -13,6 +13,7 @@
 //! - `media_control`: MPRIS over `zbus`. Reflex-path candidate.
 
 pub mod announce;
+pub mod clipboard;
 pub mod media;
 pub mod memory;
 pub mod system;

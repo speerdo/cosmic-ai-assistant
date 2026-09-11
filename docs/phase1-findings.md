@@ -57,7 +57,8 @@ says the session is *unlocked* — and with no source, "unknown" denies.
   invariant #10 forbids. So the shipped default is stricter than the
   hook:
   - **COSMIC sessions** (`XDG_CURRENT_DESKTOP=COSMIC`): the sensitive
-    tools (screenshot/click/type/press_key/scroll/drag/clipboard_get)
+    tools (screenshot/click/double_click/right_click/type_text/press_key/
+    scroll/drag/clipboard_get/clipboard_set/set_value/perform_action)
     are **denied outright** until a verified source is wired (an
     upstream greeter that sets `LockedHint`, or a future
     cosmic-protocols surface). Logged once at startup.
@@ -65,6 +66,34 @@ says the session is *unlocked* — and with no source, "unknown" denies.
     subscribe, deny when locked or unknown.
   - `doctor` reports which mode is active in either case, so this is
     observable, not silent.
+
+### Scope correction (2026-09-11, review)
+
+The first implementation also put **`run_in_terminal`** in the
+lock-sensitive set. Because `CosmicDenyAll` pins lock state to `Unknown`
+forever, that made `run_in_terminal` **permanently denied on COSMIC** —
+i.e. phase 1's headline DoD verb (`cosmo say "open the terminal and run
+htop"`) could not work on the target desktop, for a reason unrelated to
+the missing API key. It was reported as done because it was only ever
+exercised at unit level with the lock state set to `Unlocked`.
+
+`run_in_terminal` has been removed from `is_lock_sensitive`. The
+membership rule is now exactly invariant #10's: **a tool is lock-sensitive
+if it observes or drives the user's own UI surface** — screen, pointer,
+focused-window keyboard, shared clipboard, accessibility tree. Those are
+what a lock screen exists to hide. `run_in_terminal` writes into cosmo's
+*own* tmux server (`tmux -S cosmo`), reads no display, and injects into no
+focused client; its real control is Surface B, which is stricter and
+applies whether or not the screen is locked.
+
+Verified live on COSMIC after the change: `say` → `run_in_terminal` →
+tmux → transcript, and a laundered `bash -c "rm -rf …"` denied with the
+target file intact.
+
+**Residual risk, recorded not hidden:** from phase 3 on, a microphone on a
+locked machine could reach `run_in_terminal` through the model. That is a
+*microphone* gate (half-duplex, wake word — phases 3 and 7), not a tool
+gate, and must be solved there. Noted at the `is_lock_sensitive` site.
 
 ### Reopen condition
 
@@ -174,3 +203,195 @@ auth-status.
 
 **Tests:** 39 test groups green across the workspace; `fmt` + `clippy -D
 warnings` clean.
+
+## §R. Review remediation (2026-09-11)
+
+A review of the committed phase-1 work checked the ticked boxes against the
+code rather than against the summary. Seven defects, four of them on items
+recorded as done. The common shape is worth stating plainly, because it is
+the thing to watch for in phase 2:
+
+> **Every one of these was unit-tested, and the unit test passed.** The tests
+> exercised a helper directly, with setup the real caller does not perform.
+> The gate suite advanced the turn counter by hand; the fake agent always
+> supplied annotations; the matcher was tested on bare commands. Nothing
+> drove the daemon the way the socket drives it, and `cosmo-daemon` had no
+> tests at all. A green suite over the wrong caller is not evidence.
+
+Each fix ships with a test that fails against the previous code (verified by
+reverting each fix in turn and watching the new test go red).
+
+### R1. `cosmo confirm <token>` could never succeed — DoD §1.5 item 2
+
+`Engine::confirm` never advanced the turn counter, and `Gate::confirm_token`
+refuses to resolve a hold parked in the *current* turn (invariant #2). A hold
+parked in turn N was confirmed against turn N, so **every** CLI confirmation
+returned `Unknown`, forever. `gate.begin_turn()` appeared in exactly one place
+in the workspace — `say` — and the gate's own invariant test passed only
+because it called `begin_turn()` by hand.
+
+A `cosmo confirm <token>` *is* the "genuinely new user turn" invariant #2
+requires: a separate deliberate act, out of band from the model, with the
+token in hand. What the invariant forbids — a model approving its own gated
+call inside one response — is `same_response_verdict`, which escalates to
+Deny before anything is parked, and is unaffected.
+
+**Fixed:** `confirm` begins a turn. **Test:** `cosmo-daemon`'s new
+`tests/hold_confirm.rs`, driving `Engine::handle` exactly as the socket does.
+
+### R2. The MCP annotation default was inverted — fail-open
+
+```rust
+/// ... missing hints read as `read_only=false, destructive=true`
+    None => (false, false),                      // ⇒ Verdict::Allow
+    a.destructive_hint.unwrap_or(false),         // ⇒ Verdict::Allow
+```
+
+The doc comment described the correct behaviour; the code did the opposite.
+The MCP specification defines `destructiveHint` as defaulting to **`true`**
+when absent, so this silently inverted the protocol's own default: any agent
+tool shipping without annotations mapped to Allow. `cosmo_gate::Annotations`
+had the same inversion via `derive(Default)`, which is what
+`toolhost::annotations_of` returns for an *unknown* tool — under a comment
+reading `// unknown ⇒ conservative`. Every fixture in `fake_agent.py` supplied
+both hints, so the case was never exercised.
+
+**Fixed:** both defaults are `destructive = true`; `Annotations` has a hand-
+written `Default` carrying the reasoning. **Tests:**
+`unannotated_tool_defaults_to_destructive`, `unannotated_tool_holds`, and a
+deliberately unannotated `press_key` in the fake agent.
+
+### R3. Surface B was laundered by any wrapper program
+
+`segment_verdict` classified only each segment's leading program (`sudo` and
+`pkexec` excepted). Everything below reached `Verdict::Allow`:
+
+```
+bash -c "rm -rf ~"        sh -c 'rm -rf /home/…'    env rm -rf ~
+nohup rm -rf ~            xargs rm -rf              eval rm -rf ~
+timeout 5 rm -rf ~        nice -n 10 rm -rf ~       setsid rm -rf ~
+find . -exec rm -rf {} +  echo $(rm -rf ~)          `rm -rf ~`
+r''m -rf ~                python3 -c "os.system('rm -rf ~')"
+```
+
+This matters more than a list of missed strings: `run_in_terminal` carrying
+`bash -c "…"` **is** `run_shell`, the tool invariant #2 exists to withhold.
+The plan's own warning — "a deny list wired only to Surface A would match
+nothing and look like it worked" — applied one level down.
+
+**Fixed:** three nesting forms are unwrapped before matching — command
+substitution (`$(…)`, backticks), shell interpreters with `-c`, and wrapper
+programs (`env`, `nohup`, `xargs`, `timeout`, `nice`, `setsid`, `eval`,
+`find -exec`, …) — with a depth cap that denies runaway nesting. Quotes are
+now stripped from anywhere in a token, not trimmed from the ends, so `r''m`
+reduces to `rm`. `doas` joins `sudo`/`pkexec`.
+
+General-purpose interpreters given inline code (`python -c`, `perl -e`,
+`node -e`) **hold** rather than allow: their payload is not shell and cannot
+be tokenised, and Hold is the gate's designed answer to "this might be
+anything". Running a *script* (`python3 script.py`) stays Allow.
+
+This is a mitigation, not a parser, and the code says so. A token matcher over
+an untyped string cannot be made complete. What makes it sufficient is that
+the strings come from cosmo's own model behind a prompt, not from an adversary
+at a keyboard: the job is to make the blueprint's deny corpus unreachable
+through ordinary rephrasing and to round the unrecognised towards Hold.
+
+**Tests:** `nesting_cannot_launder_the_deny_list`, `nesting_preserves_hold`,
+`opaque_interpreter_payloads_hold`, `runaway_nesting_fails_closed`, and
+`nesting_does_not_over_match` — the last one because an over-eager matcher
+that holds `cargo build` is its own failure.
+
+### R4. `run_in_terminal` was permanently denied on COSMIC
+
+See §L, *Scope correction*. Phase 1's headline DoD verb could not run on the
+target desktop.
+
+### R5. A held turn poisoned the conversation history
+
+The tool loop `return`ed the moment the gate parked a call, leaving the
+assistant message with its `tool_calls` in `history` and **no** `role: "tool"`
+result for any of them. The daemon persists history unconditionally and
+replays it, so the *next* turn failed at the API with a 400 — one turn after
+the hold, which is where it would have been misattributed. History truncation
+(`drain(0..len-20)`) could orphan a `role: "tool"` the same way.
+
+**Fixed:** every `tool_call` id gets exactly one result — the held call
+("HELD: parked …"), any call after it in the same response ("NOT RUN: …"), and
+unparseable arguments (fed back instead of aborting the turn). Truncation
+walks the cut point forward past leading tool results. **Tests:**
+`held_turn_leaves_history_replayable` asserts the invariant over the whole
+history, plus `tail_never_starts_on_an_orphan_tool_result`.
+
+### R6. Agent tools were advertised to the model with no parameters
+
+`RegisteredTool` dropped the agent's `inputSchema` and the tool host sent a
+bare `{"type": "object"}` for every agent tool — the model was told `click`
+exists but nothing about `x`/`y`, so it would call tools with invented
+arguments. The likeliest cause of a disappointing first real-key run, and it
+would have read as a model failure.
+
+**Fixed:** `input_schema` is carried on `RegisteredTool` and passed through
+verbatim. **Test:** the fake agent's `click` now declares real `x`/`y`
+properties and the integration test asserts they survive.
+
+### R7. Two tools were gated but did not exist
+
+`clipboard_get` / `clipboard_set` had gate arms, a registry entry, a
+`wl-clipboard-rs` workspace dependency and a plan checkbox — and no
+implementation anywhere. **Fixed:** implemented in
+`cosmo-tools/src/clipboard.rs` and registered in the tool host. They remain
+lock-sensitive, so on COSMIC they refuse today (§L) and work on GNOME.
+
+`cosmo_type_into_terminal` is in `is_string_bearing` ahead of the tool
+existing. That one is deliberate and now documented at the site: registering
+the name first means phase 4 cannot add the tool without a matcher arm, since
+`string_tools_all_route_through_matcher` fails until it does.
+
+### Found while verifying the fixes, live
+
+Two more that only a real run surfaces, both on the `cosmo confirm` path that
+R1 had been hiding:
+
+- **The keyring error was unreadable.** `cosmo say` on a keyless machine
+  printed *"DBus error The collection 'no key stored — run `cosmo auth login`'
+  doesn't exists"*. `keyring_lookup` fabricated `oo7::Error` values to carry
+  human-readable messages, and `DefaultKeySource` rendered them through oo7's
+  `Display` — the message smuggled through a D-Bus error's collection-name
+  field and back out. `auth_status` looked fine because it went through
+  `ReasonKind`. Plan §1.4's three actionable states existed in one path and
+  not the other. **Fixed:** `keyring_lookup` returns `ReasonKind` directly; no
+  fabricated transport errors. **Test:** `key_failures_render_their_fix`.
+- **`Response::Confirm` did not round-trip.** `Response` and `ConfirmOutcome`
+  are both internally tagged on `type`, and `Confirm(ConfirmOutcome)` was a
+  newtype variant, so serde wrote two `type` keys into one map and the client
+  failed with ``duplicate field `type` `` (exit 4) — *after* the daemon had
+  executed the confirmed action. The work happened; the reply was lost.
+  **Fixed:** `Confirm { outcome }`, a named field, matching `Said { result }`.
+  Every enum-valued payload now sits under a named field, which is structural
+  rather than "remember to pick distinct tag names". **Tests:**
+  `cosmo-ipc/tests/round_trip.rs` — the crate had none — covering every
+  `Response`, `Command`, and `DaemonMessage` variant plus NDJSON framing.
+
+### Live verification after the fixes (COSMIC, real session)
+
+Driven against a local fake chat-completions server so the tool loop runs
+without a real key:
+
+- `say` → `run_in_terminal` → tmux → transcript returned to the model →
+  reply printed. **This was impossible before R4.**
+- `say` → package install → `Hold` + token → `cosmo confirm <token>` →
+  executed locally, readable summary, exit 0. **DoD §1.5 item 2, first time
+  end to end.**
+- `say` → `bash -c "rm -rf <path>"` → `DENIED` fed back to the model, target
+  file intact. **Allowed and executed before R3.**
+- `say` with no key → `no key stored — run \`cosmo auth login\``.
+
+**Tests:** 37 → 56 across the workspace; `fmt` and `clippy -D warnings` clean.
+
+### Still open
+
+- Workspace-move chord: unchanged, still impossible on this build (§C).
+- The full round trip against the **real** OpenAI API still needs one run with
+  a real key. Everything up to the network boundary is now exercised against a
+  fake server, including the paths that were broken.

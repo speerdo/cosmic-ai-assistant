@@ -39,6 +39,22 @@ enum LockMode {
     CosmicDenyAll,
 }
 
+/// Where to start the retained tail of `history` so the result is a *valid*
+/// conversation, keeping at most `keep` messages.
+///
+/// A `role: "tool"` message is only meaningful as the answer to an assistant
+/// message that announced that `tool_call` id. Cutting the window so it opens
+/// on one leaves an orphan the chat-completions API rejects — so the cut
+/// point walks forward past any leading tool results. Trimming a few extra
+/// messages is free; poisoning every later turn is not.
+fn tail_start(history: &[serde_json::Value], keep: usize) -> usize {
+    let mut start = history.len().saturating_sub(keep);
+    while start < history.len() && history[start]["role"] == "tool" {
+        start += 1;
+    }
+    start
+}
+
 /// logind `LockedHint` probe over the system bus.
 struct LogindLock {
     conn: zbus::Connection,
@@ -166,6 +182,17 @@ impl Engine {
         tracing::debug!(?state, mode = ?self.lock_mode, "lock state refreshed");
     }
 
+    /// The policy gate this engine runs every tool call through.
+    ///
+    /// Exposed so the hold/confirm path can be driven end to end in tests
+    /// without an API key: a hold is normally parked by the reasoning loop,
+    /// which needs a model. The bug this enabled catching — `cosmo confirm`
+    /// never resolving anything — lived through a green gate suite precisely
+    /// because no test drove `Engine::handle` itself.
+    pub fn gate(&self) -> &Arc<Gate> {
+        &self.gate
+    }
+
     pub fn set_state(&self, state: State) {
         *self.state.lock().unwrap() = state;
         let _ = self.events.send(Event::State { state });
@@ -240,7 +267,7 @@ impl Engine {
         let (lock_ok, lock_detail) = match (self.lock_mode, self.gate.lock_state()) {
             (LockMode::LogindHint, LockState::Unlocked) => (
                 true,
-                "key present: logind LockedHint says unlocked".to_owned(),
+                "logind LockedHint says unlocked — screenshot/click/type available".to_owned(),
             ),
             (LockMode::LogindHint, LockState::Locked) => (
                 true,
@@ -252,9 +279,10 @@ impl Engine {
             ),
             (LockMode::CosmicDenyAll, _) => (
                 false,
-                "no lock-state source on COSMIC (findings §L) — sensitive \
-                 tools denied outright; safe, but screenshot/type stay \
-                 unavailable until upstream greeter sets LockedHint"
+                "no lock-state source on COSMIC (findings §L) — screenshot / \
+                 click / type / clipboard denied outright until the upstream \
+                 greeter sets LockedHint. run_in_terminal is unaffected: it \
+                 is governed by the command matcher, not by lock state"
                     .to_owned(),
             ),
         };
@@ -384,7 +412,7 @@ impl Engine {
         {
             let mut hist = self.history.lock().unwrap();
             *hist = history;
-            let tail_from = hist.len().saturating_sub(20);
+            let tail_from = tail_start(&hist, 20);
             hist.drain(0..tail_from);
         }
 
@@ -446,7 +474,23 @@ impl Engine {
 
     /// `cosmo confirm <token>` — executes the parked call locally (invariant
     /// #4: never a model round trip).
+    ///
+    /// The `begin_turn()` is load-bearing, not bookkeeping. Invariant #2 says
+    /// a confirmation only takes effect after a *genuinely new user turn*,
+    /// and the gate enforces it by refusing to resolve a hold parked in the
+    /// current turn. A `cosmo confirm <token>` is exactly such a new turn: a
+    /// separate, deliberate act by the user, out of band from the model, with
+    /// the token in hand. Without this line the counter still reads the turn
+    /// the hold was parked in, `confirm_token` returns `Unknown`, and **no
+    /// CLI confirmation can ever succeed** — which is what DoD §1.5's
+    /// `say "shut the machine down"` → `cosmo confirm` path did.
+    ///
+    /// What invariant #2 actually forbids — a model approving its own gated
+    /// call inside one response — is unaffected: that path is
+    /// [`Gate::same_response_verdict`], which escalates to Deny before
+    /// anything is ever parked.
     async fn confirm(&self, token: String) -> Response {
+        self.gate.begin_turn();
         let result = self.gate.confirm_token(&token);
         match result {
             ConfirmResult::Executed(parked) => {
@@ -458,15 +502,19 @@ impl Engine {
                     summary: summary.clone(),
                 });
                 self.set_state(State::Idle);
-                Response::Confirm(IpcConfirmOutcome::Executed {
-                    token: parked.token,
-                    summary,
-                })
+                Response::Confirm {
+                    outcome: IpcConfirmOutcome::Executed {
+                        token: parked.token,
+                        summary,
+                    },
+                }
             }
-            ConfirmResult::Unknown | ConfirmResult::NonePending => {
-                Response::Confirm(IpcConfirmOutcome::Unknown)
-            }
-            ConfirmResult::NotAConfirm => Response::Confirm(IpcConfirmOutcome::Unknown),
+            ConfirmResult::Unknown | ConfirmResult::NonePending => Response::Confirm {
+                outcome: IpcConfirmOutcome::Unknown,
+            },
+            ConfirmResult::NotAConfirm => Response::Confirm {
+                outcome: IpcConfirmOutcome::Unknown,
+            },
         }
     }
 
@@ -481,5 +529,51 @@ impl Engine {
             .execute(tool, args.clone())
             .instrument(tracing::info_span!("tool", tool = %tool, confirmed = true))
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tail_start;
+    use serde_json::json;
+
+    fn assistant_with_call(id: &str) -> serde_json::Value {
+        json!({"role": "assistant", "tool_calls": [{"id": id}]})
+    }
+    fn tool_result(id: &str) -> serde_json::Value {
+        json!({"role": "tool", "tool_call_id": id, "content": "ok"})
+    }
+
+    /// Truncating the retained history must never open the window on a
+    /// `role: "tool"` message: it answers an assistant `tool_call` that the
+    /// cut just discarded, and the API rejects the orphan — turning history
+    /// compaction into a delayed, hard-to-attribute 400.
+    #[test]
+    fn tail_never_starts_on_an_orphan_tool_result() {
+        let history = vec![
+            json!({"role": "user", "content": "one"}),
+            assistant_with_call("a"),
+            tool_result("a"),
+            tool_result("a2"),
+            json!({"role": "assistant", "content": "done"}),
+        ];
+        // Keeping 3 would cut at index 2, a tool result. Walk forward past
+        // every leading tool result instead.
+        let start = tail_start(&history, 3);
+        assert_eq!(start, 4);
+        assert_eq!(history[start]["role"], "assistant");
+
+        // A cut that already lands on a valid boundary is left alone.
+        assert_eq!(tail_start(&history, 4), 1);
+        // Keeping more than there is keeps everything.
+        assert_eq!(tail_start(&history, 99), 0);
+    }
+
+    /// All-tool-results is degenerate but must not index out of bounds.
+    #[test]
+    fn tail_start_handles_all_tool_results() {
+        let history = vec![tool_result("a"), tool_result("b")];
+        assert_eq!(tail_start(&history, 1), history.len());
+        assert_eq!(tail_start(&[], 5), 0);
     }
 }

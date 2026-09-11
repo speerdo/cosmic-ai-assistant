@@ -114,12 +114,43 @@ impl Reasoner {
                         .as_array()
                         .cloned()
                         .unwrap_or_default();
+
+                    // A hold ends the turn, but not before every tool_call id
+                    // in this response has a result. See `tool_result`.
+                    let mut held: Option<ToolOutcome> = None;
+
                     for call in calls {
                         let call_id = call["id"].as_str().unwrap_or("").to_string();
                         let name = call["function"]["name"].as_str().unwrap_or("").to_string();
                         let args_raw = call["function"]["arguments"].as_str().unwrap_or("{}");
-                        let args: Value = serde_json::from_str(args_raw)
-                            .map_err(|e| ReasonError::BadResponse(format!("tool args: {e}")))?;
+
+                        // Once something is parked, nothing later in the same
+                        // response runs — but it still needs a result.
+                        if held.is_some() {
+                            history.push(tool_result(
+                                &call_id,
+                                "NOT RUN: an earlier call in this response is awaiting local \
+                                 confirmation.",
+                            ));
+                            continue;
+                        }
+
+                        let args: Value = match serde_json::from_str(args_raw) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                // Feed the parse failure back as this call's
+                                // result rather than aborting the turn: an
+                                // early return here leaves the assistant's
+                                // tool_calls message in `history` with no
+                                // matching result, and the *next* request is
+                                // then malformed.
+                                history.push(tool_result(
+                                    &call_id,
+                                    &format!("ERROR: could not parse tool arguments: {e}"),
+                                ));
+                                continue;
+                            }
+                        };
 
                         // Gate on EVERY tool call (plan §1.4: gate interposed
                         // on every tool call, MCP and native alike).
@@ -135,14 +166,27 @@ impl Reasoner {
                         };
                         match verdict {
                             Verdict::Deny => {
-                                history.push(json!({"role": "tool", "tool_call_id": call_id, "content": "DENIED: this action is not permitted under any confirmation."}));
+                                history.push(tool_result(
+                                    &call_id,
+                                    "DENIED: this action is not permitted under any confirmation.",
+                                ));
                             }
                             Verdict::Hold => {
                                 let tool_span =
                                     tracing::info_span!("tool", tool = %name, held = true);
                                 let _t = tool_span.enter();
                                 let token = gate.park(&name, args.clone(), name.to_string());
-                                return Ok(ToolOutcome::Held { token, tool: name });
+                                history.push(tool_result(
+                                    &call_id,
+                                    &format!(
+                                        "HELD: parked for local confirmation (token {token}). \
+                                         It has not run."
+                                    ),
+                                ));
+                                held = Some(ToolOutcome::Held {
+                                    token,
+                                    tool: name.clone(),
+                                });
                             }
                             Verdict::Allow => {
                                 let result = {
@@ -150,10 +194,14 @@ impl Reasoner {
                                     let _t = tool_span.enter();
                                     host.execute(&name, args).await
                                 };
-                                history.push(json!({"role": "tool", "tool_call_id": call_id, "content": result}));
+                                history.push(tool_result(&call_id, &result));
                                 // Loop back to the model with the result.
                             }
                         }
+                    }
+
+                    if let Some(outcome) = held {
+                        return Ok(outcome);
                     }
                 }
                 "stop" => {
@@ -214,6 +262,18 @@ impl Reasoner {
         }
         Ok(value)
     }
+}
+
+/// A `role: "tool"` history entry.
+///
+/// **Every** `tool_call` id in an assistant message needs exactly one of
+/// these before the next request, whatever the gate decided and whether or
+/// not the call ran. The chat-completions API rejects a conversation in which
+/// an assistant message announces a tool call that no tool message answers,
+/// so skipping one — by returning early on a hold, say — poisons the history
+/// for every subsequent turn, not just this one.
+fn tool_result(call_id: &str, content: &str) -> Value {
+    json!({"role": "tool", "tool_call_id": call_id, "content": content})
 }
 
 fn parse_header(headers: &reqwest::header::HeaderMap, name: &str) -> Option<String> {

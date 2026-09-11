@@ -10,7 +10,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-tokio = { workspace = true, features = ["process", "time", "fs", "sync", "macros", "io-util"] }
+tokio = { workspace = true, features = ["process", "time", "fs", "sync", "macros", "io-util", "rt"] }
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
@@ -18,6 +18,7 @@ thiserror.workspace = true
 tracing.workspace = true
 cosmo-config.workspace = true
 cosmo-gate.workspace = true
+wl-clipboard-rs.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }

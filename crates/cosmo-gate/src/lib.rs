@@ -45,10 +45,29 @@ pub enum Verdict {
 /// MCP `ToolAnnotations`, flattened to what the gate needs. Mirrors the
 /// protocol's hints; the agent states plainly that annotations are hints and
 /// **not** an authorization system — cosmo is that authorization system.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Annotations {
     pub read_only: bool,
     pub destructive: bool,
+}
+
+/// **Fail-closed default.** An unannotated tool is treated as destructive
+/// (⇒ [`Verdict::Hold`]), never read-only. Two reasons this must not be
+/// `derive(Default)`:
+///
+/// 1. The MCP specification defines `destructiveHint` as defaulting to
+///    **`true`** when absent — a derived `false` silently inverts the
+///    protocol's own default.
+/// 2. `Annotations::default()` is what callers reach for when a tool is
+///    *unknown* (see `cosmo-daemon::toolhost`). An authorization system that
+///    rounds "I don't know what this is" towards Allow is not one.
+impl Default for Annotations {
+    fn default() -> Self {
+        Self {
+            read_only: false,
+            destructive: true,
+        }
+    }
 }
 
 /// The policy gate. Stateless verdicts + the shared hold queue.
@@ -105,6 +124,13 @@ impl LockState {
 ///
 /// Adding a string-bearing tool here without a matcher arm in
 /// [`Gate::verdict_for_call`] makes the test fail — that is the assertion.
+/// `cosmo_type_into_terminal` is listed here **before** the tool exists.
+/// That is deliberate: `cosmo-type` can already inject arbitrary text into a
+/// focused terminal, and the phase at which it becomes a model-callable tool
+/// (phase 4, the reflex path) is the phase least likely to remember to wire a
+/// matcher. Registering the name here first means the tool cannot be added
+/// without one — `string_tools_all_route_through_matcher` fails until
+/// [`Gate::verdict_for_call`] grows the arm.
 pub fn is_string_bearing(tool: &str) -> bool {
     matches!(tool, "run_in_terminal" | "cosmo_type_into_terminal")
 }
@@ -113,6 +139,33 @@ pub fn is_string_bearing(tool: &str) -> bool {
 /// unknown (plan §1.2, invariant #10). Read-only window *inspection* tools
 /// (`list_windows`, `get_accessibility_tree`) stay allowed: they read
 /// structure, not user input, and the agent needs them to report state.
+///
+/// The membership rule is exactly invariant #10's: **a tool belongs here if
+/// it observes or drives the user's own UI surface** — the screen, the
+/// pointer, the focused window's keyboard, the shared clipboard, the
+/// accessibility tree. Those are the things a locked screen is supposed to
+/// hide from whoever is standing at the machine.
+///
+/// `run_in_terminal` is deliberately **not** here, and the distinction is
+/// load-bearing rather than a relaxation:
+///
+/// - It writes into cosmo's *own* dedicated tmux server (`tmux -S cosmo`),
+///   not into any window the user has on screen; it neither reads the
+///   display nor injects into a focused client.
+/// - Its real control is Surface B — every command string it carries is run
+///   through [`Verdict::command`] — which is a *stronger* check than lock
+///   state, and one that applies whether or not the screen is locked.
+/// - Including it made phase 1's headline capability
+///   (`cosmo say "open the terminal and run htop"`) permanently unreachable
+///   on COSMIC, where findings §L pins lock state to `Unknown` forever. A
+///   rule that disables the product's main verb on its target desktop, for a
+///   surface the invariant never named, is a bug and not extra safety.
+///
+/// Residual risk, recorded rather than hidden: from phase 3 on, a microphone
+/// on a locked machine could reach `run_in_terminal` through the model. That
+/// is a *microphone* gate (half-duplex/wake-word, phases 3 and 7), not a
+/// tool gate, and it must be solved there — see `docs/phase1-findings.md`
+/// §L.
 pub fn is_lock_sensitive(tool: &str) -> bool {
     matches!(
         tool,
@@ -126,7 +179,6 @@ pub fn is_lock_sensitive(tool: &str) -> bool {
             | "drag"
             | "clipboard_get"
             | "clipboard_set"
-            | "run_in_terminal"
             | "set_value"
             | "perform_action"
     )
@@ -390,22 +442,71 @@ struct HoldQueueInner {
     map: HashMap<String, ParkedCall>,
 }
 
+/// How deep the matcher will follow nested commands before giving up.
+/// Real desktop commands nest one or two levels (`sh -c "timeout 5 foo"`);
+/// anything deeper is either generated or evasive, and is denied.
+const MAX_NEST_DEPTH: usize = 8;
+
 /// Verdict for a shell command string (the `run_in_terminal` payload).
 ///
 /// Analysis is segment-based: the string is split on shell separators
 /// (`;`, `&&`, `||`, `|`, newlines) and each segment's tokens are checked
 /// against the deny/hold lists. Any Deny segment denies the whole command;
 /// otherwise any Hold segment holds it.
+///
+/// # Nesting (why this is not just a first-token check)
+///
+/// A matcher that classifies only each segment's leading program is trivially
+/// laundered, and the laundering re-creates exactly the capability invariant
+/// #2 withholds: `run_in_terminal` carrying `bash -c "rm -rf ~"` *is*
+/// `run_shell`. So three nesting forms are unwrapped before matching:
+///
+/// - **Command substitution** — `echo $(rm -rf ~)`, backticks: the inner text
+///   is a command in its own right and is matched as one.
+/// - **Shell interpreters** — `sh`/`bash`/`zsh`/… with `-c`: the payload is
+///   matched as a command.
+/// - **Wrapper programs** — `env`, `nohup`, `xargs`, `timeout`, `find -exec`,
+///   `eval`, …: the wrapper is skipped and the command it runs is matched.
+///
+/// General-purpose interpreters (`python -c`, `perl -e`, `node -e`) are a
+/// different case: their payload is not shell and cannot be tokenised
+/// meaningfully. Those [`Verdict::Hold`] — the gate's designed middle answer
+/// for "this might be anything" — rather than being waved through.
+///
+/// This is a mitigation, not a parser. A token matcher over an untyped string
+/// cannot be made complete, and pretending otherwise is how the first version
+/// of this went wrong. What makes it sufficient here is that the strings come
+/// from cosmo's own model behind a prompt, not from an adversary with a
+/// keyboard: the matcher's job is to make the blueprint's deny corpus
+/// unreachable through ordinary rephrasing, and to round the unrecognised
+/// towards Hold.
 impl Verdict {
     pub fn command(cmd: &str) -> Verdict {
+        Self::command_nested(cmd, 0)
+    }
+
+    fn command_nested(cmd: &str, depth: usize) -> Verdict {
+        if depth > MAX_NEST_DEPTH {
+            return Verdict::Deny;
+        }
+        let mut overall = Verdict::Allow;
+
+        // Command substitution carries a command of its own.
+        for inner in substitutions(cmd) {
+            match Self::command_nested(&inner, depth + 1) {
+                Verdict::Deny => return Verdict::Deny,
+                Verdict::Hold => overall = Verdict::Hold,
+                Verdict::Allow => {}
+            }
+        }
+
         let segments = split_segments(cmd);
         // curl|wget piped into a shell: deny across the pipeline.
         if fetch_piped_to_shell(&segments) {
             return Verdict::Deny;
         }
-        let mut overall = Verdict::Allow;
         for seg in &segments {
-            match segment_verdict(seg) {
+            match segment_verdict_nested(seg, depth) {
                 Verdict::Deny => return Verdict::Deny,
                 Verdict::Hold => overall = Verdict::Hold,
                 Verdict::Allow => {}
@@ -413,6 +514,45 @@ impl Verdict {
         }
         overall
     }
+}
+
+/// Bodies of every `$(…)` and `` `…` `` substitution in `cmd`, outermost
+/// first. `$(…)` nesting is tracked so `$(echo $(rm -rf ~))` yields the whole
+/// inner command, which recursion then re-scans.
+fn substitutions(cmd: &str) -> Vec<String> {
+    let chars: Vec<char> = cmd.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '$' && i + 1 < chars.len() && chars[i + 1] == '(' {
+            let mut depth = 1usize;
+            let start = i + 2;
+            let mut j = start;
+            while j < chars.len() && depth > 0 {
+                match chars[j] {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+                j += 1;
+            }
+            if depth == 0 {
+                out.push(chars[start..j - 1].iter().collect());
+                i = j;
+                continue;
+            }
+        }
+        if chars[i] == '`'
+            && let Some(off) = chars[i + 1..].iter().position(|c| *c == '`')
+        {
+            let end = i + 1 + off;
+            out.push(chars[i + 1..end].iter().collect());
+            i = end + 1;
+            continue;
+        }
+        i += 1;
+    }
+    out
 }
 
 /// Split on command separators, preserving each segment's tokens.
@@ -431,11 +571,124 @@ fn split_segments(cmd: &str) -> Vec<Vec<String>> {
 
 /// Whitespace tokenizer with quote stripping (best effort — the goal is that
 /// quoting cannot hide a denied word from the lists, so we keep the content).
+///
+/// Quotes are removed from *anywhere* in the token, not just trimmed from the
+/// ends: `r''m -rf ~` and `"rm"` must both reduce to `rm`. Trimming alone let
+/// a quote pair in the middle of a word hide it from every list.
 fn tokenize(seg: &str) -> Vec<String> {
     seg.split_whitespace()
-        .map(|w| w.trim_matches(['\'', '"']).to_ascii_lowercase())
+        .map(|w| {
+            w.chars()
+                .filter(|c| !matches!(c, '\'' | '"'))
+                .collect::<String>()
+                .to_ascii_lowercase()
+        })
         .filter(|w| !w.is_empty())
         .collect()
+}
+
+/// Basename of a program token: `/usr/bin/sudo` ⇒ `sudo`.
+fn basename(prog: &str) -> &str {
+    prog.rsplit('/').next().unwrap_or(prog)
+}
+
+/// Shell interpreters — their `-c` payload is another command.
+fn is_shell(base: &str) -> bool {
+    matches!(
+        base,
+        "sh" | "bash" | "zsh" | "dash" | "ksh" | "fish" | "csh" | "tcsh" | "ash" | "busybox"
+    )
+}
+
+/// Programs that exist to run *another* program named in their arguments.
+/// Skipping them and matching what they run is the whole point.
+fn is_wrapper(base: &str) -> bool {
+    matches!(
+        base,
+        "env"
+            | "nohup"
+            | "setsid"
+            | "eval"
+            | "exec"
+            | "command"
+            | "builtin"
+            | "time"
+            | "timeout"
+            | "nice"
+            | "ionice"
+            | "stdbuf"
+            | "xargs"
+            | "watch"
+            | "chrt"
+            | "taskset"
+            | "unbuffer"
+            | "script"
+    )
+}
+
+/// General-purpose interpreters whose inline-code flag takes a program in a
+/// language this matcher cannot read.
+fn is_code_interpreter(base: &str) -> bool {
+    matches!(
+        base,
+        "python" | "python2" | "python3" | "perl" | "ruby" | "node" | "nodejs" | "php" | "lua"
+    )
+}
+
+/// The command nested inside a wrapper/interpreter invocation, if any.
+///
+/// `seg` starts at the program token (env assignments already skipped).
+fn nested_command(seg: &[String]) -> Option<&[String]> {
+    let base = basename(seg.first()?);
+
+    // `find … -exec CMD …` / `-execdir` / `-ok` / `-okdir`.
+    if let Some(pos) = seg
+        .iter()
+        .position(|t| matches!(t.as_str(), "-exec" | "-execdir" | "-ok" | "-okdir"))
+    {
+        let nested = &seg[pos + 1..];
+        if !nested.is_empty() {
+            return Some(nested);
+        }
+    }
+
+    // Shell interpreter: everything after the `-c` flag. Combined short
+    // flags count (`bash -lc '…'`), long `--command` too.
+    if is_shell(base) {
+        let pos = seg.iter().position(|t| {
+            t == "--command" || (t.starts_with('-') && !t.starts_with("--") && t.contains('c'))
+        })?;
+        let nested = &seg[pos + 1..];
+        return (!nested.is_empty()).then_some(nested);
+    }
+
+    // Plain wrapper: skip it and its own options/assignments/durations, and
+    // match whatever is left.
+    if is_wrapper(base) {
+        let mut i = 1;
+        while i < seg.len() && is_wrapper_option(&seg[i]) {
+            i += 1;
+        }
+        let nested = &seg[i..];
+        return (!nested.is_empty()).then_some(nested);
+    }
+
+    None
+}
+
+/// An argument belonging to the wrapper itself rather than the command it
+/// runs: a flag, an `env`-style assignment, or a bare duration/number
+/// (`timeout 5 …`, `nice -n 10 …`).
+fn is_wrapper_option(tok: &str) -> bool {
+    if tok == "--" {
+        return true;
+    }
+    tok.starts_with('-')
+        || tok.contains('=')
+        || (tok.chars().next().is_some_and(|c| c.is_ascii_digit())
+            && tok
+                .chars()
+                .all(|c| c.is_ascii_digit() || matches!(c, '.' | 's' | 'm' | 'h' | 'd')))
 }
 
 /// `curl … | sh`, `wget -O- … | bash` — anything fetched piped into a shell.
@@ -443,7 +696,7 @@ fn fetch_piped_to_shell(segments: &[Vec<String>]) -> bool {
     let mut saw_fetch = false;
     for seg in segments {
         let Some(prog) = seg.first() else { continue };
-        let base = prog.rsplit('/').next().unwrap_or(prog);
+        let base = basename(prog);
         if matches!(base, "curl" | "wget" | "fetch") {
             saw_fetch = true;
         }
@@ -454,7 +707,10 @@ fn fetch_piped_to_shell(segments: &[Vec<String>]) -> bool {
     false
 }
 
-fn segment_verdict(seg: &[String]) -> Verdict {
+fn segment_verdict_nested(seg: &[String], depth: usize) -> Verdict {
+    if depth > MAX_NEST_DEPTH {
+        return Verdict::Deny;
+    }
     // Skip env assignments: `FOO=1 rm -rf /` is still rm.
     let mut idx = 0;
     while idx < seg.len()
@@ -467,14 +723,33 @@ fn segment_verdict(seg: &[String]) -> Verdict {
     let Some(prog) = seg.get(idx) else {
         return Verdict::Allow;
     };
-    let base = prog.rsplit('/').next().unwrap_or(prog);
+    let base = basename(prog);
 
     // sudo/pkexec elevate — deny wherever they appear.
     for tok in &seg[idx..] {
-        let b = tok.rsplit('/').next().unwrap_or(tok);
-        if b == "sudo" || b == "pkexec" {
+        let b = basename(tok);
+        if b == "sudo" || b == "pkexec" || b == "doas" {
             return Verdict::Deny;
         }
+    }
+
+    // An interpreter given inline code in a language this matcher cannot
+    // read: hold rather than guess. `python3 -c "os.system(…)"` is not
+    // something to wave through, and not something to pretend to parse.
+    if is_code_interpreter(base)
+        && seg[idx..].iter().any(|t| {
+            matches!(t.as_str(), "-c" | "-e" | "-E" | "--eval" | "--command")
+                || (t.starts_with('-') && !t.starts_with("--") && t.contains('e'))
+        })
+    {
+        return Verdict::Hold;
+    }
+
+    // Wrapper or shell interpreter: the verdict belongs to the command it
+    // runs, not to the wrapper (`bash -c "rm -rf ~"`, `env rm -rf ~`,
+    // `xargs rm -rf`, `find … -exec rm -rf {} +`).
+    if let Some(nested) = nested_command(&seg[idx..]) {
+        return segment_verdict_nested(nested, depth + 1);
     }
 
     match base {
@@ -783,6 +1058,160 @@ mod tests {
         assert_eq!(Verdict::command("FOO=1 rm -rf /"), Verdict::Deny);
         assert_eq!(Verdict::command("/usr/bin/sudo id"), Verdict::Deny);
         assert_eq!(Verdict::command("/usr/sbin/reboot"), Verdict::Hold);
+    }
+
+    /// A matcher that classifies only each segment's leading program is
+    /// laundered by any wrapper, and the laundering re-creates the shell that
+    /// invariant #2 withholds: `run_in_terminal` carrying `bash -c "rm -rf ~"`
+    /// **is** `run_shell`. Every form below reached `Allow` before nesting
+    /// was unwrapped.
+    #[test]
+    fn nesting_cannot_launder_the_deny_list() {
+        for cmd in [
+            // shell interpreters
+            "bash -c \"rm -rf ~\"",
+            "sh -c 'rm -rf /home/adam'",
+            "/bin/bash -c 'dd if=/dev/zero of=/dev/sda'",
+            "bash -lc 'rm -rf ~'",
+            "zsh -c 'mkfs.ext4 /dev/sda1'",
+            "sh -c 'sudo reboot'",
+            // wrapper programs
+            "env rm -rf ~",
+            "env FOO=1 rm -rf ~",
+            "nohup rm -rf ~",
+            "setsid rm -rf ~",
+            "eval rm -rf ~",
+            "exec rm -rf ~",
+            "xargs rm -rf",
+            "timeout 5 rm -rf ~",
+            "nice -n 10 rm -rf ~",
+            "find . -name x -exec rm -rf {} +",
+            // command substitution
+            "echo $(rm -rf ~)",
+            "`rm -rf ~`",
+            "echo $(echo $(rm -rf ~))",
+            "echo `git push origin main`",
+            // quote-splitting inside a token
+            "r''m -rf ~",
+            "\"rm\" -rf ~",
+            // doas alongside sudo/pkexec
+            "doas rm file",
+        ] {
+            assert_eq!(Verdict::command(cmd), Verdict::Deny, "`{cmd}` must deny");
+        }
+    }
+
+    /// Nesting preserves Hold as well as Deny — a wrapped package install is
+    /// still a package install.
+    #[test]
+    fn nesting_preserves_hold() {
+        for cmd in [
+            "bash -c 'apt install htop'",
+            "timeout 5 reboot",
+            "env systemctl poweroff",
+            "nohup shutdown -h now",
+        ] {
+            assert_eq!(Verdict::command(cmd), Verdict::Hold, "`{cmd}` should hold");
+        }
+    }
+
+    /// Inline code in a language the matcher cannot read is held, not waved
+    /// through and not blanket-denied.
+    #[test]
+    fn opaque_interpreter_payloads_hold() {
+        for cmd in [
+            "python3 -c \"import os; os.system('rm -rf ~')\"",
+            "python -c 'print(1)'",
+            "perl -e 'unlink glob \"*\"'",
+            "node -e 'process.exit()'",
+            "ruby -e 'puts 1'",
+        ] {
+            assert_eq!(Verdict::command(cmd), Verdict::Hold, "`{cmd}` should hold");
+        }
+        // Running a *script* is not inline code; ordinary use stays Allow.
+        assert_eq!(Verdict::command("python3 script.py"), Verdict::Allow);
+        assert_eq!(Verdict::command("node server.js"), Verdict::Allow);
+    }
+
+    /// Unwrapping must not turn ordinary commands into false positives —
+    /// an over-eager matcher that holds `cargo build` is its own failure.
+    #[test]
+    fn nesting_does_not_over_match() {
+        for cmd in [
+            "timeout 5 htop",
+            "env FOO=1 cargo test",
+            "watch df -h",
+            "find . -name '*.rs'",
+            "bash",
+            "sh -c 'ls -la'",
+            "xargs grep foo",
+            "nice -n 10 cargo build",
+            "echo $(date)",
+            "nohup cargo build",
+        ] {
+            assert_eq!(
+                Verdict::command(cmd),
+                Verdict::Allow,
+                "`{cmd}` should allow"
+            );
+        }
+    }
+
+    /// Pathological nesting is not a legitimate desktop command.
+    #[test]
+    fn runaway_nesting_fails_closed() {
+        let mut cmd = "htop".to_string();
+        for _ in 0..12 {
+            cmd = format!("sh -c {cmd}");
+        }
+        assert_eq!(Verdict::command(&cmd), Verdict::Deny);
+    }
+
+    /// The fail-closed default (MCP's own `destructiveHint` default is
+    /// `true`): an unannotated or unknown tool holds, it does not run.
+    #[test]
+    fn unannotated_tool_holds() {
+        let gate = Gate::new();
+        gate.set_lock_state(LockState::Unlocked);
+        let unknown = Annotations::default();
+        assert!(unknown.destructive, "default must be destructive");
+        assert!(!unknown.read_only, "default must not be read-only");
+        assert_eq!(
+            gate.verdict_for_call("some_new_agent_tool", &Value::Null, &unknown),
+            Verdict::Hold
+        );
+    }
+
+    /// `run_in_terminal` is governed by Surface B, not by lock state — it
+    /// writes to cosmo's own tmux server, never to the user's screen. Keeping
+    /// it lock-sensitive made phase 1's headline verb permanently unreachable
+    /// on COSMIC, where lock state is pinned `Unknown` (findings §L).
+    #[test]
+    fn run_in_terminal_is_not_lock_gated() {
+        assert!(!is_lock_sensitive("run_in_terminal"));
+        let gate = Gate::new(); // lock state: Unknown, as on COSMIC
+        assert_eq!(gate.lock_state(), LockState::Unknown);
+        let args = serde_json::json!({"command": "htop"});
+        assert_eq!(
+            gate.verdict_for_call("run_in_terminal", &args, &Annotations::default()),
+            Verdict::Allow,
+            "the phase-1 DoD verb must work on COSMIC"
+        );
+        // Surface B still applies, lock state or not.
+        let bad = serde_json::json!({"command": "bash -c 'rm -rf ~'"});
+        assert_eq!(
+            gate.verdict_for_call("run_in_terminal", &bad, &Annotations::default()),
+            Verdict::Deny
+        );
+        // The UI-facing tools invariant #10 actually names stay fail-closed.
+        for tool in ["screenshot", "click", "type_text", "clipboard_get"] {
+            assert!(is_lock_sensitive(tool));
+            assert_eq!(
+                gate.verdict_for_call(tool, &Value::Null, &Annotations::default()),
+                Verdict::Deny,
+                "{tool} must fail closed on unknown lock state"
+            );
+        }
     }
 
     // ---- invariant #10: lock-screen fail-closed ----

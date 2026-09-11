@@ -20,7 +20,7 @@
 //! - client-side "not running" vs "refused" are distinct (cosmo-ipc exit
 //!   codes 3 and 4)
 
-mod engine;
+pub mod engine;
 pub mod toolhost;
 
 use std::os::unix::fs::PermissionsExt;

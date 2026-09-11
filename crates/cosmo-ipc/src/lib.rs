@@ -120,11 +120,32 @@ pub enum DaemonMessage {
 pub enum Response {
     Status(StatusInfo),
     Doctor(DoctorReport),
-    Said { result: TurnResult },
-    Confirm(ConfirmOutcome),
-    Cancelled { ok: bool, reason: Option<String> },
-    Toggled { paused: bool },
-    Error { message: String },
+    Said {
+        result: TurnResult,
+    },
+    /// Named field, not a newtype: `Response` and [`ConfirmOutcome`] are both
+    /// internally tagged on `type`, so a newtype variant would serialise both
+    /// tags into the *same* map — `{"type":"confirm","type":"executed",…}` —
+    /// which round-trips as `duplicate field \`type\``. The action still
+    /// executes; only the reply is unreadable, so the failure shows up as a
+    /// client-side protocol error after the side effect has happened.
+    ///
+    /// Every enum-valued payload in this protocol sits under a named field
+    /// for exactly this reason (cf. `Said { result }`). That is structural,
+    /// where "remember to pick distinct tag names" is not.
+    Confirm {
+        outcome: ConfirmOutcome,
+    },
+    Cancelled {
+        ok: bool,
+        reason: Option<String>,
+    },
+    Toggled {
+        paused: bool,
+    },
+    Error {
+        message: String,
+    },
 }
 
 /// One entry of the pending-hold list.

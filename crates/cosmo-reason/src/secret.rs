@@ -78,9 +78,14 @@ impl KeySource for DefaultKeySource {
         // daemon calls this from its first reasoning turn; a locked or
         // empty keyring is a *retry on next use*, not a startup failure
         // (plan §1.4).
+        // `keyring_lookup` yields a [`ReasonKind`], whose Display is the
+        // user-facing fix. Mapping an `oo7::Error` here instead renders
+        // oo7's own Display and produces nonsense like *"DBus error The
+        // collection 'no key stored — run `cosmo auth login`' doesn't
+        // exists"* — the message smuggled through a D-Bus error's
+        // collection-name field and back out again.
         match tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::try_current()
-                .map(|h| h.block_on(async { keyring_lookup().await.map_err(Box::new) }))
+            tokio::runtime::Handle::try_current().map(|h| h.block_on(keyring_lookup()))
         }) {
             Ok(Ok(key)) => {
                 tracing::debug!("api key source: keyring");
@@ -97,7 +102,7 @@ impl KeySource for DefaultKeySource {
 /// Resolve through the Secret Service (async path; call from the daemon's
 /// first reasoning turn).
 pub async fn resolve_keyring() -> Result<SecretKey, ReasonKind> {
-    keyring_lookup().await.map_err(|e| ReasonKind::from_oo7(&e))
+    keyring_lookup().await
 }
 
 /// A structured reason the key is unavailable — maps 1:1 onto the doctor's
@@ -113,6 +118,13 @@ pub enum ReasonKind {
 }
 
 impl ReasonKind {
+    /// Classify a real error from the Secret Service.
+    ///
+    /// Only genuine oo7 errors reach this. Absence and lockedness are
+    /// detected directly in [`keyring_lookup`] and returned as their own
+    /// variants — fabricating an `oo7::Error` to carry a message means the
+    /// message comes back out through oo7's `Display`, wrapped in whatever
+    /// that variant's sentence happens to be.
     fn from_oo7(e: &oo7::Error) -> Self {
         match e {
             oo7::Error::DBus(oo7::dbus::Error::Service(oo7::dbus::ServiceError::IsLocked(_))) => {
@@ -137,23 +149,28 @@ impl std::fmt::Display for ReasonKind {
 }
 
 /// Look the key up in the Secret Service by the decided attribute set.
-async fn keyring_lookup() -> Result<SecretKey, oo7::Error> {
-    let keyring = Keyring::new().await?;
-    if keyring.is_locked().await? {
-        // Locked ≠ crash: surface it, let the daemon retry next turn.
-        return Err(oo7::Error::DBus(oo7::dbus::Error::Service(
-            oo7::dbus::ServiceError::IsLocked("collection is locked".into()),
-        )));
+///
+/// Returns [`ReasonKind`] rather than `oo7::Error` so that the three states
+/// plan §1.4 requires — locked / missing / broken — are *the* return type,
+/// and every caller renders the same actionable sentence.
+async fn keyring_lookup() -> Result<SecretKey, ReasonKind> {
+    let keyring = Keyring::new().await.map_err(|e| ReasonKind::from_oo7(&e))?;
+    // Locked ≠ crash: surface it, let the daemon retry next turn.
+    if keyring
+        .is_locked()
+        .await
+        .map_err(|e| ReasonKind::from_oo7(&e))?
+    {
+        return Err(ReasonKind::KeyringLocked);
     }
     let items = keyring
         .search_items(&[("application", "cosmo"), ("provider", "openai")])
-        .await?;
+        .await
+        .map_err(|e| ReasonKind::from_oo7(&e))?;
     let Some(item) = items.into_iter().next() else {
-        return Err(oo7::Error::DBus(oo7::dbus::Error::NotFound(
-            "no key stored — run `cosmo auth login`".into(),
-        )));
+        return Err(ReasonKind::Missing);
     };
-    let secret = item.secret().await?;
+    let secret = item.secret().await.map_err(|e| ReasonKind::from_oo7(&e))?;
     let text = String::from_utf8_lossy(secret.as_bytes()).to_string();
     Ok(SecretKey { inner: text })
 }
@@ -234,6 +251,33 @@ mod tests {
             },
         };
         assert!(!format!("{h:?}").contains(KEY));
+    }
+
+    /// Plan §1.4 requires three *actionable* states. The daemon's `say`
+    /// path renders `ReasonKind` directly, so its Display is the message a
+    /// user sees on a keyless machine — it must name the fix, not leak a
+    /// transport error. This previously reached the CLI as
+    /// *"DBus error The collection 'no key stored — run `cosmo auth login`'
+    /// doesn't exists"*: the message had been stuffed into an `oo7` error's
+    /// collection-name field and rendered back out through oo7's Display.
+    #[test]
+    fn key_failures_render_their_fix() {
+        let missing = ReasonKind::Missing.to_string();
+        assert_eq!(missing, "no key stored — run `cosmo auth login`");
+        assert!(
+            !missing.contains("DBus"),
+            "transport detail leaked: {missing}"
+        );
+        assert!(!missing.contains("collection"));
+
+        let locked = ReasonKind::KeyringLocked.to_string();
+        assert_eq!(locked, "keyring locked — unlock and retry");
+        assert!(!locked.contains("DBus"));
+
+        // A genuine transport failure keeps its detail *and* names the fix.
+        let failed = ReasonKind::Failed("connection refused".into()).to_string();
+        assert!(failed.contains("connection refused"));
+        assert!(failed.contains("cosmo auth login"));
     }
 
     #[test]

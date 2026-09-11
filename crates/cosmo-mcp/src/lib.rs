@@ -17,6 +17,7 @@ use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult, ClientCapabilities, JsonObject, Tool};
 use rmcp::service::{RoleClient, RunningService};
 use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
+use serde_json::Value;
 
 use cosmo_config::Config;
 
@@ -29,6 +30,11 @@ pub struct RegisteredTool {
     /// Gate inputs.
     pub read_only: bool,
     pub destructive: bool,
+    /// The tool's JSON-Schema parameters, exactly as the agent advertised
+    /// them. Passed through to the model unchanged: dropping it and sending
+    /// a bare `{"type": "object"}` tells the model that `click` exists but
+    /// nothing about `x`/`y`, so it calls it with invented arguments.
+    pub input_schema: Value,
     /// Where it executes.
     pub origin: ToolOrigin,
 }
@@ -151,6 +157,7 @@ impl AgentConnection {
                     description: tool.description.unwrap_or_default().to_string(),
                     read_only,
                     destructive,
+                    input_schema: Value::Object((*tool.input_schema).clone()),
                     origin: ToolOrigin::Agent,
                 },
             );
@@ -169,16 +176,29 @@ impl AgentConnection {
     }
 }
 
-/// Extract gate-relevant annotations, defaulting conservatively:
-/// missing hints read as `read_only=false, destructive=true` — an unknown
-/// tool is held, not allowed.
+/// Extract gate-relevant annotations, defaulting conservatively: missing
+/// hints read as `read_only=false, destructive=true` — an unannotated tool is
+/// held, not allowed.
+///
+/// The defaults are the whole point of this function and they must round
+/// towards Hold:
+///
+/// - `destructiveHint` is defined by the MCP specification as defaulting to
+///   **`true`** when absent. `unwrap_or(false)` inverts the protocol's own
+///   default, and does it silently.
+/// - `readOnlyHint` defaults to `false` — absence is not a claim of safety.
+///
+/// This is one `unwrap_or` away from being the most permissive line in the
+/// codebase: every agent tool that ships without annotations would map to
+/// [`cosmo_gate::Verdict::Allow`]. `unannotated_tool_defaults_to_destructive`
+/// pins it.
 fn annotations_of(tool: &Tool) -> (bool, bool) {
     match &tool.annotations {
         Some(a) => (
             a.read_only_hint.unwrap_or(false),
-            a.destructive_hint.unwrap_or(false),
+            a.destructive_hint.unwrap_or(true),
         ),
-        None => (false, false),
+        None => (false, true),
     }
 }
 
@@ -205,16 +225,33 @@ fn client_capabilities() -> ClientCapabilities {
 mod tests {
     use super::*;
 
+    /// A tool that ships no annotations at all must map to
+    /// `destructive = true` ⇒ [`cosmo_gate::Verdict::Hold`]. The MCP
+    /// specification defines `destructiveHint` as defaulting to `true`, and
+    /// an authorization system has to round an unknown tool towards Hold
+    /// regardless. This previously asserted `!destr` — the assertion encoded
+    /// the bug, so every unannotated agent tool was silently allowed.
     #[test]
-    fn run_shell_never_registers() {
-        // annotations default conservatively when hints are missing
+    fn unannotated_tool_defaults_to_destructive() {
         let tool = Tool::new(
             "run_shell",
             "execute a shell command",
             Arc::new(JsonObject::new()),
         );
         let (ro, destr) = annotations_of(&tool);
-        assert!(!ro);
-        assert!(!destr);
+        assert!(!ro, "absence of a hint is not a claim of read-only");
+        assert!(destr, "absence of a hint must read as destructive");
+
+        // And the gate turns that into a Hold, not an Allow.
+        let gate = cosmo_gate::Gate::new();
+        gate.set_lock_state(cosmo_gate::LockState::Unlocked);
+        let annotations = cosmo_gate::Annotations {
+            read_only: ro,
+            destructive: destr,
+        };
+        assert_eq!(
+            gate.verdict_for_call("some_unannotated_tool", &Value::Null, &annotations),
+            cosmo_gate::Verdict::Hold
+        );
     }
 }

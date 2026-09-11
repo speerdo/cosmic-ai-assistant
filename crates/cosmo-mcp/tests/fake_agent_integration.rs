@@ -18,6 +18,7 @@ fn test_config() -> Config {
             "list_windows".into(),
             "click".into(),
             "screenshot".into(),
+            "press_key".into(),
             // run_shell deliberately absent — invariant #2.
         ],
         ..Config::default()
@@ -52,6 +53,21 @@ async fn fake_agent_discovery_and_gate_mapping() {
 
     let screenshot = by_name("screenshot");
     assert!(!screenshot.read_only && !screenshot.destructive);
+
+    // A tool advertised with no `annotations` at all defaults to destructive
+    // (MCP's own default) so the gate holds it rather than allowing it.
+    let press_key = by_name("press_key");
+    assert!(
+        !press_key.read_only && press_key.destructive,
+        "an unannotated agent tool must default to destructive"
+    );
+
+    // The agent's `inputSchema` is passed through verbatim: dropping it tells
+    // the model that `click` exists but nothing about x/y, so it invents
+    // arguments.
+    assert_eq!(click.input_schema["properties"]["x"]["type"], "integer");
+    assert_eq!(click.input_schema["properties"]["y"]["type"], "integer");
+    assert_eq!(click.input_schema["required"][0], "x");
 
     // Gate mapping from the discovered annotations, unlocked session.
     let gate = cosmo_gate::Gate::new();

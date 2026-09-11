@@ -219,7 +219,7 @@ fn render(response: Response) -> i32 {
                 1
             }
         },
-        Response::Confirm(outcome) => match outcome {
+        Response::Confirm { outcome } => match outcome {
             cosmo_ipc::ConfirmOutcome::Executed { token, summary } => {
                 println!("confirmed {token}: {summary}");
                 0

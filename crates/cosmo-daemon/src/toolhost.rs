@@ -50,11 +50,16 @@ impl ToolHost for DaemonToolHost {
     fn tool_schemas(&self) -> Vec<Value> {
         let mut schemas = Vec::new();
         // Agent tools first (already allowlisted; run_shell never here).
+        //
+        // The agent's own `inputSchema` goes through verbatim. Substituting a
+        // bare `{"type": "object"}` here tells the model that `click` exists
+        // but nothing about `x`/`y` — it then calls tools with invented
+        // arguments, which looks like a model failure and is ours.
         for tool in self.agent.registered_tools() {
             schemas.push(function_schema(
                 &tool.name,
                 &tool.description,
-                serde_json::json!({"type": "object"}),
+                tool.input_schema.clone(),
             ));
         }
         // Native tools.
@@ -98,6 +103,17 @@ impl ToolHost for DaemonToolHost {
             "MPRIS media control: play, pause, play_pause, next, previous, stop.",
             serde_json::json!({"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}),
         ));
+        schemas.push(function_schema(
+            "clipboard_get",
+            "Read the user's clipboard as text. Held for confirmation: the \
+             contents leave the machine.",
+            serde_json::json!({"type": "object", "properties": {}}),
+        ));
+        schemas.push(function_schema(
+            "clipboard_set",
+            "Replace the user's clipboard contents with the given text.",
+            serde_json::json!({"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}),
+        ));
         schemas
     }
 
@@ -124,7 +140,10 @@ impl ToolHost for DaemonToolHost {
                 read_only: false,
                 destructive: false,
             },
-            _ => Annotations::default(), // unknown ⇒ conservative
+            // Unknown ⇒ conservative, and `Annotations::default()` is now
+            // genuinely that: `destructive = true` ⇒ Hold. It used to be a
+            // derived `false`/`false`, i.e. Allow, under this same comment.
+            _ => Annotations::default(),
         }
     }
 
@@ -166,6 +185,11 @@ impl ToolHost for DaemonToolHost {
                 "media_control" => {
                     let cmd = args["command"].as_str().unwrap_or_default().to_string();
                     run_tool(cosmo_tools::media::control(&cmd).await)
+                }
+                "clipboard_get" => run_tool(cosmo_tools::clipboard::get().await),
+                "clipboard_set" => {
+                    let text = args["text"].as_str().unwrap_or_default().to_string();
+                    run_tool(cosmo_tools::clipboard::set(&text).await)
                 }
                 // Agent tools.
                 other => match args.as_object() {

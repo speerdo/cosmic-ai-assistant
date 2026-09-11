@@ -19,8 +19,22 @@ TOOLS = [
     {
         "name": "click",
         "description": "Click a point",
-        "inputSchema": {"type": "object", "properties": {}},
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "integer", "description": "X in pixels"},
+                "y": {"type": "integer", "description": "Y in pixels"},
+            },
+            "required": ["x", "y"],
+        },
         "annotations": {"readOnlyHint": False, "destructiveHint": True},
+    },
+    {
+        # No `annotations` key at all: the host must default this to
+        # destructive (MCP's own default) so the gate holds it.
+        "name": "press_key",
+        "description": "Press a key (deliberately unannotated)",
+        "inputSchema": {"type": "object", "properties": {"key": {"type": "string"}}},
     },
     {
         "name": "screenshot",
