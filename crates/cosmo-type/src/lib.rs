@@ -2,6 +2,19 @@
 //! `zwp_virtual_keyboard_v1`. It reaches every client, types arbitrary
 //! Unicode, and never contends with a real IME.
 //!
+//! ## Keymap lessons (paid for in live testing — findings §C)
+//!
+//! - `modifier_map` belongs in **`xkb_symbols`**, not `xkb_compatibility`.
+//!   In the compat section libxkbcommon rejects the whole keymap with
+//!   *"Compat files may not include other types"* (and the compositor then
+//!   reports `key` sent before keymap — its compile failed silently).
+//! - Keep keycode names ≤ 4 characters (`<SHFT>`, not `<LSHIFT>`) — the
+//!   xkbcomp grammar rejects longer names in custom sections.
+//! - The `modifiers` request does NOT reach clients on this cosmic-comp
+//!   build; only real key events of keys with `modifier_map` bindings
+//!   would — but the compositor's shortcut engine ignores virtual-keyboard
+//!   modifiers entirely, so chords cannot trigger shortcuts here.
+//!
 //! ## Invariant
 //!
 //! **NEVER bind `zwp_input_method_v2`.** A Wayland seat has a single

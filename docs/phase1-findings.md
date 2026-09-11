@@ -98,3 +98,46 @@ Two protocol notes worth keeping:
    reflex verbs), either pin the ext-workspace protocol path or bump
    cosmic-protocols — not blocking for phase 1 (workspace moves are a
    virtual-keyboard chord, not a mirror query).
+
+## §C. Workspace moves via virtual-keyboard chord — **VERDICT: NOT POSSIBLE on this build**
+
+The plan's fallback (§1.3, findings §3.2 item 2) was tested live on
+cosmic-comp (2026-09-10) through eleven variations and **fails**:
+
+- **Text injection works** — bare keys through a synthesised keymap
+  reach the focused client (`z`, `x`, `1`, `2` all typed correctly,
+  Unicode keysym `U<hex>` shape).
+- **Modifier chords do not.** Whatever ordering or mechanism:
+  - modifier keys as real key events with `modifier_map` declared
+    (in `xkb_symbols`, where the real keymaps put it — in
+    `xkb_compatibility` this xkbcommon rejects the whole keymap with
+    *"Compat files may not include other types"*, reproduced locally
+    against libxkbcommon 1.6 via `new_from_fd`);
+  - the `zwp_virtual_keyboard_v1.modifiers` request (Shift=0x1 |
+    Mod4=0x20), before *or* after the modifier key events;
+  - virtual modifiers (`virtual_modifiers Meta` + `virtualMods=Meta`,
+    the only variant libxkbcommon accepts for vmod declarations);
+  - even **bare Super** with the mods request —
+  …the focused client always receives the *unmodified* keysym (a held
+  Shift produced plain `2`, never `@`), and no COSMIC shortcut ever
+  fires (Super alone does not open the launcher).
+
+**Conclusion:** this cosmic-comp build delivers virtual-keyboard `key`
+events to clients but its shortcut engine (and modifier propagation to
+clients) does not process virtual-keyboard modifiers. Workspace moves
+via cosmo-type are **impossible here**. Consequences:
+
+1. **Phase 4 must not advertise "workspace moves" as a reflex verb on
+   this compositor build.** (DoD item §1.5 "a window actually moves
+   workspace via the virtual-keyboard chord" — not achieved; recorded
+   as a limitation, not silently dropped.)
+2. The chord code is trivial to re-enable if upstream fixes modifier
+   handling (the failure is in the compositor, not our client — the
+   same keymap text compiles and the same request sequence is what
+   `ydotool`'s Wayland backend sends).
+3. Alternative paths if workspace moves become required before an
+   upstream fix: `zwlr_foreign_toplevel_management` **set** requests
+   (cosmic-comp does not advertise the manager), the RemoteDesktop
+   portal keyboard (abandoned in phase 0 for other reasons — may be
+   worth re-testing since it injects at a lower level), or an
+   upstreamed `move_to_workspace` action in the agent.
