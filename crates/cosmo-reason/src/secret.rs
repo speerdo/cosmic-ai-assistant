@@ -80,7 +80,7 @@ impl KeySource for DefaultKeySource {
         // (plan §1.4).
         match tokio::task::block_in_place(|| {
             tokio::runtime::Handle::try_current()
-                .map(|h| h.block_on(async { keyring_lookup().await }))
+                .map(|h| h.block_on(async { keyring_lookup().await.map_err(Box::new) }))
         }) {
             Ok(Ok(key)) => {
                 tracing::debug!("api key source: keyring");
