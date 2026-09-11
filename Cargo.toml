@@ -53,6 +53,7 @@ xkbcommon = "0.9"
 # Wayland / COSMIC
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", default-features = false }
+wayland-protocols-wlr = { version = "0.3", default-features = false }
 # xkbcommon/calloop off by default: the overlay needs neither (no keyboard
 # interactivity, blocking_dispatch loop). Re-enable per-crate when needed.
 smithay-client-toolkit = { version = "0.21", default-features = false }
@@ -77,6 +78,7 @@ clap = { version = "4.6", features = ["derive"] }
 # Internal crates
 cosmo-ipc = { path = "crates/cosmo-ipc" }
 cosmo-config = { path = "crates/cosmo-config" }
+cosmo-focus = { path = "crates/cosmo-focus" }
 cosmo-hotkey = { path = "crates/cosmo-hotkey" }
 cosmo-audio = { path = "crates/cosmo-audio" }
 cosmo-stt = { path = "crates/cosmo-stt" }

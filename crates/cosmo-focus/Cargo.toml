@@ -1,0 +1,19 @@
+[package]
+name = "cosmo-focus"
+description = "Focus + workspace tracking from the compositor (zwlr_foreign_toplevel_management), live mirror"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+wayland-client = { workspace = true, features = ["log"] }
+wayland-protocols = { workspace = true, features = ["client"] }
+wayland-protocols-wlr = { workspace = true, features = ["client"] }
+cosmic-protocols.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

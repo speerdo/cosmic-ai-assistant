@@ -73,3 +73,28 @@ If upstream cosmic-greeter starts calling
 property a user process can read), COSMIC can move to the logind path
 and re-enable the tools — delete the `COSMIC` branch in
 `cosmo-gate::LockPolicy`, keep the test.
+
+## §F. Focus mirror (plan §1.3 work item)
+
+`zcosmic_toplevel_info_v1` on cosmic-comp (advertised **v3**) works:
+bound at **v1** (the deprecated `toplevel` event flow), the mirror lists
+all toplevels with correct `activated` state and titles, live on the real
+session. `zwlr_foreign_toplevel_management` is **not** advertised by
+cosmic-comp; the plan's two options resolve to cosmic-protocols only.
+
+Two protocol notes worth keeping:
+
+1. **Bind v1, not v3.** At v2+ the flow changes: the compositor sends
+   nothing until the client binds `ext_foreign_toplevel_list_v1` and
+   calls `get_cosmic_toplevel` per foreign handle (per the v1.2 XML).
+   v1 still fires the batch `Toplevel` event with all initial state —
+   one roundtrip, no pairing. Verified live: v3 bind → 0 toplevels
+   silently; v1 bind → all 5 toplevels, focus correct.
+2. **`zcosmic_workspace_manager_v2` is what cosmic-comp advertises** (v2,
+   new interface name); cosmic-protocols 0.2 generates the v1 manager
+   only, so the workspace manager never binds on this session and
+   workspace names resolve to nothing (the mirror reports them empty).
+   Focus is unaffected. When workspace *names* are needed (phase 4
+   reflex verbs), either pin the ext-workspace protocol path or bump
+   cosmic-protocols — not blocking for phase 1 (workspace moves are a
+   virtual-keyboard chord, not a mirror query).
