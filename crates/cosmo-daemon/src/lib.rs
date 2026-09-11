@@ -41,7 +41,7 @@ pub async fn run() -> anyhow::Result<()> {
     tracing::info!(path = %path.display(), "listening");
 
     let (events_tx, _) = broadcast::channel::<Event>(256);
-    let engine = Arc::new(engine::Engine::new(cfg, events_tx.clone()));
+    let engine = Arc::new(engine::Engine::new(cfg, events_tx.clone()).await);
     engine.refresh_lock();
     // Agent connection: failure is not fatal (graceful absence; doctor
     // reports it and `say` errors per turn).

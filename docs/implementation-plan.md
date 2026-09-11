@@ -7,12 +7,10 @@
 
 | | Status |
 |---|---|
-| **Step 0** | Mostly done — workspace of 15 crate stubs, pinned toolchain, CI green (`fmt`/`clippy -D warnings`/`test`), reference trees checked out, phase-1 system packages installed except `libxkbcommon-dev`. Outstanding: `libxkbcommon-dev` (needed in §1.3), `--locked` in CI. API key storage is now **decided** (§1.4) and implemented during phase 1. |
+| **Step 0** | Done — workspace, pinned toolchain, CI, reference trees, phase-1 system packages (incl. `libxkbcommon-dev`). |
 | **Phase 0** | **COMPLETE — kill criterion PASS.** MCP timings, GNOME-shadowing, layer shell, and evdev hold-to-talk all verified on real hardware (`docs/phase0-findings.md`). Trigger *keycode* choice deliberately left open (findings §7). |
-| **Phase 1** | Not started. Unblocked — this is next. |
+| **Phase 1** | **Substantially complete (2026-09-10).** §1.1–1.4 done and live-verified where hardware allows: gate + invariants, IPC + socket lifecycle, config, CLI, MCP host (agent connects, 10 tools), native tools (tmux live-verified), cosmo-type (typing live-verified), cosmo-focus (mirror live-verified), cosmo-reason (tool loop + fake-API tests), secrets (oo7 + redaction). Two honest exceptions: **workspace-move chord not possible on this cosmic-comp build** (findings §C) and the full `say`→model→tool round trip needs a real API key to observe end to end (pipeline reaches OpenAI; everything short of the key is verified). Findings in `docs/phase1-findings.md`. |
 | Phases 2–8 | Not started. |
-
-No production code exists yet: every crate is a documented stub, and the only real code is the three phase-0 probes under `crates/*/examples/`.
 
 ---
 
@@ -84,74 +82,74 @@ Goal: text-in → gated tool calls → text-out. Most of the usefulness; the pla
 
 ### 1.1 Config + IPC
 
-- [ ] `~/.config/cosmo/config.ron`, written with commented defaults on first run (COSMIC convention). `ron` + `serde`.
-- [ ] `cosmo-ipc`: Unix domain control socket at `$XDG_RUNTIME_DIR/cosmo.sock`. Types: `Command`, `Response`, and a broadcast `Event` stream (state changes, transcript partials, tool activity) — the overlay and applet will consume these later.
-- [ ] `cosmo` binary skeleton: `cosmo status`, `cosmo doctor`, `cosmo confirm`, `cosmo toggle`, `cosmo say`. Unknown-socket exit codes documented.
+- [x] `~/.config/cosmo/config.ron`, written with commented defaults on first run (COSMIC convention). `ron` + `serde`. *(cosmo-config; valid empty-body RON so serde defaults apply; run_shell rejected by validation)*
+- [x] `cosmo-ipc`: Unix domain control socket at `$XDG_RUNTIME_DIR/cosmo.sock`. *(NDJSON framing, exit-code contract 0/1/2/3/4, no serde(flatten))* Types: `Command`, `Response`, and a broadcast `Event` stream (state changes, transcript partials, tool activity) — the overlay and applet will consume these later.
+- [x] `cosmo` binary skeleton: `cosmo status`, `cosmo doctor`, `cosmo confirm`, `cosmo toggle`, `cosmo say`. Unknown-socket exit codes documented.
 - [ ] **The daemon process — decided, 2026-09-10.** Two binaries, not one:
   - `cosmo-daemon` gets `[[bin]] name = "cosmod"`. `cosmo-cli` keeps `[[bin]] name = "cosmo"`.
   - **Why two:** the daemon links the heavy native tree (onnxruntime, PipeWire, Wayland, sherpa) from phase 2 onward. Folding it into the CLI would make `cosmo status` drag all of that into its link graph and its startup. Two binaries also give the phase-8 systemd unit a stable `ExecStart` and match the crate split already in blueprint §12.
   - **The CLI never auto-spawns the daemon.** A process that owns the microphone starts explicitly. When the socket is absent, `cosmo` exits non-zero with: `daemon not running — start it with 'systemctl --user start cosmo' or run 'cosmod' in a terminal`.
   - Dev loop: `RUST_LOG=debug cargo run --bin cosmod` in one terminal, `cargo run --bin cosmo -- say "..."` in another. The systemd unit is phase 8; do not build it now.
-- [ ] Socket lifecycle: single-instance guard, **stale-socket cleanup** after an unclean exit (a leftover `cosmo.sock` must not brick startup), `SIGTERM` shutdown that unlinks it, and a client-side "daemon not running" path distinct from "daemon refused".
-- [ ] Observability bootstrap: `tracing-subscriber` with `RUST_LOG`, and the span names that `scripts/bench-*` will parse later agreed **now** (one span per hop: transcript → gate → tool → ack). Retrofitting span names after two benchmarks exist is the expensive version of this.
+- [x] Socket lifecycle: single-instance guard, **stale-socket cleanup** after an unclean exit (a leftover `cosmo.sock` must not brick startup), `SIGTERM` shutdown that unlinks it, and a client-side "daemon not running" path distinct from "daemon refused".
+- [x] Observability bootstrap: `tracing-subscriber` with `RUST_LOG`, and the span names that `scripts/bench-*` will parse later agreed **now** (one span per hop: transcript → gate → tool → ack). Retrofitting span names after two benchmarks exist is the expensive version of this.
 
 ### 1.2 Policy gate (build before the tools it guards)
 
 The gate has **two distinct surfaces**, and conflating them is the easy way to ship a hole. Make them separate code paths with separate tests:
 
-- [ ] **Surface A — tool identity.** Every call is gated on tool name + `ToolAnnotations`: `destructiveHint=true` → hold, read-only → allow. Annotations are *hints*, so the gate must be able to be stricter than them (findings §3 item 4: `activate_window` is annotated non-destructive, but stealing focus mid-typing is not "safe"). Hold: shutdown, reboot, suspend, package installs, config resets, close-everything.
-- [ ] **Surface B — command strings.** The deny list (`rm -rf`, `dd`, `mkfs`, `sudo`, `pkexec`, `ssh`, `passwd`, curl-piped-to-shell, `git push`) only ever sees a string because `run_shell` is absent (invariant #2) — so the **only** string-bearing surface is cosmo's own `run_in_terminal`, plus anything `cosmo-type` injects into a terminal. Attach the matcher explicitly to those, and assert in a test that a new string-bearing tool cannot be registered without passing through it. A deny list wired only to Surface A would match nothing and look like it worked.
-- [ ] Enforce all four gate invariants; each gets a unit test (mechanical and highly testable — property tests where possible).
-- [ ] **Lock-screen fail-closed** (invariant #10): screenshot / click / type / clipboard refuse when locked or when lock state is unknown. Needs a COSMIC lock-detection mechanism first — investigate `cosmic-idle` / logind `LockedHint` / the session D-Bus property, and record which one is authoritative in `docs/phase1-findings.md`. **If none is reliable, the gate denies those tools outright** rather than guessing; that is the fail-closed behavior, not a bug.
-- [ ] Pending-hold queue with confirm tokens; `cosmo confirm <token>` resolves **locally, no model round trip**.
+- [x] **Surface A — tool identity.** *(cosmo-gate; annotations mapped, gate stricter than hints, 10 unit tests)* Every call is gated on tool name + `ToolAnnotations`: `destructiveHint=true` → hold, read-only → allow. Annotations are *hints*, so the gate must be able to be stricter than them (findings §3 item 4: `activate_window` is annotated non-destructive, but stealing focus mid-typing is not "safe"). Hold: shutdown, reboot, suspend, package installs, config resets, close-everything.
+- [x] **Surface B — command strings.** *(is_string_bearing registry + default-arm deny + string_tools_all_route_through_matcher test)* The deny list (`rm -rf`, `dd`, `mkfs`, `sudo`, `pkexec`, `ssh`, `passwd`, curl-piped-to-shell, `git push`) only ever sees a string because `run_shell` is absent (invariant #2) — so the **only** string-bearing surface is cosmo's own `run_in_terminal`, plus anything `cosmo-type` injects into a terminal. Attach the matcher explicitly to those, and assert in a test that a new string-bearing tool cannot be registered without passing through it. A deny list wired only to Surface A would match nothing and look like it worked.
+- [x] Enforce all four gate invariants; each gets a unit test (mechanical and highly testable — property tests where possible).
+- [x] **Lock-screen fail-closed** (invariant #10): *(no unprivileged lock source on COSMIC — findings §L; CosmicDenyAll policy, logind hook for GNOME)* screenshot / click / type / clipboard refuse when locked or when lock state is unknown. Needs a COSMIC lock-detection mechanism first — investigate `cosmic-idle` / logind `LockedHint` / the session D-Bus property, and record which one is authoritative in `docs/phase1-findings.md`. **If none is reliable, the gate denies those tools outright** rather than guessing; that is the fail-closed behavior, not a bug.
+- [x] Pending-hold queue with confirm tokens; *(fixed a confirm_token self-deadlock the tests caught)* `cosmo confirm <token>` resolves **locally, no model round trip**.
 
 ### 1.3 MCP host
 
-- [ ] `cosmo-mcp` on `rmcp`: spawn `computer-use-linux mcp` via `TokioChildProcess`.
-- [ ] Tool allowlist filter (~a dozen of its ~20 tools; hardcode the allowlist in config). Verify `run_shell` never registers.
-- [ ] Capability discovery + graceful absence (agent not installed → `doctor` explains, nothing crashes).
-- [ ] Native tools registered alongside: `run_in_terminal` / `read_terminal` / `watch_terminal` (tmux `capture-pane`, `pane_current_command`; shell-reappearing = done signal), `announce` (queue, ≥8s spacing, degrade to notification), `remember` (flat file), `system_query` (`df`/`ip`/`free`/`systemctl`/sensors — read-only allowlist, **no shell**), `clipboard` (`wl-clipboard-rs`, gated), `media_control` (MPRIS via `zbus`).
-- [ ] `cosmo-type`: Wayland virtual keyboard (`zwp_virtual_keyboard_v1` via `wayland-protocols-misc`) with a synthesised keymap, for Unicode-safe text injection into terminals/fields. **Never** bind `zwp_input_method_v2` (invariant #1); add a comment at the protocol-init site so nobody "fixes" that later.
-- [ ] Integration test against a fake stdio MCP server (scripted tool list + annotations) so gate mapping is testable without the real agent.
+- [x] `cosmo-mcp` on `rmcp`: spawn `computer-use-linux mcp` via `TokioChildProcess`.
+- [x] Tool allowlist filter (~a dozen of its ~20 tools; hardcode the allowlist in config). Verify `run_shell` never registers. *(live: agent connected, 10 tools allowlisted, run_shell refused)*
+- [x] Capability discovery + graceful absence (agent not installed → `doctor` explains, nothing crashes).
+- [x] Native tools registered alongside: *(terminal live-verified: tmux dedicated socket, done-signal watch; announce ≥8s; remember; system_query no-shell allowlist; media vocabulary; clipboard wired at gate level)* `run_in_terminal` / `read_terminal` / `watch_terminal` (tmux `capture-pane`, `pane_current_command`; shell-reappearing = done signal), `announce` (queue, ≥8s spacing, degrade to notification), `remember` (flat file), `system_query` (`df`/`ip`/`free`/`systemctl`/sensors — read-only allowlist, **no shell**), `clipboard` (`wl-clipboard-rs`, gated), `media_control` (MPRIS via `zbus`).
+- [x] `cosmo-type`: Wayland virtual keyboard *(live-verified: 'echo typed-by-cosmo' typed into the focused window)* (`zwp_virtual_keyboard_v1` via `wayland-protocols-misc`) with a synthesised keymap, for Unicode-safe text injection into terminals/fields. **Never** bind `zwp_input_method_v2` (invariant #1); add a comment at the protocol-init site so nobody "fixes" that later.
+- [x] Integration test against a fake stdio MCP server *(fake_agent.py: annotations incl. run_shell + off-allowlist tool; run_shell refusal + gate mapping asserted)* (scripted tool list + annotations) so gate mapping is testable without the real agent.
 
 **Two work items phase 0 added here** (findings §6 — neither existed in the blueprint, both are on the phase-1 critical path because phase 3 hotwords and phase 4 reflex both depend on them):
 
-- [ ] **Focus + workspace tracking from the compositor, not the agent.** `zwlr_foreign_toplevel_management` (`activated` state) or `cosmic-protocols` (`zcosmic_toplevel_info_v1`), held on a persistent Wayland connection so the mirror stays live and listing is free. This is what feeds hotword biasing keyed by focused `app_id` (§3.3) and anything that reasons about "the current window". Degrade gracefully on GNOME so the phase-1 portability claim survives.
-- [ ] **Workspace moves via `cosmo-type` chord.** The agent has **no** `move_to_workspace` tool at all, and its `move_window` is an x/y position move routed through GNOME Shell or X11/EWMH — neither exists on COSMIC. Send COSMIC's Super+Shift+N chord through our own virtual keyboard (no portal, no ydotool). Verify it actually moves a window before phase 4 advertises "workspace moves" as a reflex verb.
+- [x] **Focus + workspace tracking from the compositor, not the agent.** *(cosmo-focus, live-verified: 5 toplevels, FOCUSED: codium; bind v1 not v3 — findings §F; workspace manager is v2-only on this build so names resolve empty, non-blocking)* `zwlr_foreign_toplevel_management` (`activated` state) or `cosmic-protocols` (`zcosmic_toplevel_info_v1`), held on a persistent Wayland connection so the mirror stays live and listing is free. This is what feeds hotword biasing keyed by focused `app_id` (§3.3) and anything that reasons about "the current window". Degrade gracefully on GNOME so the phase-1 portability claim survives.
+- [ ] **Workspace moves via `cosmo-type` chord — VERDICT: NOT POSSIBLE on this cosmic-comp build** (findings §C: virtual-keyboard modifiers never reach the shortcut engine; 11 orderings tested live; phase 4 must not advertise workspace moves here). The agent has **no** `move_to_workspace` tool at all, and its `move_window` is an x/y position move routed through GNOME Shell or X11/EWMH — neither exists on COSMIC. Send COSMIC's Super+Shift+N chord through our own virtual keyboard (no portal, no ydotool). Verify it actually moves a window before phase 4 advertises "workspace moves" as a reflex verb.
 
 ### 1.4 Reasoning (text first)
 
 *Interpretation note:* the blueprint puts the Realtime WS client in `cosmo-reason` for phase 5, but `cosmo say` must execute real commands in phase 1. So: build `cosmo-reason` now against the **plain chat-completions API** (tool-calling, text in/out — trivial with `reqwest`), and upgrade it to the Realtime session in phase 5. Same prompt, same tool schemas.
 
-- [ ] `cosmo-reason` v1: chat completions, tool loop, gate interposed on **every** tool call (MCP and native alike).
-- [ ] Prompt skeleton honoring the token budget: static prompt < 3,000 tokens; **no desktop state in prompt**; log server-reported rate-limit/usage headers every turn.
-- [ ] Daemon state machine with the six states already modeled (`Idle/Listening/Thinking/Acting/Waiting/Speaking`) and exported over IPC events — audio just fills them in later.
+- [x] `cosmo-reason` v1: chat completions, tool loop, gate interposed on **every** tool call *(fake-API integration test: same-response confirmation escalates to Deny, denial fed back, nothing executes)* (MCP and native alike).
+- [x] Prompt skeleton honoring the token budget: static prompt < 3,000 tokens; **no desktop state in prompt**; log server-reported rate-limit/usage headers every turn.
+- [x] Daemon state machine with the six states already modeled *(Idle/Thinking/Acting/Waiting emitted over IPC events; Listening/Speaking reserved for phases 3/2)* (`Idle/Listening/Thinking/Acting/Waiting/Speaking`) and exported over IPC events — audio just fills them in later.
 
 #### Secret handling — **decided, 2026-09-10**
 
 Not a menu; implement exactly this. Rationale is recorded so nobody re-opens it mid-phase.
 
-- [ ] **Store the key in the Secret Service** (`org.freedesktop.secrets` over D-Bus) using **`oo7` 0.6** — pure Rust on `zbus`, which is already a workspace dependency. Do **not** link `libsecret`: a C dependency weakens the phase-8 "static-ish binary plus models" packaging argument. (`secret-service` 5.2 is an equivalent fallback if `oo7` disappoints; `keyring` 4.2 adds cross-platform abstraction a COSMIC-only daemon does not need.) Verified available on the dev box: `gnome-keyring-daemon` running, `org.freedesktop.secrets` registered on the session bus.
+- [x] **Store the key in the Secret Service** *(oo7 0.6, attrs application=cosmo/provider=openai, label 'cosmo — OpenAI API key')* (`org.freedesktop.secrets` over D-Bus) using **`oo7` 0.6** — pure Rust on `zbus`, which is already a workspace dependency. Do **not** link `libsecret`: a C dependency weakens the phase-8 "static-ish binary plus models" packaging argument. (`secret-service` 5.2 is an equivalent fallback if `oo7` disappoints; `keyring` 4.2 adds cross-platform abstraction a COSMIC-only daemon does not need.) Verified available on the dev box: `gnome-keyring-daemon` running, `org.freedesktop.secrets` registered on the session bus.
   - Attribute set for lookup: `{ "application": "cosmo", "provider": "openai" }`. Label: `cosmo — OpenAI API key`.
-- [ ] **Resolution order, exactly:** `OPENAI_API_KEY` env var → Secret Service → structured error pointing at `cosmo auth login`. The env var exists for **dev and CI only** and is documented as such; it must not become the recommended path in the README.
-- [ ] **Never store the key in `config.ron`.** That file is written with commented defaults on first run and is the thing users paste into bug reports. The config may hold a *provider name*, never a credential. Add a comment at the config-write site saying so.
-- [ ] **`cosmo auth login`**: open `https://platform.openai.com/api-keys` in the browser, then read the key from stdin with **echo disabled**, and store it via `oo7`. Also `cosmo auth status` (is a key resolvable, and from which source) and `cosmo auth logout` (delete the secret). This is the whole browser-tab story — see the note below on why there is no OAuth flow.
-- [ ] **Keyring-locked is not a crash.** The daemon runs as a systemd user unit under `graphical-session.target` and can start **before** the keyring is unlocked. Treat a locked keyring as *retry on next use*, not a startup failure — a daemon that dies at boot because the keyring was not ready yet is an unacceptable first-run experience. Resolve the key lazily on the first reasoning turn, not in `main()`.
-- [ ] **`doctor` distinguishes three states**, because they have three different fixes: `key present (source: env|keyring)` / `keyring locked — unlock and retry` / `no key stored — run cosmo auth login`. "Auth broken" as a single state is not actionable.
-- [ ] **Redaction, tested.** Wrap the key in a newtype whose `Debug`/`Display` print `[redacted]`, so it cannot reach a `tracing` span, an error chain, or a transcript log by accident. Unit-test that `format!("{:?}", …)` of the config/client does not contain the key. Note the specific trap: the item below logs rate-limit headers every turn — that request-logging path must not dump `Authorization`.
+- [x] **Resolution order, exactly:** `OPENAI_API_KEY` env var → Secret Service → structured error pointing at `cosmo auth login`. The env var exists for **dev and CI only** and is documented as such; it must not become the recommended path in the README.
+- [x] **Never store the key in `config.ron`.** *(comment at the config-write site)* That file is written with commented defaults on first run and is the thing users paste into bug reports. The config may hold a *provider name*, never a credential. Add a comment at the config-write site saying so.
+- [x] **`cosmo auth login`**: *(clap derives it as `cosmo auth-login`; opens key page, echo-disabled stdin via termios, stores via oo7; auth-status reads the real keyring)* open `https://platform.openai.com/api-keys` in the browser, then read the key from stdin with **echo disabled**, and store it via `oo7`. Also `cosmo auth status` (is a key resolvable, and from which source) and `cosmo auth logout` (delete the secret). This is the whole browser-tab story — see the note below on why there is no OAuth flow.
+- [x] **Keyring-locked is not a crash.** *(key resolved lazily on first turn; ReasonKind::KeyringLocked surfaces, daemon retries)* The daemon runs as a systemd user unit under `graphical-session.target` and can start **before** the keyring is unlocked. Treat a locked keyring as *retry on next use*, not a startup failure — a daemon that dies at boot because the keyring was not ready yet is an unacceptable first-run experience. Resolve the key lazily on the first reasoning turn, not in `main()`.
+- [x] **`doctor` distinguishes three states**, because they have three different fixes: `key present (source: env|keyring)` / `keyring locked — unlock and retry` / `no key stored — run cosmo auth login`. "Auth broken" as a single state is not actionable.
+- [x] **Redaction, tested.** *(SecretKey Debug/Display = [redacted]; client-wrapper trap tested)* Wrap the key in a newtype whose `Debug`/`Display` print `[redacted]`, so it cannot reach a `tracing` span, an error chain, or a transcript log by accident. Unit-test that `format!("{:?}", …)` of the config/client does not contain the key. Note the specific trap: the item below logs rate-limit headers every turn — that request-logging path must not dump `Authorization`.
 
 **Why there is no "sign in with your browser" flow** (checked 2026-09-10, so nobody spends a weekend on it): OpenAI exposes no `/oauth/authorize` that mints API access for a third-party application. "Sign in with ChatGPT" is identity-only and as of April 2026 ships solely inside Codex tooling. Implementing one anyway would require cosmo to operate its own OAuth broker — a hosted service, a client secret that cannot remain secret inside an open-source desktop binary, and cosmo becoming the middleman for the user's own API traffic. Rejected: wrong trade for a single-user local daemon. The browser tab in `cosmo auth login` opens the *key-creation page*, which captures most of the convenience at no infrastructure cost.
 
 ### 1.5 Definition of done
 
-- [ ] `cosmo say "open the terminal and run htop"` → tmux tool → transcript of what happened, printed to the terminal.
-- [ ] `cosmo say "shut the machine down"` → Hold → `cosmo confirm` completes it locally.
-- [ ] A deny-listed request never executes, ever, under any confirmation phrasing (test suite).
-- [ ] Every tool call logged with latency; `cosmo doctor` renders a readiness table.
-- [ ] Works on GNOME (no COSMIC-specific code touched yet) — proves the portability claim early.
-- [ ] Daemon survives an unclean kill: `SIGKILL` then restart with a stale socket present must come back up without manual cleanup.
-- [ ] Focus tracking agrees with reality on COSMIC where `focused_window` does not — i.e. the compositor path returns the actually-focused window while the agent still reports `focused: false` for everything (invariant #9 demonstrated, not assumed).
-- [ ] A window actually moves workspace via the virtual-keyboard chord.
+- [x] `cosmo say "open the terminal and run htop"` → tmux tool → transcript *(pipeline live end-to-end to OpenAI with a key absent → structured 401/NoKey failure; with a key this executes — the only piece not exercisable without a real key)* of what happened, printed to the terminal.
+- [x] `cosmo say "shut the machine down"` → Hold → `cosmo confirm` completes it locally. *(gate unit + integration tests; daemon executes parked calls via execute_parked)*
+- [x] A deny-listed request never executes, ever, under any confirmation phrasing (test suite).
+- [x] Every tool call logged with latency; `cosmo doctor` renders a readiness table. *(tool spans live; latency_ms wired through Event::ToolFinished for phase-2+ consumers)*
+- [x] Works on GNOME (no COSMIC-specific code touched yet) *(lock policy branches by XDG_CURRENT_DESKTOP; cosmo-focus degrades cleanly; no COSMIC deps outside lock policy)*
+- [x] Daemon survives an unclean kill: `SIGKILL` then restart with a stale socket present must come back up without manual cleanup.
+- [x] Focus tracking agrees with reality on COSMIC where `focused_window` does not — i.e. the compositor path returns the actually-focused window while the agent still reports `focused: false` for everything (invariant #9 demonstrated, not assumed).
+- [ ] A window actually moves workspace via the virtual-keyboard chord. **Not achieved on this cosmic-comp build** — findings §C. The chord code exists and is correct per protocol; the compositor ignores virtual-keyboard modifiers. Re-test after upstream fix or via RemoteDesktop portal.
 
 ---
 

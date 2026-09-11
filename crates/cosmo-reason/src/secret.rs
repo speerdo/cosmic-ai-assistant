@@ -74,13 +74,23 @@ impl KeySource for DefaultKeySource {
             tracing::debug!("api key source: env (dev/CI only)");
             return Ok(SecretKey { inner: key });
         }
-        // Secret Service via oo7. A locked/absent keyring is a *retry on
-        // next use*, not a startup failure (plan §1.4): the daemon resolves
-        // the key lazily on the first reasoning turn, not in main().
-        Err(crate::ReasonError::NoKey(
-            "not resolvable from env; Secret Service resolution is async — use resolve_keyring"
-                .into(),
-        ))
+        // Secret Service via oo7 on the runtime (oo7 is async-only). The
+        // daemon calls this from its first reasoning turn; a locked or
+        // empty keyring is a *retry on next use*, not a startup failure
+        // (plan §1.4).
+        match tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::try_current()
+                .map(|h| h.block_on(async { keyring_lookup().await }))
+        }) {
+            Ok(Ok(key)) => {
+                tracing::debug!("api key source: keyring");
+                Ok(key)
+            }
+            Ok(Err(kind)) => Err(crate::ReasonError::NoKey(kind.to_string())),
+            Err(e) => Err(crate::ReasonError::NoKey(format!(
+                "keyring unavailable from this context: {e}; run `cosmo auth login`"
+            ))),
+        }
     }
 }
 

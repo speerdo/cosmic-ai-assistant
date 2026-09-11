@@ -141,3 +141,36 @@ via cosmo-type are **impossible here**. Consequences:
    portal keyboard (abandoned in phase 0 for other reasons — may be
    worth re-testing since it injects at a lower level), or an
    upstreamed `move_to_workspace` action in the agent.
+## §S. Phase 1 session summary (2026-09-10, sessions 4–6)
+
+**Shipped, all committed:**
+- §1.1 `cosmo-config` (commented-default first run), `cosmod` socket lifecycle
+  (single-instance, stale-socket cleanup, SIGTERM unlink), `cosmo` CLI
+  (status/doctor/say/confirm/cancel/toggle + exit-code contract), bench span
+  names (`turn/transcript/gate/tool/reason/ack`).
+- §1.2 Gate: Surface A/B, four invariants each tested, lock-screen fail-closed
+  (§L), pending-hold queue with tokens. Found and fixed a `confirm_token`
+  self-deadlock (guard across `match` scrutinee).
+- §1.3 `cosmo-mcp` (agent connects live, 10 tools, `run_shell` refused),
+  `cosmo-tools` (tmux terminal live-verified incl. done-signal watch,
+  announce ≥8s, remember, no-shell system_query, media vocabulary),
+  `cosmo-type` (live-verified Unicode typing), `cosmo-focus` (live-verified
+  mirror, invariant #9 demonstrated).
+- §1.4 `cosmo-reason` (chat-completions tool loop, gate on every call,
+  fake-API integration test), secrets (oo7, redacting newtype, lazy
+  resolution), daemon wired end to end, `cosmo auth-*` CLI.
+
+**Live-verified on real hardware/session:** socket lifecycle (SIGKILL stale
+socket, SIGTERM unlink, single-instance), tmux terminal tools, virtual-
+keyboard text injection, focus mirror, MCP agent discovery, Secret Service
+auth-status.
+
+**Not achieved, honestly recorded:**
+1. Workspace-move chord — compositor-side limitation (§C).
+2. Full `say`→model→executes-tools round trip with a real API key — the
+   pipeline reaches OpenAI and fails structured without a key; everything
+   short of the key is tested (fake server + unit tests). Needs one real
+   `OPENAI_API_KEY` run to observe.
+
+**Tests:** 39 test groups green across the workspace; `fmt` + `clippy -D
+warnings` clean.

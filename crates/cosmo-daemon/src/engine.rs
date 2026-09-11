@@ -46,8 +46,8 @@ struct LogindLock {
 }
 
 impl LogindLock {
-    fn connect() -> anyhow::Result<Self> {
-        let conn = zbus::block_on(zbus::Connection::system())?;
+    async fn connect() -> anyhow::Result<Self> {
+        let conn = zbus::Connection::system().await?;
         // The session of this uid: ask logind for sessions and pick ours by
         // leader being in our session — simpler: use $XDG_SESSION_ID when
         // present, else the first active graphical session of our uid.
@@ -110,8 +110,8 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub fn new(cfg: Config, events: broadcast::Sender<Event>) -> Self {
-        let logind = LogindLock::connect().ok();
+    pub async fn new(cfg: Config, events: broadcast::Sender<Event>) -> Self {
+        let logind = LogindLock::connect().await.ok();
         let lock_mode = match std::env::var("XDG_CURRENT_DESKTOP").as_deref() {
             Ok(d) if d.eq_ignore_ascii_case("COSMIC") => LockMode::CosmicDenyAll,
             _ => LockMode::LogindHint,
