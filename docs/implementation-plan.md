@@ -171,10 +171,10 @@ Goal: pick your accent **before** the thing can hear you, because every later ph
 - [ ] **Phrase cache**: on voice selection, render the canned reflex vocabulary to WAV under `~/.cache/cosmo/voice/<provider>/<voice-id>/` (`ack-moving`, `ack-focused`, `ack-launching`, `err-notfound`, `confirm-hold`). Switching voices re-renders in the background.
 - [ ] Audio **output** path: PipeWire playback stream that can push either a cached WAV or fresh PCM. (Capture waits for phase 3; playback is needed now.)
 - [ ] Piper provider as the weak-hardware fallback (subprocess is fine).
-- [ ] OpenAI TTS provider (`gpt-4o-mini-tts`, `instructions` field) via `reqwest`.
+- [x] OpenAI TTS provider (`gpt-4o-mini-tts`, `instructions` field) via `reqwest`. *(spec §2.4, done 2026-09-17 and reviewed. The provider is complete — catalogue, `instructions` from config, the §1.4 error states, 30s timeout. "`say` speaks" is the box below, and waits on §2.3. Findings §4, §R2.)*
 - [ ] MeloTTS en-AU spike: one evening, generate samples, judge quality honestly before promising Australian (open question §16).
 - [ ] `cosmo voice list / preview / set`. `cosmo say` now speaks its replies.
-- [ ] Sentence-splitting helper for streaming (used in phase 5) with unit tests on punctuation/ellipsis cases.
+- [x] Sentence-splitting helper for streaming (used in phase 5) with unit tests on punctuation/ellipsis cases. *(spec §2.10, done 2026-09-17 and reviewed — ordered-list markers and `etc` were both wrong on the first pass. Findings §10, §R2.)*
 
 ---
 
