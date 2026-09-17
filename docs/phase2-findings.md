@@ -2,8 +2,9 @@
 
 **Started:** 2026-09-17
 **Scope so far:** §2.0 audited (install pending), §2.2 core types done and
-then reviewed (§R — five defects fixed). §2.1 link spike is next and is
-blocked on §0's install, as is §2.3 playback.
+then reviewed (§R — five defects fixed), §2.4 provider + §2.10 splitter
+done (§4, §10). §2.1 link spike and §2.3 playback are still blocked on
+§0's install.
 
 ## §0. System packages (spec part 2.0) — audit done, install pending
 
@@ -179,3 +180,77 @@ now `cargo doc --no-deps --workspace` all clean.
   the stream. Phase 5 owns the real streaming policy; the current behavior
   is tested (`stream_carries_synthesis_errors`) so the replacement has a
   baseline to change deliberately.
+
+## §4. OpenAI TTS provider (spec part 2.4, 2026-09-17)
+
+The first builtin (`Registry::with_builtins()` registers `"openai"`), built
+ahead of its speaker: §2.3's playback is blocked on the same apt install as
+§2.1, but the provider itself is plain HTTPS over the phase-1 key source.
+Decisions worth keeping:
+
+1. **`gpt-4o-mini-tts`, `response_format: "wav"`.** WAV goes through the
+   same `Pcm::from_wav_bytes` decoder as the phrase cache — no audio-codec
+   dependency, and 24 kHz mono comes back ready for playback. The
+   `instructions` field (affect/tone/pacing) is sourced from the new
+   `voice_instructions` config key and **omitted entirely when empty**,
+   so an unset style never sends `""` to the API.
+2. **Voice catalogue = blueprint §4's list minus `marin`/`cedar`** (those
+   exist only on the Realtime model cosmo does not use for speech):
+   alloy, ash, ballad, coral, echo, sage, shimmer, verse — all `en-US`,
+   `gender: None` (OpenAI documents none). `voice_id: "default"` resolves
+   to `alloy` before the request; any other voice must be in the catalogue
+   or the provider returns `UnknownVoice` locally — a structured error
+   beats a 400 round trip.
+3. **Errors follow the §1.4 three-state discipline, extended:** `NoKey`
+   (checked before any network call), `Network` (transport),
+   `RateLimited` (HTTP 429 — its own state, "retry later" is its fix),
+   and `Synthesis` for the rest (status + a 200-char body snippet; 401
+   reads "http 401 Unauthorized: bad key", never the key itself).
+4. **`speak/synthesize` span is now emitted** (fields: provider, voice,
+   text *bytes* — not the text, not the key). `speak/first_audio` and
+   `speak/push` still wait for the playback path.
+5. **`ProviderInit` grew the fields §2.2 forecast:** `base_url` (tests,
+   self-hosted gateways), `model`, `instructions`. The provider clones the
+   text/voice into the returned future so the future borrows only `&self` —
+   the trait's elided output lifetime is `&self`'s, and unifying all three
+   would have broken the default `stream` impl, which borrows chunk strings
+   local to its own closure.
+6. **What is deliberately not done:** the daemon does not speak yet. Wiring
+   the provider to a completed turn needs §2.3's playback stream, and the
+   daemon-side key resolution feeding `ProviderInit` is §2.7. The provider
+   is exercised end to end against a fake speech server (phase-1 harness
+   style: raw `TcpListener`, no HTTP-test dependency) — request shape,
+   `instructions` presence, and every error mapping covered.
+
+**Config:** `voice_model` (`gpt-4o-mini-tts`) and `voice_instructions`
+(empty) joined `voice_provider`/`voice_id`, commented defaults and all.
+
+## §10. Sentence splitter (spec part 2.10, 2026-09-17)
+
+`cosmo_tts::split` — the boundary-finder phase 5 will feed streamed
+sentences through, built now so the streaming API settles. A heuristic over
+ordinary assistant prose, with the trade made explicit: an over-split costs
+a slightly early pause, an under-split costs latency.
+
+- **Strong boundaries:** terminator *runs* (`...`, `!!`) and `…` split
+  regardless of what case follows; so do bare `!`/`?` followed by
+  whitespace. But `!`/`?` sitting directly against a closing quote or
+  bracket were *interior* to the quotation — `He said "Go now!" Then…`
+  splits, `(really!) about it` does not.
+- **Weak boundary:** a single `.` splits only when something sentence-like
+  follows (uppercase, digit, opening quote/bracket), minus the data-driven
+  abbreviation list (`Mr.`, `e.g.`, months, `U.S`) and single-letter
+  initials (`J. R. R.`). Lowercase continuations (`one. two.`) hold — the
+  cost of missing a rare lowercase sentence start is smaller than the cost
+  of shredding an unknown abbreviation.
+- **Non-boundaries:** decimals (`3.14`) and any terminator glued to the
+  next character. **Extra boundary:** a blank line, terminator or not
+  (lists, paragraphs).
+- The abbreviation list is `const` data with a comment saying to extend it
+  there; `may` is deliberately absent (the full word ends sentences; only
+  truncated month forms are listed), and so is `no` (sentences end on it
+  constantly).
+
+**Tests:** 71 → 94 across the workspace (four provider unit tests, five
+fake-server integration tests, fourteen splitter cases); `fmt`,
+`clippy -D warnings`, and `cargo doc --no-deps --workspace` all clean.

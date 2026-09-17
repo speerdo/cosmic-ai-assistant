@@ -10,25 +10,30 @@
 //! `~/.cache/cosmo/voice/<provider>/<voice-id>/` on voice selection, so
 //! reflex acks are an existing buffer push: zero synthesis latency.
 //!
-//! Layout (spec §2.2): the `provider` module holds the trait and its value
-//! types ([`VoiceProvider`], [`Voice`], [`Accent`], [`LatencyClass`]), `pcm`
-//! the canonical mono buffer plus WAV encode/decode ([`Pcm`]), `registry`
-//! provider construction ([`Registry`], [`ProviderInit`]). The modules are
-//! private — everything public is re-exported at the crate root. Built-in
-//! providers and the cache land in §2.4–§2.6; playback is `cosmo-audio`
-//! (§2.3).
+//! Layout: the `provider` module holds the trait and its value types
+//! ([`VoiceProvider`], [`Voice`], [`Accent`], [`LatencyClass`]), `pcm` the
+//! canonical mono buffer plus WAV encode/decode ([`Pcm`]), `registry`
+//! provider construction ([`Registry`], [`ProviderInit`]), `openai` the
+//! first builtin ([`OpenAiTts`], spec §2.4), `sentence` the streamed-
+//! synthesis splitter ([`split`], spec §2.10). The modules are private —
+//! everything public is re-exported at the crate root. Kokoro and the
+//! phrase cache land in §2.5–§2.6; playback is `cosmo-audio` (§2.3).
 
+mod openai;
 mod pcm;
 mod provider;
 mod registry;
+mod sentence;
 
+pub use openai::OpenAiTts;
 pub use pcm::Pcm;
 pub use provider::{Accent, Gender, LatencyClass, Voice, VoiceProvider};
 pub use registry::{ProviderFactory, ProviderInit, Registry};
+pub use sentence::split;
 
-/// Errors surfaced by the voice layer. Providers map their specifics into
-/// [`TtsError::Synthesis`]; the structured variants here are what `doctor`
-/// and the CLI render.
+/// Errors surfaced by the voice layer. The structured variants are what
+/// `doctor` and the CLI render; each names its fix, per the §1.4 discipline
+/// (no key / transport / rate limit have three different remedies).
 #[derive(Debug, thiserror::Error)]
 pub enum TtsError {
     #[error("unknown voice provider \"{name}\" (available: {available})")]
@@ -37,6 +42,10 @@ pub enum TtsError {
     UnknownVoice { provider: String, voice: String },
     #[error("no API key — run `cosmo auth login`")]
     NoKey,
+    #[error("speech service unreachable: {0}")]
+    Network(String),
+    #[error("speech rate limited — retry later: {0}")]
+    RateLimited(String),
     #[error("synthesis failed: {0}")]
     Synthesis(String),
     #[error("wav: {0}")]

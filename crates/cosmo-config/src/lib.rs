@@ -38,6 +38,13 @@ pub struct Config {
     /// Which voice within the provider. `"default"` defers to the provider's
     /// own choice; real ids come from `cosmo voice list`.
     pub voice_id: String,
+    /// TTS model the voice provider uses (spec §2.4). Provider-specific;
+    /// OpenAI's is `gpt-4o-mini-tts`.
+    pub voice_model: String,
+    /// Speaking-style instruction for providers that take one (OpenAI's
+    /// `instructions` field: affect/tone/pacing). Empty = omit from requests.
+    /// A style preference, never a credential.
+    pub voice_instructions: String,
     /// `announce` minimum spacing between notifications, seconds.
     pub announce_spacing_secs: u64,
     /// Log filter string, e.g. `cosmo=debug`. Overridden by `RUST_LOG`.
@@ -57,6 +64,8 @@ impl Default for Config {
             // fetched (§2.5); "openai" works today with a stored key.
             voice_provider: "openai".into(),
             voice_id: "default".into(),
+            voice_model: "gpt-4o-mini-tts".into(),
+            voice_instructions: String::new(),
             announce_spacing_secs: 8,
             log_filter: "info".into(),
         }
@@ -195,6 +204,9 @@ pub fn commented_default() -> String {
     // (`scripts/fetch-models`); "openai" works today with a stored key.
     // voice_provider: "{voice_provider}",
     // voice_id: "{voice_id}",
+    // voice_model: "{voice_model}",
+    // Speaking style for providers that take one (OpenAI instructions).
+    // voice_instructions: "{voice_instructions}",
 
     // Minimum spacing between `announce` notifications (seconds).
     // announce_spacing_secs: {spacing},
@@ -216,6 +228,8 @@ pub fn commented_default() -> String {
         tmux_session = d.tmux_session,
         voice_provider = d.voice_provider,
         voice_id = d.voice_id,
+        voice_model = d.voice_model,
+        voice_instructions = d.voice_instructions,
         spacing = d.announce_spacing_secs,
         log_filter = d.log_filter,
     )
@@ -244,6 +258,7 @@ mod tests {
         assert!(text.contains("// model: \"gpt-4o-mini\","));
         assert!(text.contains("// voice_provider: \"openai\","));
         assert!(text.contains("// voice_id: \"default\","));
+        assert!(text.contains("// voice_model: \"gpt-4o-mini-tts\","));
         // Second load re-reads the (all-commented) file back to defaults.
         let again = load_from(&path).unwrap();
         assert_eq!(again, Config::default());

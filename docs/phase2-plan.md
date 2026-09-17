@@ -136,25 +136,35 @@ daemon-usable "enqueue speech buffer" API exists (daemon wiring itself is
 
 The vertical slice. Network, `reqwest`, no new native deps.
 
-- [ ] `gpt-4o-mini-tts` with the `instructions` field sourced from config
+- [x] `gpt-4o-mini-tts` with the `instructions` field sourced from config
       (affect/tone/pacing); response format chosen for decode simplicity
       (`wav` with a parseable header, or raw `pcm` at a known rate — decide
-      against the canonical `Pcm` from 2.2).
-- [ ] Key resolution reuses the phase-1 source exactly: env → Secret Service
+      against the canonical `Pcm` from 2.2). *(`wav` through the existing
+      decoder; `voice_model`/`voice_instructions` config keys, empty
+      instructions omitted from the request; findings §4 item 1)*
+- [x] Key resolution reuses the phase-1 source exactly: env → Secret Service
       → structured error. Same credential as chat; no new auth surface.
-- [ ] Errors follow the §1.4 three-state discipline (no key / network /
+      *(the provider takes the resolved key in `ProviderInit.api_key` — the
+      daemon-side resolution that feeds it is §2.7)*
+- [x] Errors follow the §1.4 three-state discipline (no key / network /
       rate limit) so `doctor` and the CLI render actionable fixes — not
-      "TTS broken".
-- [ ] `latency_class() = Network`, `is_local() = false`.
-- [ ] Tests: request/response shape against a fake HTTP server, same harness
+      "TTS broken". *(`NoKey` checked before any network, `Network` on
+      transport, `RateLimited` for 429, `Synthesis` otherwise; findings
+      §4 item 3)*
+- [x] `latency_class() = Network`, `is_local() = false`.
+- [x] Tests: request/response shape against a fake HTTP server, same harness
       style as phase 1's fake chat-completions server.
 - [ ] Daemon: after a completed turn, speak the reply through 2.3's
       playback. `Speaking` state (reserved since phase 1) becomes real.
+      *(provider done; this box waits on §2.3, which is blocked on §2.0's
+      apt install)*
 
 **DoD:** with provider=openai and a key, `cosmo say "..."` **speaks its
 reply** — the phase-2 headline DoD, achieved with zero new native
 dependencies. Cross-ref carry-over E1: the same real-key run that closes
-E1 exercises this end to end.
+E1 exercises this end to end. *(provider half done 2026-09-17 — exercised
+end to end against a fake speech server; the "speaks" half is §2.3 + the
+daemon box above, both downstream of §2.0. findings §4.)*
 
 ### 2.5 Kokoro provider — the default
 
@@ -238,12 +248,18 @@ Independent; the deliverable is a verdict, not a feature.
 Independent, pure, cheap. Built now so phase 5's streaming API settles
 early.
 
-- [ ] Text → sentence boundaries, handling `.`/`!`/`?`, ellipsis,
+- [x] Text → sentence boundaries, handling `.`/`!`/`?`, ellipsis,
       abbreviations (Mr., e.g., vs.), decimals, quotes, brackets.
-- [ ] Unit tests on the awkward corpus; the list of known-abbreviations is
-      data, not code.
+      *(strong boundaries: terminator runs, `…`, bare `!`/`?` in whitespace;
+      weak `.`: sentence-start required, minus the abbreviation list and
+      initials; closing-quote interiors stay attached; blank lines split;
+      findings §10)*
+- [x] Unit tests on the awkward corpus; the list of known-abbreviations is
+      data, not code. *(fourteen cases; `may` and `no` deliberately absent
+      from the list — both are real sentence-final words)*
 
-**DoD:** tests green; nothing depends on it yet — that is fine.
+**DoD:** tests green; nothing depends on it yet — that is fine. *(done
+2026-09-17; phase 5 consumes it)*
 
 ## Not in phase 2 (so nobody scope-creeps it)
 

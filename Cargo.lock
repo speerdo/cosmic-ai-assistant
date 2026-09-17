@@ -678,9 +678,12 @@ dependencies = [
  "cosmo-config",
  "futures",
  "hound",
+ "reqwest",
  "serde",
+ "serde_json",
  "thiserror",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

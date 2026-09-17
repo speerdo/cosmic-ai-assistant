@@ -14,13 +14,23 @@ use crate::TtsError;
 use crate::provider::VoiceProvider;
 
 /// What a provider is told at construction. Grows only when a part needs a
-/// field (per-provider extras such as model paths or test base-urls are
-/// added by §2.4/§2.5 rather than guessed here).
+/// field (Kokoro's model-pack paths, §2.5, are the next expected addition).
 #[derive(Debug, Clone, Default)]
 pub struct ProviderInit {
     /// API key resolved through the §1.4 source (env var → Secret Service).
     /// Cloud providers take it from here — never from `config.ron`.
     pub api_key: Option<SecretKey>,
+    /// Endpoint override for providers that talk HTTP (tests, self-hosted
+    /// gateways). `None` → the provider's production default.
+    pub base_url: Option<String>,
+    /// Model for providers that expose one (OpenAI: `gpt-4o-mini-tts`;
+    /// §2.5's Kokoro reuses this for its model pack). `None` → provider
+    /// default.
+    pub model: Option<String>,
+    /// Optional speaking-style instruction (OpenAI's `instructions`:
+    /// affect, tone, pacing; sourced from `voice_instructions` in config).
+    /// `None`/empty → the field is omitted from the request.
+    pub instructions: Option<String>,
 }
 
 /// Constructs a provider. A plain fn pointer keeps the registry cheap and
@@ -37,6 +47,16 @@ pub struct Registry {
 impl Registry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Every provider built into this build. Grows as the spec's parts land
+    /// (`openai` in §2.4, `kokoro` in §2.5, `piper` in §2.8) — the daemon
+    /// constructs its registry from this, so a provider that exists in the
+    /// tree is one the config can name.
+    pub fn with_builtins() -> Self {
+        let mut reg = Self::new();
+        reg.register("openai", crate::openai::factory);
+        reg
     }
 
     pub fn register(&mut self, name: impl Into<String>, factory: ProviderFactory) {
@@ -127,7 +147,13 @@ mod tests {
 
         let key = SecretKey::from_raw("sk-test".into());
         let provider = reg
-            .create("fake", &ProviderInit { api_key: Some(key) })
+            .create(
+                "fake",
+                &ProviderInit {
+                    api_key: Some(key),
+                    ..Default::default()
+                },
+            )
             .unwrap();
         assert_eq!(provider.id(), "fake");
         assert!(provider.is_local());
@@ -165,6 +191,7 @@ mod tests {
         // newtype must keep that derivation safe.
         let init = ProviderInit {
             api_key: Some(SecretKey::from_raw("sk-test-SECRET".into())),
+            ..Default::default()
         };
         assert!(!format!("{init:?}").contains("sk-test-SECRET"));
         assert!(format!("{init:?}").contains("[redacted]"));
