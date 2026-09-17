@@ -2,8 +2,9 @@
 
 **Derives from:** `docs/implementation-plan.md` §Phase 2, `docs/cosmo-blueprint.md` §4 (voice layer), §8 (audio discipline)
 **Drafted:** 2026-09-17
-**Status:** §2.2 done and reviewed (2026-09-17; five defects fixed, findings
-§R); §2.0 audited, install pending a manual sudo run — findings §0;
+**Status:** §2.2, §2.4 (provider half) and §2.10 done and reviewed
+(2026-09-17; eight defects fixed across two review passes, findings §R and
+§R2); §2.0 audited, install pending a manual sudo run — findings §0;
 everything else not started.
 
 Phase 2 looks like one phase but is five different kinds of work: unproven
@@ -163,8 +164,10 @@ The vertical slice. Network, `reqwest`, no new native deps.
 reply** — the phase-2 headline DoD, achieved with zero new native
 dependencies. Cross-ref carry-over E1: the same real-key run that closes
 E1 exercises this end to end. *(provider half done 2026-09-17 — exercised
-end to end against a fake speech server; the "speaks" half is §2.3 + the
-daemon box above, both downstream of §2.0. findings §4.)*
+end to end against a fake speech server, then reviewed: a stalled server
+hung the speak path forever, now a 30s timeout surfacing as `Network`
+(findings §R2). The "speaks" half is §2.3 + the daemon box above, both
+downstream of §2.0. findings §4.)*
 
 ### 2.5 Kokoro provider — the default
 
@@ -259,7 +262,9 @@ early.
       from the list — both are real sentence-final words)*
 
 **DoD:** tests green; nothing depends on it yet — that is fine. *(done
-2026-09-17; phase 5 consumes it)*
+2026-09-17, then reviewed: ordered-list markers were being split into their
+own spoken sentences and `etc` was wrongly on the abbreviation list —
+findings §R2. Phase 5 consumes it.)*
 
 ## Not in phase 2 (so nobody scope-creeps it)
 

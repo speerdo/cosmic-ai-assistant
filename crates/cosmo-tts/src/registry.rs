@@ -7,6 +7,7 @@
 //! available, so `cosmo doctor` can render the fix — the phase-1 discipline.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use cosmo_config::secret::SecretKey;
 
@@ -31,6 +32,11 @@ pub struct ProviderInit {
     /// affect, tone, pacing; sourced from `voice_instructions` in config).
     /// `None`/empty → the field is omitted from the request.
     pub instructions: Option<String>,
+    /// Ceiling on one network synthesis, for providers that talk HTTP.
+    /// `None` → the provider's default. A hung request is not one of the
+    /// §1.4 states: the caller is waiting to *hear* something, so it must
+    /// fail with a reason rather than never return.
+    pub request_timeout: Option<Duration>,
 }
 
 /// Constructs a provider. A plain fn pointer keeps the registry cheap and
@@ -174,6 +180,17 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("kokoro"), "{msg}");
         assert!(msg.contains("fake") && msg.contains("other"), "{msg}");
+    }
+
+    /// `with_builtins` is what the daemon constructs its registry from, so a
+    /// builtin that exists in the tree but never registers would surface as
+    /// "unknown provider" for a name the config legitimately allows.
+    #[test]
+    fn builtins_are_registered_under_their_config_names() {
+        assert!(
+            Registry::with_builtins().names().contains(&"openai"),
+            "openai must be constructible by the name config uses"
+        );
     }
 
     #[test]

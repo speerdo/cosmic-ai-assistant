@@ -6,6 +6,7 @@
 //! error mapping: 429 → RateLimited, 401 → Synthesis, transport → Network.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -131,6 +132,7 @@ fn init_with(base: &str) -> ProviderInit {
         base_url: Some(base.to_string()),
         model: Some("gpt-4o-mini-tts".into()),
         instructions: Some("warm and patient".into()),
+        request_timeout: None,
     }
 }
 
@@ -216,4 +218,31 @@ async fn unreachable_server_maps_to_network() {
     let provider = cosmo_tts::OpenAiTts::new(&init_with("http://127.0.0.1:1")).expect("builds");
     let err = provider.synthesize("hi", "alloy").await.unwrap_err();
     assert!(matches!(err, TtsError::Network(_)), "{err:?}");
+}
+
+/// A server that accepts the connection and then says nothing, forever —
+/// the shape a network black hole takes. Without a client timeout this is
+/// not an error at all: `cosmo say` waits for speech that never comes.
+#[tokio::test]
+async fn a_server_that_never_answers_times_out_as_network() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        // Hold the accepted socket open and never write a response.
+        let held = listener.accept().await;
+        std::future::pending::<()>().await;
+        drop(held);
+    });
+
+    let mut init = init_with(&format!("http://{addr}"));
+    init.request_timeout = Some(Duration::from_millis(250));
+    let provider = cosmo_tts::OpenAiTts::new(&init).expect("provider builds");
+
+    let started = std::time::Instant::now();
+    let err = provider.synthesize("hi", "alloy").await.unwrap_err();
+    assert!(matches!(err, TtsError::Network(_)), "{err:?}");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the timeout must be what ended it, not the test harness"
+    );
 }

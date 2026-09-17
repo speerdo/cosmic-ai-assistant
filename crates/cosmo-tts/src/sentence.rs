@@ -18,18 +18,23 @@
 //!   `(really!)`), so they split only before a sentence-like start.
 //! - Decimals and glued text (`3.14`, `wait...what`) never split; a blank
 //!   line is a boundary even without a terminator.
+//! - A number that is the first thing on its line is an **ordered-list
+//!   marker**, not a sentence: `1. First step. 2. Second step.` yields two
+//!   chunks, not four. Scoped to line-initial so `Shipped in 2024. Then…`
+//!   still splits.
 
 /// Abbreviations after which a single `.` does not end a sentence. Matched
 /// case-insensitively against the whitespace-delimited token before the dot,
 /// quotes/brackets stripped. **Data, not code** — extend here, not in the
 /// scanner. Deliberately conservative: only tokens that are almost never the
 /// last word of a sentence (`may` as a month is *not* here for exactly that
-/// reason; neither is `no`, which sentences end on constantly).
+/// reason; neither is `no`, which sentences end on constantly, nor `etc`,
+/// which ends list sentences constantly — "milk, etc. Then come home").
 const ABBREVIATIONS: &[&str] = &[
-    "mr", "mrs", "ms", "mx", "dr", "prof", "sr", "jr", "st", "mt", "rev", "hon", "vs", "etc",
-    "e.g", "i.e", "cf", "al", "fig", "vol", "pp", "ed", "approx", "dept", "est", "inc", "ltd",
-    "corp", "univ", "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov",
-    "dec", "u.s", "u.k", "ph.d",
+    "mr", "mrs", "ms", "mx", "dr", "prof", "sr", "jr", "st", "mt", "rev", "hon", "vs", "e.g",
+    "i.e", "cf", "al", "fig", "vol", "pp", "ed", "approx", "dept", "est", "inc", "ltd", "corp",
+    "univ", "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+    "u.s", "u.k", "ph.d",
 ];
 
 /// Split `text` into sentences, terminators (and any closing quotes or
@@ -170,6 +175,22 @@ fn is_abbreviation(text: &str, chunk_start: usize, term_pos: usize) -> bool {
     ABBREVIATIONS.contains(&token.as_str())
         // A single alphabetic character: "J. R. R. Tolkien".
         || token.chars().count() == 1 && token.chars().all(char::is_alphabetic)
+        || is_list_marker(before, &token)
+}
+
+/// An ordered-list marker: a short number that is the first thing on its
+/// line. Assistant replies are full of `1. Do this. 2. Do that.`, and
+/// treating the marker as a sentence makes the voice say "One." on its own,
+/// with a pause, before the item.
+///
+/// Line-initial is what keeps this from swallowing real boundaries — in
+/// `Shipped in 2024. Then it stuck.` the number is not the start of its
+/// line, so that still splits.
+fn is_list_marker(before: &str, token: &str) -> bool {
+    !token.is_empty()
+        && token.len() <= 3
+        && token.bytes().all(|b| b.is_ascii_digit())
+        && before.rsplit('\n').next().unwrap_or(before).trim_start() == token
 }
 
 fn push_chunk(out: &mut Vec<String>, chunk: &str) {
@@ -295,6 +316,52 @@ mod tests {
         assert_eq!(
             split("It was Sept. 3 when we met."),
             vec!["It was Sept. 3 when we met."]
+        );
+    }
+
+    /// Ordered lists are everywhere in assistant replies. Treating "1." as a
+    /// sentence makes phase 5 synthesize it as its own utterance — the voice
+    /// says "One." and pauses before the item.
+    #[test]
+    fn ordered_list_markers_are_not_sentences() {
+        assert_eq!(
+            split("1. First step. 2. Second step. 3. Done."),
+            vec!["1. First step.", "2. Second step.", "3. Done."]
+        );
+        // The common markdown shape: marker after a newline, not at the
+        // start of the chunk.
+        assert_eq!(
+            split("Steps:\n1. Open it. 2. Run it."),
+            vec!["Steps:\n1. Open it.", "2. Run it."]
+        );
+    }
+
+    /// The counterpart: a number that is *not* line-initial is an ordinary
+    /// sentence-final word and must still split.
+    #[test]
+    fn a_number_mid_line_still_ends_its_sentence() {
+        assert_eq!(
+            split("Shipped in 2024. Then it stuck."),
+            vec!["Shipped in 2024.", "Then it stuck."]
+        );
+        assert_eq!(
+            split("It failed with exit code 1. I'll retry."),
+            vec!["It failed with exit code 1.", "I'll retry."]
+        );
+    }
+
+    /// `etc.` fails the abbreviation list's own criterion — it ends list
+    /// sentences constantly — so it is not on it.
+    #[test]
+    fn etc_ends_a_sentence_when_a_new_one_follows() {
+        assert_eq!(
+            split("Bring bread, milk, etc. Then come home."),
+            vec!["Bring bread, milk, etc.", "Then come home."]
+        );
+        // Lowercase continuation still holds it together, as for any word.
+        assert_eq!(
+            split("Bring bread, etc. and then go."),
+            vec!["Bring bread, etc. and then go."]
         );
     }
 

@@ -9,11 +9,15 @@
 //! is what comes back.
 //!
 //! Errors follow the §1.4 discipline — three states, three fixes: missing
-//! key ([`TtsError::NoKey`]), transport ([`TtsError::Network`]), rate limit
+//! key ([`TtsError::NoKey`]), transport ([`TtsError::Network`] — which a
+//! request past [`DEFAULT_REQUEST_TIMEOUT`] becomes, so a stalled server
+//! cannot hang the speak path), rate limit
 //! ([`TtsError::RateLimited`]); everything else lands in
 //! [`TtsError::Synthesis`] with the status and a body snippet. The key
 //! itself never appears in an error or a span (it is a redacting
 //! [`SecretKey`], and only the status and header *names* are logged).
+
+use std::time::Duration;
 
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
@@ -42,6 +46,12 @@ pub const DEFAULT_MODEL: &str = "gpt-4o-mini-tts";
 
 const PROD_BASE: &str = "https://api.openai.com";
 
+/// Ceiling on one synthesis when [`ProviderInit::request_timeout`] is unset.
+/// Generous for a sentence of speech and far short of forever: without it a
+/// stalled connection hangs `cosmo say` with no error at all, which is not
+/// one of the three states §1.4 promises.
+pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 #[derive(Debug)]
 pub struct OpenAiTts {
     http: reqwest::Client,
@@ -56,8 +66,12 @@ impl OpenAiTts {
     /// overrides the production endpoint (tests, self-hosted gateways).
     pub fn new(init: &ProviderInit) -> Result<Self, TtsError> {
         let key = init.api_key.clone().ok_or(TtsError::NoKey)?;
+        let http = reqwest::Client::builder()
+            .timeout(init.request_timeout.unwrap_or(DEFAULT_REQUEST_TIMEOUT))
+            .build()
+            .map_err(|e| TtsError::Network(format!("http client: {e}")))?;
         Ok(Self {
-            http: reqwest::Client::new(),
+            http,
             base_url: init
                 .base_url
                 .clone()

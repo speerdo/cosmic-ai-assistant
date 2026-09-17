@@ -3,8 +3,8 @@
 **Started:** 2026-09-17
 **Scope so far:** §2.0 audited (install pending), §2.2 core types done and
 then reviewed (§R — five defects fixed), §2.4 provider + §2.10 splitter
-done (§4, §10). §2.1 link spike and §2.3 playback are still blocked on
-§0's install.
+done (§4, §10) and reviewed (§R2 — three defects fixed). §2.1 link spike
+and §2.3 playback are still blocked on §0's install.
 
 ## §0. System packages (spec part 2.0) — audit done, install pending
 
@@ -254,3 +254,104 @@ a slightly early pause, an under-split costs latency.
 **Tests:** 71 → 94 across the workspace (four provider unit tests, five
 fake-server integration tests, fourteen splitter cases); `fmt`,
 `clippy -D warnings`, and `cargo doc --no-deps --workspace` all clean.
+(Superseded by §R2: 99 after the review.)
+
+## §R2. Review of §2.4 and §2.10 (2026-09-17)
+
+Three defects, all on ticked boxes. None is in the request/response shape
+the fake-server tests cover — they are in what happens *around* it: what the
+splitter does to a numbered list, and what the provider does when a server
+accepts the connection and then says nothing.
+
+The pattern this time is **corpus blindness**. §2.10's fourteen cases are a
+punctuation corpus — abbreviations, initials, decimals, quotes, ellipses —
+assembled from the grammar of the problem rather than from what cosmo
+actually says. Assistant replies are full of ordered lists, and not one case
+had a list in it. Likewise §2.4's five integration tests cover every
+*answer* a server can give and none of the ways it can fail to answer.
+
+### R6. Ordered-list markers were split into their own sentences
+
+```
+split("1. First step. 2. Second step.")
+  → ["1.", "First step.", "2.", "Second step."]
+```
+
+`is_abbreviation` suppresses the boundary after a single *letter*
+(`J. R. R.`) but not after a digit, so every list marker became a sentence.
+Phase 5 feeds these to `synthesize` one at a time, so the voice would have
+said **"One."** — full stop, pause — before each item, in a reply shape
+assistants produce constantly. The splitter's own doc names the trade as
+"an over-split costs a slightly early pause"; this one costs a spoken
+number.
+
+**Fixed:** a number that is the first thing on its line is a list marker,
+not a sentence. Line-initial is what keeps the rule narrow — in
+`Shipped in 2024. Then it stuck.` the number is mid-line, so that still
+splits. **Tests:** `ordered_list_markers_are_not_sentences` (both the
+bare and the `Steps:\n1.` markdown shape) and, for the other direction,
+`a_number_mid_line_still_ends_its_sentence`.
+
+### R7. `etc` was on the abbreviation list, against the list's own rule
+
+The list documents its own admission criterion — "only tokens that are
+almost never the last word of a sentence" — and names `may` and `no` as
+deliberate exclusions for exactly that reason. `etc.` ends list sentences
+constantly (*"bread, milk, etc. Then come home."*), and a split there
+already requires a sentence-like start, so the lowercase continuation case
+(*"bread, etc. and then go"*) is held by the general rule regardless.
+
+**Fixed:** removed, and the criterion's comment now names it alongside `may`
+and `no`. **Test:** `etc_ends_a_sentence_when_a_new_one_follows`, covering
+both directions.
+
+### R8. A server that accepted and never answered hung the speak path forever
+
+`reqwest::Client::new()` has no timeout. A black-holed connection — accepted,
+then silent — is not a transport error, so `synthesize` never returned and
+never will. Verified by reverting the fix: the new test ran until a 60-second
+external cap killed it. This is the one failure mode the §1.4 discipline
+cannot render, because there is no error to render: the user is waiting to
+*hear* something and nothing ever arrives, not even a complaint.
+
+**Fixed:** `DEFAULT_REQUEST_TIMEOUT` of 30s, overridable per provider through
+the new `ProviderInit::request_timeout` — which is also what makes the
+behavior testable in under a second. A timed-out request surfaces as
+`TtsError::Network`, the state whose fix ("the service is unreachable")
+is the true one. **Test:**
+`a_server_that_never_answers_times_out_as_network`.
+
+**`cosmo-reason` has the same gap** — `crates/cosmo-reason/src/lib.rs:73`
+also builds a bare `reqwest::Client`, so a black-holed chat completion hangs
+`cosmo say` the same way. Left alone deliberately: a completion's right
+ceiling is a different number from a sentence of speech (streamed replies
+can legitimately run long), and phase 1's DoD is closed. It belongs in §2.7
+when the daemon owns both clients, and is recorded here so it is not
+rediscovered as a phase-5 mystery.
+
+### Also added
+
+- `builtins_are_registered_under_their_config_names` — `Registry::with_builtins()`
+  had no test, so a builtin present in the tree but never registered would
+  have surfaced as "unknown provider" for a name `config.ron` legitimately
+  allows. It is the daemon's only construction path (§2.7), so it is worth a
+  guard before the daemon depends on it.
+- A throwaway property check confirmed `split` never loses or reorders
+  content across 200k generated inputs over the scanner's special characters
+  (not kept: it is slow relative to what it protects, and the invariant it
+  checks has no history of breaking).
+
+**Tests:** 94 → 99; `fmt`, `clippy -D warnings`, and `cargo doc --no-deps
+--workspace` all clean.
+
+### Looked at, deliberately unchanged
+
+- **`OpenAiTts::new` fails with `NoKey` before a voice can be listed.** The
+  catalogue is a `const` that needs no credential, but the provider cannot be
+  constructed without one, so `cosmo voice list` (§2.7) will report "no key"
+  rather than showing OpenAI's voices. Not wrong today — nothing calls it
+  yet — but §2.7 has to decide whether listing is a keyless operation. Flagged
+  rather than redesigned, because the answer belongs with the CLI.
+- **Markdown emphasis suppresses boundaries** (`**Done.** Next.` stays one
+  chunk — `*` is not a closing character). Speaking raw markdown is its own
+  problem and not one §2.10 claims to solve.
