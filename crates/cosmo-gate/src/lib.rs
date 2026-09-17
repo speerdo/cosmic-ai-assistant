@@ -10,14 +10,14 @@
 //!    rejected outright.** See [`Gate::same_response_verdict`] and
 //!    `tests/invariants::same_response_confirmation_rejected`.
 //! 2. **Confirmation only takes effect after a genuinely new user turn.**
-//!    A hold records the turn it was parked in; [`HoldQueue::resolve`] with
-//!    the same turn number fails. See
+//!    A hold records the turn it was parked in; resolving it with the same
+//!    turn number fails. See
 //!    `tests/invariants::confirm_requires_new_turn`.
 //! 3. **The confirm phrase is matched as a whole utterance.**
 //!    [`is_confirm_utterance`] — "don't confirm that" does not confirm. See
 //!    `tests/invariants::whole_utterance_matching`.
-//! 4. **The local confirm path never asks the model.** [`HoldQueue`] stores
-//!    the fully-formed call; resolution hands it back verbatim for direct
+//! 4. **The local confirm path never asks the model.** The hold queue inside
+//!    [`Gate`] stores the fully-formed call; resolution hands it back for direct
 //!    execution. There is no model handle anywhere in this crate. See
 //!    `tests/invariants::local_confirm_is_model_free`.
 //!

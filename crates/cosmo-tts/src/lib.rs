@@ -10,10 +10,13 @@
 //! `~/.cache/cosmo/voice/<provider>/<voice-id>/` on voice selection, so
 //! reflex acks are an existing buffer push: zero synthesis latency.
 //!
-//! Layout (spec §2.2): [`provider`] is the trait and its value types,
-//! [`pcm`] the canonical mono buffer plus WAV encode/decode, [`registry`]
-//! provider construction. Built-in providers and the cache land in §2.4–
-//! §2.6; playback is `cosmo-audio` (§2.3).
+//! Layout (spec §2.2): the `provider` module holds the trait and its value
+//! types ([`VoiceProvider`], [`Voice`], [`Accent`], [`LatencyClass`]), `pcm`
+//! the canonical mono buffer plus WAV encode/decode ([`Pcm`]), `registry`
+//! provider construction ([`Registry`], [`ProviderInit`]). The modules are
+//! private — everything public is re-exported at the crate root. Built-in
+//! providers and the cache land in §2.4–§2.6; playback is `cosmo-audio`
+//! (§2.3).
 
 mod pcm;
 mod provider;

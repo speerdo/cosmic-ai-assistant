@@ -2,8 +2,9 @@
 
 **Derives from:** `docs/implementation-plan.md` §Phase 2, `docs/cosmo-blueprint.md` §4 (voice layer), §8 (audio discipline)
 **Drafted:** 2026-09-17
-**Status:** §2.2 done (2026-09-17); §2.0 audited, install pending a manual
-sudo run — findings §0; everything else not started.
+**Status:** §2.2 done and reviewed (2026-09-17; five defects fixed, findings
+§R); §2.0 audited, install pending a manual sudo run — findings §0;
+everything else not started.
 
 Phase 2 looks like one phase but is five different kinds of work: unproven
 native-stack risk (`ort`, `koko`, `pipewire` — declared in
@@ -23,6 +24,12 @@ a complete vertical slice while the `ort` link verdict (2.1) is still
 pending. Kokoro remains the **default** provider once it lands (2.5); only
 build order changes, not precedence.
 
+One honest limit on that claim: the *provider* needs no native dependency,
+but the playback it speaks through (2.3) links `pipewire`, so the slice is
+free of **2.1**, not of **2.0**. Everything in 2.4 except its final
+checkbox can be built and tested before the apt install; the DoD itself
+cannot close without it.
+
 ## Parts
 
 ### 2.0 System packages (30 min)
@@ -33,8 +40,9 @@ builds without them.
 *(2026-09-17: audit done — clang/libclang-dev/cmake/libpipewire-0.3-dev are
 missing; the session has no passwordless sudo, so the install itself waits
 on a manual one-liner. `pkg-config`, build-essential, libwayland-dev,
-wayland-protocols confirmed present. `docs/phase2-findings.md` §0. §2.1
-stays blocked until this runs.)*
+wayland-protocols confirmed present. `docs/phase2-findings.md` §0. **§2.1
+and §2.3 both stay blocked until this runs** — and since §2.4's DoD is "say
+speaks", the phase-2 headline DoD is downstream of it too.)*
 
 - [ ] `sudo apt install clang libclang-dev cmake libpipewire-0.3-dev`
       (build-essential, pkg-config, libwayland-dev already present, verified
@@ -100,13 +108,16 @@ zero native dependencies, so it can land before or alongside 2.1.
 - [x] Unit tests: WAV round-trip, registry errors, defaults.
 
 **DoD:** `cargo test -p cosmo-tts` green; the crate's dependency graph
-contains no native build. *(done 2026-09-17 — 67 green workspace-wide, fmt +
-clippy clean)*
+contains no native build. *(done 2026-09-17 — 71 green workspace-wide after
+the review pass; fmt, clippy, and `cargo doc --no-deps --workspace` clean.
+The review found five defects on these ticked boxes, three of them in the
+WAV codec: findings §R.)*
 
 ### 2.3 Playback path (cosmo-audio, output only)
 
-The crate's doc-comment invariants describe capture — that stays phase 3.
-This part delivers the speaker half only.
+Blocked by 2.0 (`libpipewire-0.3-dev` + `libclang` for the bindings). The
+crate's doc-comment invariants describe capture — that stays phase 3. This
+part delivers the speaker half only.
 
 - [ ] Native PipeWire playback stream (not `pw-play`): open at the buffer's
       own rate and let PipeWire resample; push a `Pcm`/WAV buffer; block or

@@ -38,9 +38,11 @@ impl SecretKey {
         &self.inner
     }
 
-    /// Wrap a key already resolved from a [`KeySource`](crate::secret) —
-    /// the constructor the key source itself uses. The raw string does not
-    /// escape the type once wrapped.
+    /// Wrap a key already resolved by a key source — the constructor
+    /// `cosmo_reason::secret::KeySource` implementations build through
+    /// (that trait lives with the env-var/Secret-Service resolution, not
+    /// with the container). The raw string does not escape the type once
+    /// wrapped.
     pub fn from_raw(key: String) -> Self {
         Self { inner: key }
     }

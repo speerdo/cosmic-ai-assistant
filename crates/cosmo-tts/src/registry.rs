@@ -59,7 +59,13 @@ impl Registry {
             .get(name)
             .ok_or_else(|| TtsError::UnknownProvider {
                 name: name.to_owned(),
-                available: self.names().join(", "),
+                // An empty registry would otherwise render "(available: )",
+                // which reads like a truncated message rather than a state.
+                available: if self.factories.is_empty() {
+                    "none registered".to_owned()
+                } else {
+                    self.names().join(", ")
+                },
             })?;
         factory(init)
     }
@@ -142,6 +148,15 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("kokoro"), "{msg}");
         assert!(msg.contains("fake") && msg.contains("other"), "{msg}");
+    }
+
+    #[test]
+    fn empty_registry_says_so_instead_of_trailing_off() {
+        let msg = match Registry::new().create("openai", &ProviderInit::default()) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("an empty registry must not construct anything"),
+        };
+        assert!(msg.contains("none registered"), "{msg}");
     }
 
     #[test]
