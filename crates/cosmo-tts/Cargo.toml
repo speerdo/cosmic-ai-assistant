@@ -8,3 +8,13 @@ repository.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+futures.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+hound.workspace = true
+cosmo-config.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }

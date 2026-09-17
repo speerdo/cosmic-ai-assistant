@@ -10,7 +10,13 @@
 | **Step 0** | Done — workspace, pinned toolchain, CI, reference trees, phase-1 system packages (incl. `libxkbcommon-dev`). |
 | **Phase 0** | **COMPLETE — kill criterion PASS.** MCP timings, GNOME-shadowing, layer shell, and evdev hold-to-talk all verified on real hardware (`docs/phase0-findings.md`). Trigger *keycode* choice deliberately left open (findings §7). |
 | **Phase 1** | **Complete (2026-09-11), after a review pass.** §1.1–1.4 done and live-verified: gate + invariants, IPC + socket lifecycle, config, CLI, MCP host (agent connects, 10 tools), native tools (tmux + clipboard), cosmo-type (typing live-verified), cosmo-focus (mirror live-verified), cosmo-reason (tool loop, fake-API tests), secrets (oo7 + redaction). **A review found seven defects, four on boxes already ticked** — `cosmo confirm` could never succeed, the MCP annotation default was inverted fail-open, Surface B was laundered by `bash -c` and every other wrapper, and `run_in_terminal` was permanently denied on COSMIC. All fixed with regression tests (findings **§R**); the whole DoD is now demonstrated end to end against a fake API on the real session. 56 tests. One honest exception remains: **workspace-move chord not possible on this cosmic-comp build** (findings §C), plus one run against the real OpenAI API still to observe. |
-| Phases 2–8 | Not started. |
+| **Phase 2** | In progress (2026-09-17), spec `docs/phase2-plan.md`. §2.2 core types done (67 tests green; one recorded deviation — async `synthesize`, findings §2). §2.0 audited: `clang`/`cmake`/`libpipewire-0.3-dev` missing, install needs a manual sudo run; **§2.1 link spike is blocked on it**. |
+| Phases 3–8 | Not started. |
+
+### Carry-overs from phase 1 — tracked here so they don't rot
+
+- [ ] **E1 — one real-key OpenAI run.** The full `say` → model → executes-tools round trip has only been observed against the fake chat-completions server; everything up to the network boundary is verified (findings §S, §R). Needs `cosmo auth login` with a real key, then `cosmo say "open the terminal and run htop"`. Record latency and token-usage headers in `docs/phase1-findings.md` and close the observation. Bonus: phase 2's OpenAI TTS provider (spec part 2.4) resolves the same key, so one unlocked keyring closes both.
+- [ ] **E2 — workspace-move chord, blocked upstream.** cosmic-comp ignores virtual-keyboard modifiers (findings §C; 11 orderings tested live). Our chord code is correct and stays in the tree. Re-test when cosmic-comp fixes modifier handling, or via the RemoteDesktop portal keyboard — **before phase 4 advertises workspace-move reflex verbs**. Until then nothing may claim workspace moves on this build.
 
 ---
 
@@ -156,6 +162,8 @@ Not a menu; implement exactly this. Rationale is recorded so nobody re-opens it 
 ## Phase 2 — the voice layer (still no microphone)
 
 Goal: pick your accent **before** the thing can hear you, because every later phase means listening to it.
+
+**Expanded into ten parts in `docs/phase2-plan.md`.** Same scope, smaller landings, one deliberate ordering deviation flagged there for review (OpenAI TTS provider built before Kokoro, so a dependency-free vertical slice closes early while the `ort` link verdict is still pending). The checkboxes below remain the phase-2 definition of done; the spec's per-part DoDs roll up into them.
 
 - [ ] **Link spike first (half a day, do it before planning around these crates).** `ort 2.0.0-rc.13`, `koko 0.2`, and `pipewire 0.10` have never been resolved or compiled in this workspace — nothing consumes them, so `Cargo.lock` does not contain them and CI has never proven they link. Add them to one crate, build, and record: onnxruntime acquisition (bundled/download vs. system `libonnxruntime`), whether `clang`/`cmake` are needed, and total cold build time. `ort` is a release candidate — if it fights, that is a phase-2 fact worth knowing on day one, not during the phrase-cache work.
 - [ ] `cosmo-tts`: `VoiceProvider` trait exactly per blueprint §4 (`id`, `list_voices`, `synthesize`, `stream`, `is_local`, `latency_class`); `Voice` carries `accent` for grouped display.

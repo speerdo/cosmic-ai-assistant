@@ -9,3 +9,33 @@
 //! The phrase cache renders every canned reflex response to WAV under
 //! `~/.cache/cosmo/voice/<provider>/<voice-id>/` on voice selection, so
 //! reflex acks are an existing buffer push: zero synthesis latency.
+//!
+//! Layout (spec §2.2): [`provider`] is the trait and its value types,
+//! [`pcm`] the canonical mono buffer plus WAV encode/decode, [`registry`]
+//! provider construction. Built-in providers and the cache land in §2.4–
+//! §2.6; playback is `cosmo-audio` (§2.3).
+
+mod pcm;
+mod provider;
+mod registry;
+
+pub use pcm::Pcm;
+pub use provider::{Accent, Gender, LatencyClass, Voice, VoiceProvider};
+pub use registry::{ProviderFactory, ProviderInit, Registry};
+
+/// Errors surfaced by the voice layer. Providers map their specifics into
+/// [`TtsError::Synthesis`]; the structured variants here are what `doctor`
+/// and the CLI render.
+#[derive(Debug, thiserror::Error)]
+pub enum TtsError {
+    #[error("unknown voice provider \"{name}\" (available: {available})")]
+    UnknownProvider { name: String, available: String },
+    #[error("provider \"{provider}\" has no voice \"{voice}\"")]
+    UnknownVoice { provider: String, voice: String },
+    #[error("no API key — run `cosmo auth login`")]
+    NoKey,
+    #[error("synthesis failed: {0}")]
+    Synthesis(String),
+    #[error("wav: {0}")]
+    Wav(String),
+}

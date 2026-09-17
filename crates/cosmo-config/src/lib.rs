@@ -11,6 +11,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+pub mod secret;
+
 /// The whole config file. Every field has a default; the file written on
 /// first run shows each default commented out, so users can opt in per line.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,6 +32,12 @@ pub struct Config {
     pub allowed_tools: Vec<String>,
     /// tmux session the terminal tools operate in.
     pub tmux_session: String,
+    /// Voice provider for spoken output (phase 2). A provider name only —
+    /// never a credential (same rule as `provider` above).
+    pub voice_provider: String,
+    /// Which voice within the provider. `"default"` defers to the provider's
+    /// own choice; real ids come from `cosmo voice list`.
+    pub voice_id: String,
     /// `announce` minimum spacing between notifications, seconds.
     pub announce_spacing_secs: u64,
     /// Log filter string, e.g. `cosmo=debug`. Overridden by `RUST_LOG`.
@@ -45,6 +53,10 @@ impl Default for Config {
             agent_args: vec!["mcp".into()],
             allowed_tools: default_allowed_tools(),
             tmux_session: "cosmo".into(),
+            // "kokoro" is the phase-2 end state once local models are
+            // fetched (§2.5); "openai" works today with a stored key.
+            voice_provider: "openai".into(),
+            voice_id: "default".into(),
             announce_spacing_secs: 8,
             log_filter: "info".into(),
         }
@@ -178,6 +190,12 @@ pub fn commented_default() -> String {
     // tmux session used by the terminal tools.
     // tmux_session: "{tmux_session}",
 
+    // Voice output (phase 2). A provider name only — never a key.
+    // "kokoro" is the intended default once local models are fetched
+    // (`scripts/fetch-models`); "openai" works today with a stored key.
+    // voice_provider: "{voice_provider}",
+    // voice_id: "{voice_id}",
+
     // Minimum spacing between `announce` notifications (seconds).
     // announce_spacing_secs: {spacing},
 
@@ -196,6 +214,8 @@ pub fn commented_default() -> String {
             .join(", "),
         tools = tools,
         tmux_session = d.tmux_session,
+        voice_provider = d.voice_provider,
+        voice_id = d.voice_id,
         spacing = d.announce_spacing_secs,
         log_filter = d.log_filter,
     )
@@ -222,6 +242,8 @@ mod tests {
         assert_eq!(cfg, Config::default());
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("// model: \"gpt-4o-mini\","));
+        assert!(text.contains("// voice_provider: \"openai\","));
+        assert!(text.contains("// voice_id: \"default\","));
         // Second load re-reads the (all-commented) file back to defaults.
         let again = load_from(&path).unwrap();
         assert_eq!(again, Config::default());

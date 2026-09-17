@@ -5,42 +5,18 @@
 //! for dev and CI only. The key is wrapped in [`SecretKey`], whose
 //! `Debug`/`Display` print `[redacted]`, so it cannot reach a `tracing`
 //! span, an error chain, or a transcript log by accident.
+//!
+//! The [`SecretKey`] newtype itself lives in `cosmo-config::secret` (next to
+//! the "never a credential" policy it enforces) and is re-exported here so
+//! `cosmo_reason::secret::SecretKey` keeps resolving; cloud consumers outside
+//! this crate (OpenAI TTS, phase 2) take it from `cosmo-config` too, without
+//! depending on the reasoner.
 
 use std::fmt;
 
 use oo7::Keyring;
 
-/// The resolved API key. `Debug`/`Display` are redacted by construction —
-/// the point is that `format!("{:?}", client)` cannot leak it.
-#[derive(Clone)]
-pub struct SecretKey {
-    inner: String,
-}
-
-impl std::fmt::Debug for SecretKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("[redacted]")
-    }
-}
-
-impl std::fmt::Display for SecretKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("[redacted]")
-    }
-}
-
-impl SecretKey {
-    /// Intentionally explicit: the one place the raw key is readable.
-    pub fn expose(&self) -> &str {
-        &self.inner
-    }
-
-    /// Test-only constructor (integration tests need it too).
-    #[doc(hidden)]
-    pub fn from_raw(key: String) -> Self {
-        Self { inner: key }
-    }
-}
+pub use cosmo_config::secret::SecretKey;
 
 /// The three doctor states, each with a different fix (plan §1.4):
 /// `present (source)` / `keyring locked` / `no key stored`.
@@ -72,7 +48,7 @@ impl KeySource for DefaultKeySource {
             && !key.trim().is_empty()
         {
             tracing::debug!("api key source: env (dev/CI only)");
-            return Ok(SecretKey { inner: key });
+            return Ok(SecretKey::from_raw(key));
         }
         // Secret Service via oo7 on the runtime (oo7 is async-only). The
         // daemon calls this from its first reasoning turn; a locked or
@@ -172,7 +148,7 @@ async fn keyring_lookup() -> Result<SecretKey, ReasonKind> {
     };
     let secret = item.secret().await.map_err(|e| ReasonKind::from_oo7(&e))?;
     let text = String::from_utf8_lossy(secret.as_bytes()).to_string();
-    Ok(SecretKey { inner: text })
+    Ok(SecretKey::from_raw(text))
 }
 
 /// Store the key in the Secret Service (`cosmo auth login`).
@@ -220,38 +196,8 @@ mod tests {
 
     const KEY: &str = "sk-test-ABCDEF0123456789";
 
-    #[test]
-    fn debug_never_leaks_the_key() {
-        let key = SecretKey {
-            inner: KEY.to_string(),
-        };
-        let dbg = format!("{key:?}");
-        assert!(!dbg.contains(KEY), "Debug leaks the key: {dbg}");
-        assert_eq!(dbg, "[redacted]");
-
-        let disp = format!("{key}");
-        assert!(!disp.contains(KEY), "Display leaks the key: {disp}");
-        assert_eq!(disp, "[redacted]");
-    }
-
-    /// The specific trap from plan §1.4: the reasoner struct holds the key;
-    /// its Debug must not print it.
-    #[test]
-    fn client_debug_is_redacted() {
-        // A wrapper struct holding a SecretKey derives Debug through it;
-        // the output must be redacted.
-        #[derive(Debug)]
-        #[allow(dead_code)] // read via the Debug output we assert on
-        struct Holder {
-            key: SecretKey,
-        }
-        let h = Holder {
-            key: SecretKey {
-                inner: KEY.to_string(),
-            },
-        };
-        assert!(!format!("{h:?}").contains(KEY));
-    }
+    // Redaction tests for the newtype itself live with the type, in
+    // cosmo-config::secret.
 
     /// Plan §1.4 requires three *actionable* states. The daemon's `say`
     /// path renders `ReasonKind` directly, so its Display is the message a
@@ -295,7 +241,7 @@ mod tests {
                 if k.is_empty() {
                     return Err(crate::ReasonError::NoKey("empty".into()));
                 }
-                Ok(SecretKey { inner: k })
+                Ok(SecretKey::from_raw(k))
             }
         }
         let resolved = TestSource.resolve().expect("env key resolves");
