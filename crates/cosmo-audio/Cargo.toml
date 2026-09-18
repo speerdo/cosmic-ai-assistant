@@ -6,5 +6,17 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[[example]]
+name = "link_pipewire"
+required-features = ["pipewire-backend"]
+
 [lints]
 workspace = true
+
+[features]
+# The native PipeWire backend. Feature-gated so the workspace's core tier
+# builds on a machine without libpipewire-0.3-dev (CI two-tier, spec §2.1).
+pipewire-backend = ["dep:pipewire"]
+
+[dependencies]
+pipewire = { workspace = true, optional = true }

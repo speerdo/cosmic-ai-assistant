@@ -40,9 +40,21 @@ reqwest = "0.13"
 tokio-tungstenite = "0.30"
 
 # ONNX runtime and models
-ort = "2.0.0-rc.13"
+# default-features off to swap ort's default `tls-native` for `tls-rustls`:
+# the binary download is the only thing TLS is for here, and native-tls
+# would add libssl-dev to the system package list for nothing (§2.1).
+ort = { version = "2.0.0-rc.13", default-features = false, features = [
+    "std",
+    "ndarray",
+    "tracing",
+    "download-binaries",
+    "tls-rustls",
+] }
 sherpa-onnx = "1.13"
-koko = "0.2"
+# No Kokoro crate is declared here on purpose — see findings §1. `koko` on
+# crates.io is an unrelated self-hosting tool, `kokoros` is not published at
+# all, and the two real candidates each cost something §2.5 has to weigh.
+# Declaring one before it is resolved is the mistake `koko = "0.2"` was.
 
 # Audio (native PipeWire client, RT data-loop)
 pipewire = "0.10"

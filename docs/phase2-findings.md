@@ -1,10 +1,12 @@
 # Phase 2 findings
 
 **Started:** 2026-09-17
-**Scope so far:** §2.0 done (packages installed 2026-09-18), §2.2 core types
-done and then reviewed (§R — five defects fixed), §2.4 provider + §2.10
-splitter done (§4, §10) and reviewed (§R2 — three defects fixed). §2.1 link
-spike is next, now unblocked; §2.3 playback follows it.
+**Scope so far:** §2.0 done (packages installed 2026-09-18), §2.1 link spike
+done (§1 — `ort` and `pipewire` both pass; `koko` turned out not to exist),
+§2.2 core types done and then reviewed (§R — five defects fixed), §2.4
+provider + §2.10 splitter done (§4, §10) and reviewed (§R2 — three defects
+fixed). §2.3 playback is next and now unblocked; §2.5 needs a Kokoro
+decision first (§1f).
 
 ## §0. System packages (spec part 2.0) — DONE 2026-09-18
 
@@ -41,6 +43,187 @@ native-free and shipped meanwhile.
 The command that ran:
 
     sudo apt install clang libclang-dev cmake libpipewire-0.3-dev
+
+## §1. Link spike (spec part 2.1, 2026-09-18)
+
+**Verdict: `ort` and `pipewire` both PASS, live-verified. `koko` does not
+exist as the plan describes it, and no Kokoro crate is a clean fit — §2.5
+has a decision to make that it did not know it had.**
+
+Two feature-gated examples, both run against the real session:
+
+    cargo run -p cosmo-audio --example link_pipewire --features pipewire-backend
+    cargo run -p cosmo-tts   --example link_ort      --features kokoro
+
+### 1a. The headline: `koko = "0.2"` was a phantom dependency
+
+The blueprint §4 table says Kokoro lives at "`kokoros` (the `koko` crate)",
+and `koko = "0.2"` has sat in `workspace.dependencies` since step 0, never
+resolved. It is not the TTS crate:
+
+| Name on crates.io | What it actually is |
+|---|---|
+| `koko` 0.2.0 | **"A tool to simplify self-hosting services"** — last published 2023-06-26, no repository, no keywords, unrelated |
+| `kokoros` | **not published on crates.io at all** (GitHub only — it would have to be a git dependency) |
+| `kokoro` 0.0.0 | an unrelated dynamic publish-subscribe framework |
+
+Had §2.5 started by adding the declared dependency, it would have compiled a
+self-hosting tool and wondered where `synthesize` went. This is precisely the
+failure the plan's "prove the link **before** designing around these crates"
+was written to catch, and it is worth stating that the cost of *not* running
+the spike first would have been paid in §2.5 debugging, not here.
+
+`koko` has been removed from `workspace.dependencies`. Nothing replaced it
+yet — see 1e.
+
+### 1b. onnxruntime acquisition: prebuilt static, no system library
+
+`ort`'s `download-binaries` fetches a prebuilt archive from pyke's CDN into
+`~/.cache/ort.pyke.io/dfbin/<target>/<hash>/` and links it **statically**:
+
+    cargo:rustc-link-lib=static=onnxruntime
+    cargo:rustc-link-lib=stdc++
+
+| Measure | Value |
+|---|---|
+| Cached `libonnxruntime.a` | **101 MB** |
+| `ldd` on the spike binary | no `libonnxruntime` — nothing to ship alongside |
+| System `libonnxruntime` needed | **no** |
+
+So there is no runtime library to package (packaging §8 gets an easier job
+than feared), at the cost of a 101 MB one-time download and a fat binary.
+
+### 1c. `ort`'s defaults wanted OpenSSL; we took rustls instead
+
+The first build failed in `openssl-sys`: `ort`'s default feature set includes
+`tls-native`, so the *downloader* pulls native-tls and the build needs
+`libssl-dev` — a system package **not** on §2.0's list. TLS here exists only
+to fetch one archive, so the workspace now pins:
+
+    ort = { version = "2.0.0-rc.13", default-features = false,
+            features = ["std", "ndarray", "tracing", "download-binaries", "tls-rustls"] }
+
+That keeps §2.0's package list exactly as recorded. **`ort 2.0.0-rc.13` did
+not fight in any other way** — it compiled clean and committed a live
+environment first try, which is the opposite of what a release candidate was
+budgeted for.
+
+### 1d. Which system packages actually earned their place
+
+| Package | Exercised? | By what |
+|---|---|---|
+| `clang` / `libclang-dev` | **yes** | bindgen: 7,691 lines of `pipewire-sys` bindings + 10,080 of `libspa-sys`, generated against libpipewire **1.6.8** |
+| `libpipewire-0.3-dev` | **yes** | the above, plus linking `libpipewire-0.3.so.0` |
+| `cmake` | **no** | nothing in the spike invoked it — no `CMakeCache.txt` or `CMakeFiles` anywhere in the target tree. `aws-lc-sys` (rustls's crypto backend) took its non-cmake path |
+
+`cmake` stays installed as insurance for phase 3's `sherpa-onnx`, which the
+phase-3 plan lists it for. It bought nothing in phase 2, and that is worth
+knowing before anyone treats the §2.0 list as load-bearing.
+
+Also settled: the crate-vs-library version worry from §0 is a non-issue. The
+`pipewire` **crate** at 0.10 binds fine against libpipewire **1.6.8**, because
+PipeWire kept the `0.3` soname across its 1.x line.
+
+### 1e. Cold build times and binary size (24-core machine, debug profile)
+
+Measured from a wiped target directory with the `ort` download cache deleted,
+so the 101 MB fetch is inside the number. Reproduced twice, within 0.5 s.
+
+| Spike | Cold wall time | Crates compiled | Stripped binary |
+|---|---|---|---|
+| `link_pipewire` | **8.5 s** | 49 | **416 KB** |
+| `link_ort` | **12.6 s** | 143 | **22 MB** |
+
+The 22 MB is the static onnxruntime, and it is the number §8 packaging should
+plan around. Neither build is slow enough to justify the two-tier CI on time
+grounds — the reason for two tiers is the *system packages*, not the clock.
+
+### 1f. Kokoro crate choice — a recommendation, not yet a decision
+
+With `koko` gone, two candidates are actually published. Both are
+**application-shaped, not library-shaped**: each ships its own CLI, its own
+model downloader, and its own audio playback stack.
+
+| | `kokoroxide` 0.1.5 | `kokoro-tiny` 0.1.0 |
+|---|---|---|
+| ONNX runtime | **`ort` 1.16** — a different major from ours | `ort` 2.0.0-rc.10, unifies on our **rc.13** ✓ |
+| Voice listing | none | `voices() -> Vec<String>` ✓ |
+| Raw f32 PCM | via `GeneratedAudio` | `synthesize() -> Result<Vec<f32>, String>` ✓ — exactly `Pcm`'s shape |
+| Style blending (parked) | `VoiceStyle::get_style_vector` ✓ | style vectors held as `HashMap<String, Vec<f32>>`, reachable |
+| Own playback stack | `rodio` + symphonia, **not optional** ✗ | `cpal` + `rodio` behind a default feature — **`default-features = false` drops them** ✓ |
+| Optional deps at all | **0** | 4 |
+| Errors | `Box<dyn Error>` | `String` |
+
+`kokoroxide` is disqualified on the `ort` major alone: two onnxruntime statics
+in one binary is not a thing to attempt. **`kokoro-tiny` is the recommendation
+on API shape** — `voices()` plus `Vec<f32>` is almost literally
+`VoiceProvider::list_voices` and `synthesize`.
+
+Its costs are real and are §2.5's to accept or reject:
+
+1. **It needs `libssl-dev`.** Verified by building: `kokoro-tiny` depends on
+   `reqwest` 0.12 with default features (its model downloader), which pulls
+   `openssl-sys` and fails exactly as `ort` did — and unlike `ort`, we cannot
+   reach in and swap its TLS backend. That is one more `sudo apt install`.
+2. **A second `reqwest` major** (0.12 beside our 0.13) in the binary.
+3. **`atty` 0.2.14**, unmaintained and carrying a published advisory, pulled
+   as a non-optional dependency of a library that only needs it for its own
+   binary.
+4. Its downloader fetches models from a hard-coded GitHub release URL at run
+   time, which is not §2.5's `scripts/fetch-models` with checksums.
+
+**The alternative worth pricing before committing:** drive the Kokoro ONNX
+model through `ort` directly — which this spike has now proven works — with
+`espeak-rs` for grapheme-to-phoneme. That is essentially what both crates do
+in a few hundred lines, and it drops all four costs above. `libespeak-ng1`
+and `espeak-ng-data` are already installed on this machine.
+
+No Kokoro crate has been added to `Cargo.toml`. Declaring one before the
+decision is made is the mistake `koko = "0.2"` already made once.
+
+### 1g. CI two-tier shape — decided
+
+**Every native dependency sits behind a non-default feature**, which is what
+makes the split clean rather than aspirational:
+
+- `cosmo-audio/pipewire-backend` → `dep:pipewire`
+- `cosmo-tts/kokoro` → `dep:ort`
+
+**Core tier** — always runs, needs nothing beyond phase 1's packages:
+
+    cargo test --workspace            # 99 tests, zero native crates in the graph
+    cargo clippy --workspace --all-targets -- -D warnings
+    cargo fmt --all --check
+    cargo doc --no-deps --workspace
+
+Verified after the spike landed: `cargo tree -p cosmo-tts` contains **no**
+`ort` and no `pipewire`, so §2.2's "no native build in this crate's
+dependency graph" DoD still holds with the feature off.
+
+**Heavy tier** — opt-in, needs `clang libclang-dev libpipewire-0.3-dev` and
+network for the 101 MB onnxruntime fetch:
+
+    cargo build -p cosmo-audio --features pipewire-backend --example link_pipewire
+    cargo build -p cosmo-tts   --features kokoro           --example link_ort
+
+Per the spec, **CI is not made red by this in phase 2** either way: the heavy
+tier is added as a separate job that may be skipped, and the core tier is the
+gate. The examples stay in the tree as the tier's smoke test — they are the
+cheapest thing that fails loudly if a native dependency stops resolving.
+
+### 1h. Carried forward to §2.3
+
+`pipewire` 0.10 replaced 0.8's plain `MainLoop::new()` with explicit
+ownership variants — the working idiom is now:
+
+```rust
+let main_loop = pw::main_loop::MainLoopRc::new(None)?;
+let context   = pw::context::ContextRc::new(&main_loop, None)?;
+let core      = context.connect_rc(None)?;
+```
+
+The plan calls cosmic-voice's `audio.rs` "close to liftable"; it is, after
+this rename. Worth knowing before §2.3 starts rather than during.
 
 ## §2. Core types (spec part 2.2, 2026-09-17)
 

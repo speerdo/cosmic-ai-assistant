@@ -2,10 +2,11 @@
 
 **Derives from:** `docs/implementation-plan.md` §Phase 2, `docs/cosmo-blueprint.md` §4 (voice layer), §8 (audio discipline)
 **Drafted:** 2026-09-17
-**Status:** §2.0 done (2026-09-18); §2.2, §2.4 (provider half) and §2.10
-done and reviewed (2026-09-17; eight defects fixed across two review passes,
-findings §R and §R2). §2.1 link spike in progress — it was the thing §2.0
-gated. Everything else not started.
+**Status:** §2.0 and §2.1 done (2026-09-18); §2.2, §2.4 (provider half) and
+§2.10 done and reviewed (2026-09-17; eight defects fixed across two review
+passes, findings §R and §R2). §2.3 playback is next. §2.5 is unblocked on
+`ort` but needs a Kokoro-crate decision first (findings §1f). Everything
+else not started.
 
 Phase 2 looks like one phase but is five different kinds of work: unproven
 native-stack risk (`ort`, `koko`, `pipewire` — declared in
@@ -57,23 +58,36 @@ The plan is explicit: prove the link **before** designing around these
 crates. `ort 2.0.0-rc.13` is a release candidate; if it fights, that is a
 day-one fact.
 
-- [ ] A scratch example (feature-gated target or `examples/` in
+- [x] A scratch example (feature-gated target or `examples/` in
       `cosmo-tts`/`cosmo-audio`) that consumes `ort`, `koko`, and `pipewire`
-      and does nothing but link. Time the cold build.
-- [ ] Record in findings: onnxruntime acquisition model (bundled download
+      and does nothing but link. Time the cold build. *(two examples rather
+      than one — `link_pipewire` in cosmo-audio, `link_ort` in cosmo-tts —
+      so each native dep sits in the crate that will really own it. Both run
+      live. `koko` is absent because it does not exist: findings §1a.)*
+- [x] Record in findings: onnxruntime acquisition model (bundled download
       vs. system `libonnxruntime`), whether `clang`/`cmake` were actually
-      exercised, cold build time, added binary size.
-- [ ] Choose the Kokoro crate — `koko` vs. `kokoroxide` vs. `kokoro-tiny` —
+      exercised, cold build time, added binary size. *(prebuilt static, 101 MB
+      cached, no system lib; clang yes, **cmake no**; 8.5 s / 12.6 s cold;
+      +22 MB stripped. Findings §1b–§1e.)*
+- [~] Choose the Kokoro crate — `koko` vs. `kokoroxide` vs. `kokoro-tiny` —
       on API shape against `VoiceProvider`: does it expose voice listing,
-      raw f32 PCM, and (later, parked) style blending?
-- [ ] Decide the CI two-tier shape now (cross-cutting table assigns this to
+      raw f32 PCM, and (later, parked) style blending? *(`koko` is an
+      unrelated crate and `kokoros` is unpublished; `kokoroxide` is
+      disqualified on an incompatible `ort` major. `kokoro-tiny` is the
+      recommendation but costs `libssl-dev`, a second reqwest and an
+      advisory-carrying `atty` — **open decision**, findings §1f.)*
+- [x] Decide the CI two-tier shape now (cross-cutting table assigns this to
       the link spike): a core tier that always builds, and a heavy tier
       (feature-gated or container-installed) for native-dep crates. Write
       the decision down; CI is not made red by this in phase 2 either way.
+      *(every native dep behind a non-default feature; core tier verified to
+      contain no native crate. Findings §1g.)*
 
 **DoD:** numbers + crate choice + CI decision in `docs/phase2-findings.md`
 §1. If `ort` fights badly, 2.5 re-plans here — nothing downstream of 2.4 is
-blocked meanwhile.
+blocked meanwhile. *(done 2026-09-18. `ort` did **not** fight — one feature
+swap for TLS and it committed a live environment. The re-plan §2.5 needs is
+for the Kokoro crate, not for `ort`.)*
 
 ### 2.2 cosmo-tts core types (no native deps)
 
@@ -169,7 +183,12 @@ downstream of §2.0. findings §4.)*
 
 ### 2.5 Kokoro provider — the default
 
-Blocked by 2.1's verdict; otherwise self-contained.
+Blocked by 2.1's verdict — **which came back needing a decision** (findings
+§1f): no published Kokoro crate is a clean fit. Pick one of (a) `kokoro-tiny`
+with `default-features = false`, accepting `libssl-dev`, a second `reqwest`
+major and an advisory-carrying `atty`; or (b) drive the ONNX model through
+`ort` directly with `espeak-rs` for phonemes, which §2.1 has already proven
+links. Otherwise self-contained.
 
 - [ ] Implement `VoiceProvider` on the crate chosen in 2.1; enumerate
       voices from the model's voice pack with real `accent` values
@@ -309,7 +328,7 @@ findings §R2. Phase 5 consumes it.)*
 ## Dependency order
 
 ```
-2.0 packages ──┬─→ 2.1 link spike ──→ 2.5 Kokoro ──→ 2.6 phrase cache ──┐
+2.0 ✓ ─────────┬─→ 2.1 ✓ ───────────→ 2.5 Kokoro ──→ 2.6 phrase cache ──┐
                └─→ 2.3 playback ──┐                                    ├─→ 2.7 CLI + wiring
 2.2 trait/types ──────────────────┴─→ 2.4 OpenAI TTS ───────────────────┘
 anytime, independent: 2.8 Piper · 2.9 MeloTTS spike · 2.10 splitter

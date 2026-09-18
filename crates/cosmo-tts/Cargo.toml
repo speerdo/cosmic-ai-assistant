@@ -9,7 +9,18 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+# The local Kokoro provider (§2.5) and its ONNX runtime. Feature-gated so
+# the core tier — and §2.2's "no native build in this crate's graph" DoD —
+# still hold without it (CI two-tier, spec §2.1).
+kokoro = ["dep:ort"]
+
+[[example]]
+name = "link_ort"
+required-features = ["kokoro"]
+
 [dependencies]
+ort = { workspace = true, optional = true }
 futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true
