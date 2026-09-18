@@ -2,10 +2,10 @@
 
 **Derives from:** `docs/implementation-plan.md` §Phase 2, `docs/cosmo-blueprint.md` §4 (voice layer), §8 (audio discipline)
 **Drafted:** 2026-09-17
-**Status:** §2.2, §2.4 (provider half) and §2.10 done and reviewed
-(2026-09-17; eight defects fixed across two review passes, findings §R and
-§R2); §2.0 audited, install pending a manual sudo run — findings §0;
-everything else not started.
+**Status:** §2.0 done (2026-09-18); §2.2, §2.4 (provider half) and §2.10
+done and reviewed (2026-09-17; eight defects fixed across two review passes,
+findings §R and §R2). §2.1 link spike in progress — it was the thing §2.0
+gated. Everything else not started.
 
 Phase 2 looks like one phase but is five different kinds of work: unproven
 native-stack risk (`ort`, `koko`, `pipewire` — declared in
@@ -38,17 +38,15 @@ cannot close without it.
 The step-0 leftovers that phase 2 actually needs. Nothing else in this spec
 builds without them.
 
-*(2026-09-17: audit done — clang/libclang-dev/cmake/libpipewire-0.3-dev are
-missing; the session has no passwordless sudo, so the install itself waits
-on a manual one-liner. `pkg-config`, build-essential, libwayland-dev,
-wayland-protocols confirmed present. `docs/phase2-findings.md` §0. **§2.1
-and §2.3 both stay blocked until this runs** — and since §2.4's DoD is "say
-speaks", the phase-2 headline DoD is downstream of it too.)*
+*(2026-09-17 audited, 2026-09-18 installed. `pkg-config --exists
+libpipewire-0.3` succeeds — DoD met. §2.1 and §2.3 are unblocked, and with
+them the path to §2.4's "say speaks". Versions in
+`docs/phase2-findings.md` §0.)*
 
-- [ ] `sudo apt install clang libclang-dev cmake libpipewire-0.3-dev`
+- [x] `sudo apt install clang libclang-dev cmake libpipewire-0.3-dev`
       (build-essential, pkg-config, libwayland-dev already present, verified
-      2026-09-10).
-- [ ] Record installed versions in `docs/phase2-findings.md`.
+      2026-09-10). *(clang 18.1.3, cmake 3.28.3, libpipewire-0.3 1.6.8)*
+- [x] Record installed versions in `docs/phase2-findings.md`.
 
 **DoD:** `pkg-config --exists libpipewire-0.3 && echo ok` succeeds; findings
 file exists with a §0.
@@ -116,7 +114,7 @@ WAV codec: findings §R.)*
 
 ### 2.3 Playback path (cosmo-audio, output only)
 
-Blocked by 2.0 (`libpipewire-0.3-dev` + `libclang` for the bindings). The
+~~Blocked by 2.0~~ — unblocked 2026-09-18. The
 crate's doc-comment invariants describe capture — that stays phase 3. This
 part delivers the speaker half only.
 

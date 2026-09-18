@@ -1,35 +1,46 @@
 # Phase 2 findings
 
 **Started:** 2026-09-17
-**Scope so far:** §2.0 audited (install pending), §2.2 core types done and
-then reviewed (§R — five defects fixed), §2.4 provider + §2.10 splitter
-done (§4, §10) and reviewed (§R2 — three defects fixed). §2.1 link spike
-and §2.3 playback are still blocked on §0's install.
+**Scope so far:** §2.0 done (packages installed 2026-09-18), §2.2 core types
+done and then reviewed (§R — five defects fixed), §2.4 provider + §2.10
+splitter done (§4, §10) and reviewed (§R2 — three defects fixed). §2.1 link
+spike is next, now unblocked; §2.3 playback follows it.
 
-## §0. System packages (spec part 2.0) — audit done, install pending
+## §0. System packages (spec part 2.0) — DONE 2026-09-18
 
-Checked 2026-09-17:
+Audited 2026-09-17, installed 2026-09-18. **DoD met:**
+`pkg-config --exists libpipewire-0.3` succeeds.
 
-| Package | State |
+| Package | Version installed |
 |---|---|
-| `pkg-config` | present (1.8.1) |
+| `clang` | 18.1.3 (`1:18.0-59~exp2`) |
+| `libclang-dev` | `1:18.0-59~exp2` |
+| `cmake` | 3.28.3 (`3.28.3-1build7`) |
+| `libpipewire-0.3-dev` | 1.6.8 (`1.6.8-1pop1~…~24.04~fdff050`) |
+| `pkg-config` | 1.8.1 (present since step 0) |
 | `build-essential`, `libwayland-dev`, `wayland-protocols` | present (phase-1 subset, 2026-09-10) |
-| `clang`, `libclang-dev` | **missing** |
-| `cmake` | **missing** |
-| `libpipewire-0.3-dev` | **missing** |
 
-The working session has no passwordless sudo, so the install could not be
-run there. Until it does, **two parts are blocked, not one**: §2.1 (the
-`ort`/`koko`/`pipewire` link spike) and §2.3 (the PipeWire playback path,
-whose `pipewire` crate binds through `libclang`). Because §2.4's DoD is
-"`cosmo say` *speaks*", the phase-2 headline DoD is downstream of this
-install too — the OpenAI *provider* needs no native dependency, but the
-speaker it plays through does. §2.2 was deliberately native-free and
-shipped anyway:
+`pkg-config --modversion libpipewire-0.3` → **1.6.8**. Worth writing down:
+the workspace pins the `pipewire` *crate* at 0.10, whose bindings are
+generated against whatever `libpipewire-0.3` the machine has. 1.6.8 is well
+ahead of the 0.3.x-era API the crate was written for (PipeWire kept the
+`0.3` soname across its 1.x releases), so a binding mismatch would show up
+at §2.1 as a compile error in the generated bindings rather than as a
+runtime surprise. §2.1 is the test of that.
+
+### What this unblocked
+
+Between the 2026-09-17 audit and this install, **two parts were blocked, not
+one**: §2.1 (the `ort`/`koko`/`pipewire` link spike) and §2.3 (the PipeWire
+playback path, whose `pipewire` crate binds through `libclang`). Because
+§2.4's DoD is "`cosmo say` *speaks*", the phase-2 headline DoD was downstream
+of this install too — the OpenAI *provider* needs no native dependency, but
+the speaker it plays through does. §2.2, §2.4 and §2.10 were all deliberately
+native-free and shipped meanwhile.
+
+The command that ran:
 
     sudo apt install clang libclang-dev cmake libpipewire-0.3-dev
-
-Installed versions get recorded here once it has run.
 
 ## §2. Core types (spec part 2.2, 2026-09-17)
 
