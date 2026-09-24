@@ -173,7 +173,7 @@ Goal: pick your accent **before** the thing can hear you, because every later ph
 - [ ] Piper provider as the weak-hardware fallback (subprocess is fine).
 - [x] OpenAI TTS provider (`gpt-4o-mini-tts`, `instructions` field) via `reqwest`. *(spec §2.4, done 2026-09-17 and reviewed. The provider is complete — catalogue, `instructions` from config, the §1.4 error states, 30s timeout. "`say` speaks" is the box below, and waits on §2.3. Findings §4, §R2.)*
 - [ ] MeloTTS en-AU spike: one evening, generate samples, judge quality honestly before promising Australian (open question §16).
-- [ ] `cosmo voice list / preview / set`. `cosmo say` now speaks its replies.
+- [ ] `cosmo voice list / preview / set`. `cosmo say` now speaks its replies. *(second half done 2026-09-24: the daemon speaks replies with `--features speech`, `Speaking` state live; verified against a fake server, real-key run is E1. Phase-2 findings §4b. `voice list/preview/set` is spec §2.7.)*
 - [x] Sentence-splitting helper for streaming (used in phase 5) with unit tests on punctuation/ellipsis cases. *(spec §2.10, done 2026-09-17 and reviewed — ordered-list markers and `etc` were both wrong on the first pass. Findings §10, §R2.)*
 
 ---

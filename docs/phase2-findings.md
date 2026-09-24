@@ -5,7 +5,7 @@
 done (§1 — `ort` and `pipewire` both pass; `koko` turned out not to exist),
 §2.2 core types done and then reviewed (§R — five defects fixed), §2.4
 provider + §2.10 splitter done (§4, §10) and reviewed (§R2 — three defects
-fixed). §2.3 playback done 2026-09-24 (§3). §2.5's Kokoro decision is made:
+fixed). §2.3 playback done 2026-09-24 (§3); the daemon speaks replies (§4b). §2.5's Kokoro decision is made:
 `ort` directly plus `espeak-rs`, no Kokoro crate (§1f).
 
 ## §0. System packages (spec part 2.0) — DONE 2026-09-18
@@ -524,6 +524,78 @@ Decisions worth keeping:
 
 **Config:** `voice_model` (`gpt-4o-mini-tts`) and `voice_instructions`
 (empty) joined `voice_provider`/`voice_id`, commented defaults and all.
+
+## §4b. Spoken replies in the daemon (spec part 2.4, last box, 2026-09-24)
+
+**The phase-2 headline works end to end against a fake server: `cosmo say`
+speaks its reply.** It has not yet been run against the real OpenAI API,
+because that needs a stored key (carry-over E1).
+
+### Build
+
+Speech sits behind a **non-default** daemon feature, consistent with §1g:
+
+    cargo build -p cosmo-daemon --features speech
+
+Without the feature the daemon answers in text only, and `doctor` says so:
+`✗ speech — replies are text only — built without the speech feature`. If
+PipeWire can't be reached at startup, the daemon doesn't exit. It stays
+text-only and `doctor` shows the connection error.
+
+### How it's wired (`crates/cosmo-daemon/src/speech.rs`)
+
+- **Off the response path.** The CLI gets the reply text immediately, and
+  synthesis and playback run in a spawned task. Nobody waits out the audio
+  to see the reply printed.
+- **State:** `Thinking` holds through synthesis (nothing is audible yet),
+  then `Speaking` when the clip is admitted, then `Idle` on drain.
+  `Speaking` has been reserved since phase 1 and is now real.
+- **A new turn, or `cosmo confirm`, cuts speech off.** The interrupt bumps a
+  generation counter under the state lock and stops the player. A task from
+  an older generation never writes state again, so a stale drain can't flip
+  the new turn's `Thinking` to `Idle`. This is unit-tested
+  (`a_new_turn_cuts_speech_and_keeps_its_own_state`).
+- **A speech failure never fails the turn.** The text was already delivered.
+  The error is logged and shown by `doctor` as "last reply not spoken: …".
+- **The provider is built lazily and cached only once it has a key.** That
+  way `cosmo auth login` takes effect after startup without a restart,
+  matching §1.4's rule that a locked keyring at boot is not a crash.
+- **TTS honours `COSMO_API_BASE`**, the reasoner's existing test override.
+  One fake server can then stand in for both halves of the OpenAI API.
+- Only `Reply` outcomes are spoken. Hold prompts ("confirm with: cosmo
+  confirm <token>") stay text-only. Speaking a token aloud is useless, and
+  phase 4 owns the spoken `confirm-hold` phrase.
+- The sink is a trait (`SpeechSink`), so the core tier tests all of this
+  with a fake. `cosmo_audio::Player` implements it under the feature.
+
+### Live run (COSMIC, the real daemon built with `--features speech`)
+
+The fake server answered `/v1/chat/completions` with a fixed reply. On
+`/v1/audio/speech` it produced **real words** through `libespeak-ng` (called
+via ctypes; the `espeak-ng` binary isn't installed, but the library is),
+returned as a 22.05 kHz WAV. The daemon used `OPENAI_API_KEY=sk-fake`, the
+env source meant for dev and CI.
+
+    doctor:  ✓ speech   provider openai, voice default
+    say:     reply printed at once
+    status:  Speaking  0.28s → 4.9s, then Idle     (clip: 213,150 B = 4.83s)
+    fake:    speech request voice=alloy input='Hello Adam. This reply came…'
+    log:     speak/synthesize … status=200 wav_bytes=213150
+             playback stream connected rate=22050
+             speak/first_audio latency_ms=16.96   (enqueue → first sample,
+                                                   stream creation included)
+             stream Streaming → Paused after drain
+
+`voice: default` resolved to `alloy` in the request, as §4 intends. The
+22.05 kHz clip went through a stream opened at its own rate, with no
+resampling on our side.
+
+### Still open
+
+- **The real-key run (E1).** With a key stored (`cosmo auth-login`), one
+  `cosmo say` against the real API covers the reasoning round trip and a
+  genuinely OpenAI-voiced reply. Record TTFA from `speak/synthesize` there.
+- `cosmo voice list / preview / set` is §2.7.
 
 ## §10. Sentence splitter (spec part 2.10, 2026-09-17)
 

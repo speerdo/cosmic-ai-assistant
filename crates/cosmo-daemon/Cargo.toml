@@ -24,7 +24,18 @@ cosmo-config.workspace = true
 cosmo-mcp.workspace = true
 cosmo-tools.workspace = true
 cosmo-reason.workspace = true
+cosmo-tts.workspace = true
+# Always a dependency: `Clip`, `Outcome` and `AudioError` are native-free.
+# Only the `speech` feature pulls in PipeWire.
+cosmo-audio.workspace = true
 zbus.workspace = true
+
+[features]
+# Spoken replies through the native PipeWire player. Off by default so the
+# core CI tier builds without libpipewire (two-tier decision, phase-2
+# findings §1g). Build the daemon you run with:
+#   cargo build -p cosmo-daemon --features speech
+speech = ["cosmo-audio/pipewire-backend"]
 
 [[bin]]
 name = "cosmod"

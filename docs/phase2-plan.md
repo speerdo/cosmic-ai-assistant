@@ -5,8 +5,9 @@
 **Status:** §2.0 and §2.1 done (2026-09-18); §2.2, §2.4 (provider half) and
 §2.10 done and reviewed (2026-09-17; eight defects fixed across two review
 passes, findings §R and §R2). §2.3 playback done 2026-09-24 (findings §3).
-Kokoro decided: `ort` directly + `espeak-rs` (findings §1f). Next: §2.4's
-daemon box ("`say` speaks"), then §2.5.
+The daemon speaks replies (§2.4 complete, findings §4b; the real-key run
+is carry-over E1). Kokoro decided: `ort` directly + `espeak-rs` (findings
+§1f). Next: §2.5.
 
 Phase 2 looks like one phase but is five different kinds of work: unproven
 native-stack risk (`ort`, `koko`, `pipewire` — declared in
@@ -170,10 +171,10 @@ The vertical slice. Network, `reqwest`, no new native deps.
 - [x] `latency_class() = Network`, `is_local() = false`.
 - [x] Tests: request/response shape against a fake HTTP server, same harness
       style as phase 1's fake chat-completions server.
-- [ ] Daemon: after a completed turn, speak the reply through 2.3's
+- [x] Daemon: after a completed turn, speak the reply through 2.3's
       playback. `Speaking` state (reserved since phase 1) becomes real.
-      *(provider done; this box waits on §2.3, which is blocked on §2.0's
-      apt install)*
+      *(done 2026-09-24 behind the daemon's `speech` feature; live against
+      a fake server that speaks with libespeak-ng. Findings §4b.)*
 
 **DoD:** with provider=openai and a key, `cosmo say "..."` **speaks its
 reply** — the phase-2 headline DoD, achieved with zero new native

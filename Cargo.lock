@@ -635,12 +635,14 @@ name = "cosmo-daemon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "cosmo-audio",
  "cosmo-config",
  "cosmo-gate",
  "cosmo-ipc",
  "cosmo-mcp",
  "cosmo-reason",
  "cosmo-tools",
+ "cosmo-tts",
  "futures",
  "serde",
  "serde_json",

@@ -13,6 +13,8 @@
 //! - `tool` — every tool execution (`tool` field carries the name)
 //! - `reason` — every model round trip
 //! - `ack` — (phase 4) reflex dispatch → ack started
+//! - `speak/synthesize`, `speak/push`, `speak/first_audio` — (phase 2) the
+//!   spoken reply's hops (`speech.rs`, `cosmo-audio`)
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -26,6 +28,7 @@ use cosmo_mcp::McpHost;
 use cosmo_reason::secret::DefaultKeySource;
 use cosmo_reason::tools::ToolHost;
 
+use crate::speech::{DefaultSpeechKey, Speech, SpeechSink, StateCell};
 use crate::toolhost::DaemonToolHost;
 
 /// Lock policy mode (findings §L).
@@ -109,7 +112,7 @@ pub struct Engine {
     cfg: Config,
     gate: Arc<Gate>,
     events: broadcast::Sender<Event>,
-    state: Mutex<State>,
+    state: Arc<StateCell>,
     paused: AtomicBool,
     version: &'static str,
     /// Lock policy mode from findings §L: `Logind` on GNOME (hint flips),
@@ -123,6 +126,11 @@ pub struct Engine {
     /// Conversation history for the reasoning loop (compacted per turn by
     /// keeping only the tail; phase 5 replaces with the Realtime session).
     history: Mutex<Vec<serde_json::Value>>,
+    /// Spoken replies; `None` when there is no audio sink (built without
+    /// the `speech` feature, or PipeWire unreachable at startup).
+    speech: Option<Arc<Speech>>,
+    /// Why `speech` is `None`, for `doctor`.
+    speech_absent: String,
 }
 
 impl Engine {
@@ -135,14 +143,39 @@ impl Engine {
         Self {
             cfg,
             gate: Arc::new(Gate::new()),
+            state: Arc::new(StateCell::new(events.clone())),
             events,
-            state: Mutex::new(State::Idle),
             paused: AtomicBool::new(false),
             version: env!("CARGO_PKG_VERSION"),
             lock_mode,
             logind,
             tools: Mutex::new(None),
             history: Mutex::new(Vec::new()),
+            speech: None,
+            speech_absent: "built without the `speech` feature".into(),
+        }
+    }
+
+    /// Give the engine an audio sink: replies are spoken from now on.
+    pub fn attach_speech(&mut self, sink: Arc<dyn SpeechSink>) {
+        self.speech = Some(Arc::new(Speech::new(
+            self.cfg.clone(),
+            sink,
+            Arc::new(DefaultSpeechKey),
+            Arc::clone(&self.state),
+        )));
+    }
+
+    /// Record why no sink could be attached (shown by `doctor`).
+    pub fn speech_unavailable(&mut self, reason: String) {
+        self.speech = None;
+        self.speech_absent = reason;
+    }
+
+    /// Cut off any reply still being spoken: a new turn has begun.
+    fn interrupt_speech(&self) {
+        if let Some(speech) = &self.speech {
+            speech.interrupt();
         }
     }
 
@@ -194,12 +227,11 @@ impl Engine {
     }
 
     pub fn set_state(&self, state: State) {
-        *self.state.lock().unwrap() = state;
-        let _ = self.events.send(Event::State { state });
+        self.state.set(state);
     }
 
     fn state(&self) -> State {
-        *self.state.lock().unwrap()
+        self.state.get()
     }
 
     /// Handle one command. This is the single entry point from the socket.
@@ -286,6 +318,13 @@ impl Engine {
                     .to_owned(),
             ),
         };
+        let (speech_ok, speech_detail) = match &self.speech {
+            Some(speech) => speech.doctor(),
+            None => (
+                false,
+                format!("replies are text only — {}", self.speech_absent),
+            ),
+        };
         // Key presence: the doctor's third distinct state set (plan §1.4).
         let key_detail = if std::env::var("OPENAI_API_KEY")
             .map(|k| !k.trim().is_empty())
@@ -334,6 +373,11 @@ impl Engine {
                     ok: agent_ok,
                     detail: agent_detail,
                 },
+                DoctorCheck {
+                    name: "speech".into(),
+                    ok: speech_ok,
+                    detail: speech_detail,
+                },
             ],
         }
     }
@@ -350,6 +394,7 @@ impl Engine {
         }
 
         let turn_span = tracing::info_span!("turn");
+        self.interrupt_speech();
         self.gate.begin_turn();
         // Refresh lock state before every turn (plan §1.2: between turns
         // and on lock-source signals).
@@ -416,12 +461,17 @@ impl Engine {
             hist.drain(0..tail_from);
         }
 
-        self.set_state(State::Idle);
         match outcome {
             Ok(cosmo_reason::ToolOutcome::Reply(reply)) => {
                 let _ = self.events.send(Event::Reply {
                     text: reply.clone(),
                 });
+                // Spoken in the background: the CLI gets its text now, and
+                // the speech task moves Thinking → Speaking → Idle.
+                match &self.speech {
+                    Some(speech) if !reply.trim().is_empty() => speech.speak(reply.clone()),
+                    _ => self.set_state(State::Idle),
+                }
                 Response::Said {
                     result: cosmo_ipc::TurnResult::Completed {
                         reply,
@@ -443,20 +493,29 @@ impl Engine {
                     },
                 }
             }
-            Ok(cosmo_reason::ToolOutcome::ToolRan { .. }) => Response::Said {
-                result: cosmo_ipc::TurnResult::Completed {
-                    reply: "tool ran".into(),
-                    held: self.pending_ipc_holds(),
-                },
-            },
-            Err(cosmo_reason::ReasonError::NoKey(msg)) => Response::Said {
-                result: cosmo_ipc::TurnResult::Failed { reason: msg },
-            },
-            Err(e) => Response::Said {
-                result: cosmo_ipc::TurnResult::Failed {
-                    reason: e.to_string(),
-                },
-            },
+            Ok(cosmo_reason::ToolOutcome::ToolRan { .. }) => {
+                self.set_state(State::Idle);
+                Response::Said {
+                    result: cosmo_ipc::TurnResult::Completed {
+                        reply: "tool ran".into(),
+                        held: self.pending_ipc_holds(),
+                    },
+                }
+            }
+            Err(cosmo_reason::ReasonError::NoKey(msg)) => {
+                self.set_state(State::Idle);
+                Response::Said {
+                    result: cosmo_ipc::TurnResult::Failed { reason: msg },
+                }
+            }
+            Err(e) => {
+                self.set_state(State::Idle);
+                Response::Said {
+                    result: cosmo_ipc::TurnResult::Failed {
+                        reason: e.to_string(),
+                    },
+                }
+            }
         }
     }
 
@@ -490,6 +549,7 @@ impl Engine {
     /// [`Gate::same_response_verdict`], which escalates to Deny before
     /// anything is ever parked.
     async fn confirm(&self, token: String) -> Response {
+        self.interrupt_speech();
         self.gate.begin_turn();
         let result = self.gate.confirm_token(&token);
         match result {

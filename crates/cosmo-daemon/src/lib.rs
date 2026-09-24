@@ -21,6 +21,7 @@
 //!   codes 3 and 4)
 
 pub mod engine;
+pub mod speech;
 pub mod toolhost;
 
 use std::os::unix::fs::PermissionsExt;
@@ -41,7 +42,9 @@ pub async fn run() -> anyhow::Result<()> {
     tracing::info!(path = %path.display(), "listening");
 
     let (events_tx, _) = broadcast::channel::<Event>(256);
-    let engine = Arc::new(engine::Engine::new(cfg, events_tx.clone()).await);
+    let mut engine = engine::Engine::new(cfg, events_tx.clone()).await;
+    attach_speech(&mut engine);
+    let engine = Arc::new(engine);
     engine.refresh_lock();
     // Agent connection: failure is not fatal (graceful absence; doctor
     // reports it and `say` errors per turn).
@@ -80,6 +83,25 @@ pub async fn run() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+/// Start the PipeWire player and hand it to the engine. Failure is not
+/// fatal: the daemon answers in text and `doctor` says why it is silent.
+#[cfg(feature = "speech")]
+fn attach_speech(engine: &mut engine::Engine) {
+    match cosmo_audio::Player::start() {
+        Ok(player) => {
+            tracing::info!("speech: PipeWire player started");
+            engine.attach_speech(Arc::new(player));
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "speech unavailable; replies are text only");
+            engine.speech_unavailable(e.to_string());
+        }
+    }
+}
+
+#[cfg(not(feature = "speech"))]
+fn attach_speech(_engine: &mut engine::Engine) {}
 
 /// Bind the control socket, cleaning up a stale one first.
 ///
