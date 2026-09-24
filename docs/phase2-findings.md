@@ -5,8 +5,8 @@
 done (§1 — `ort` and `pipewire` both pass; `koko` turned out not to exist),
 §2.2 core types done and then reviewed (§R — five defects fixed), §2.4
 provider + §2.10 splitter done (§4, §10) and reviewed (§R2 — three defects
-fixed). §2.3 playback is next and now unblocked; §2.5 needs a Kokoro
-decision first (§1f).
+fixed). §2.3 playback done 2026-09-24 (§3). §2.5's Kokoro decision is made:
+`ort` directly plus `espeak-rs`, no Kokoro crate (§1f).
 
 ## §0. System packages (spec part 2.0) — DONE 2026-09-18
 
@@ -180,6 +180,11 @@ and `espeak-ng-data` are already installed on this machine.
 
 No Kokoro crate has been added to `Cargo.toml`. Declaring one before the
 decision is made is the mistake `koko = "0.2"` already made once.
+
+**Decided 2026-09-24: the alternative.** §2.5 drives the Kokoro ONNX model
+through `ort` directly and uses `espeak-rs` for phonemes. No Kokoro crate,
+no `libssl-dev`, no second `reqwest`, no `atty`, and model files arrive
+through `scripts/fetch-models` with checksums.
 
 ### 1g. CI two-tier shape — decided
 
@@ -374,6 +379,107 @@ now `cargo doc --no-deps --workspace` all clean.
   the stream. Phase 5 owns the real streaming policy; the current behavior
   is tested (`stream_carries_synthesis_errors`) so the replacement has a
   baseline to change deliberately.
+
+## §3. Playback path (spec part 2.3, 2026-09-24)
+
+**DoD met.** `cargo run -p cosmo-audio --example play_sine --features
+pipewire-backend` plays on the real session. `Player::play(&Clip) ->
+Playback` is the "enqueue speech buffer" API the daemon will use.
+
+### What was built
+
+| Piece | Where | Tier |
+|---|---|---|
+| `Clip`: mono f32 at its own rate, `Arc`-shared samples | `clip.rs` | core |
+| `SpeechGate`, the half-duplex hook, with `SETTLE` = 350ms | `gate.rs` | core |
+| Clip queue + `Playback` completion handle | `queue.rs` | core (unit-tested) |
+| `Player`: the PipeWire thread and stream | `player.rs` | `pipewire-backend` |
+| `play_sine`, `play_wav` examples | `examples/` | `pipewire-backend` |
+
+`cosmo-audio` does **not** depend on `cosmo-tts`. `Pcm { sample_rate, data }`
+maps to `Clip::new(sample_rate, data)`, so the daemon does the conversion
+and the audio crate stays free of provider concerns.
+
+### Design decisions
+
+1. **The stream opens at the clip's rate, and PipeWire resamples.** Mono
+   F32LE, position `MONO`, so PipeWire's adapter upmixes to the sink's
+   channels. When a clip arrives at a different rate, it waits in a backlog
+   until the current run of speech drains; then the stream is rebuilt. Kokoro
+   and OpenAI both produce 24 kHz, so in practice one stream serves both.
+2. **`RT_PROCESS`, with a callback that never blocks.** The fill callback
+   runs on PipeWire's data loop and takes the queue with `try_lock`. When it
+   loses the race it writes one quantum of silence. It only ever advances
+   cursors, so a clip's last `Arc` is always dropped on the main loop and
+   never freed on the RT thread.
+3. **Completion is based on the drain.** When the queue runs dry, the
+   callback calls `flush(true)` (the same as `pw-cat` at EOF). PipeWire's
+   `drained` event means the audio has actually played out, and that event
+   resolves the handles. The trade-off, which is documented: clips queued
+   back to back resolve **together** when the run ends. Phase 5's sentence
+   streaming awaits the last sentence anyway.
+4. **The stream is inactive while idle.** After a drain the stream calls
+   `set_active(false)`, so an idle daemon doesn't keep the sink awake with
+   silence. The next clip reactivates it; no reconnect or renegotiation is
+   needed.
+5. **After a drain, `flush(false)` runs before reactivating.** This clears
+   PipeWire's drained state so that `process` is called again. Nothing is
+   buffered at that point, so nothing is discarded.
+6. **The node is identified as `cosmo-speech` / "Cosmo speech", with
+   `media.role = Accessibility`.** That is the closest of PipeWire's standard
+   roles to synthesized speech. `Communication` was avoided because
+   WirePlumber may route it through echo-cancel. The `COSMO_SINK` env var
+   pins a target sink, for tests.
+7. **`Buffer::requested()`** needs the crate's `v0_3_49` feature. Each call
+   writes what the graph asked for, not a whole buffer, which would add
+   latency.
+
+### Half-duplex seam (invariant #8)
+
+`SpeechGate` goes to *speaking* when a clip is admitted. It goes quiet on
+`drained`, on stop, or on failure, and it records a timestamp. The method
+`mic_open(now, SETTLE)` is lock-free, so phase 3's RT capture callback can
+call it. A comment at the stream-construction site in `player.rs` tells
+phase 3 to consult this gate rather than invent a second one.
+
+### Live verification (COSMIC, Bluetooth sink SRS-XB43, Spotify playing)
+
+`play_sine`, with times since start:
+
+    1523ms sweep → Ok(Played)             1.5s sweep @ 48 kHz
+    2045ms beeps → Ok(Played), Ok(Played) two 0.25s clips @ 24 kHz: rate switch + gapless
+    2045ms speaking = false, mic open now = false, after settle = true
+    3155ms → Ok(Played)                   0.3s beep after 800ms idle (stream reactivated)
+    3463ms → Ok(Cancelled)                5s tone, stop() at 300ms
+
+Every resolution lands within about 25ms of the audio's real duration. That
+is only possible if the stream really drained through the device clock.
+
+**Objective check that audio reached the sink:** a 1.0s 3 kHz tone in a
+**22.05 kHz** WAV was played via `play_wav` while `pw-record` captured the
+sink's monitor. A Goertzel filter at 3 kHz over 200ms windows measured:
+
+    0 1 1 1 1 1 3658 4095 4095 4097 4095 437 2 2 2 6
+
+That is exactly five windows of tone, silence either side, over music
+playing on the same sink, and the resampling from 22.05 to 48 kHz was
+PipeWire's.
+
+**Stressing a clip enqueued while the stream drains:** 120 iterations of a
+100ms clip, each followed by a second clip enqueued 80–140ms later, which
+sweeps across the drain window. Every handle resolved, with no hang. The
+worst case for the second clip was 136ms, about its own 100ms plus the
+drain. This used a scratch example that was not kept in the tree.
+
+### Not done here (and where it lands)
+
+- **Daemon wiring** (`Speaking` state, and speaking replies after a turn) is
+  §2.4's last box and §2.7.
+- **Stream-failure recovery** (`state_changed → Error`) fails the in-flight
+  handles with `AudioError::Stream` and rebuilds the stream on the next clip.
+  It was **not** exercised live, because forcing a stream error on demand
+  isn't practical. It gets revisited when the daemon runs it for real.
+- **Capture** is phase 3.
 
 ## §4. OpenAI TTS provider (spec part 2.4, 2026-09-17)
 

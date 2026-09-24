@@ -4,9 +4,9 @@
 **Drafted:** 2026-09-17
 **Status:** §2.0 and §2.1 done (2026-09-18); §2.2, §2.4 (provider half) and
 §2.10 done and reviewed (2026-09-17; eight defects fixed across two review
-passes, findings §R and §R2). §2.3 playback is next. §2.5 is unblocked on
-`ort` but needs a Kokoro-crate decision first (findings §1f). Everything
-else not started.
+passes, findings §R and §R2). §2.3 playback done 2026-09-24 (findings §3).
+Kokoro decided: `ort` directly + `espeak-rs` (findings §1f). Next: §2.4's
+daemon box ("`say` speaks"), then §2.5.
 
 Phase 2 looks like one phase but is five different kinds of work: unproven
 native-stack risk (`ort`, `koko`, `pipewire` — declared in
@@ -69,13 +69,14 @@ day-one fact.
       exercised, cold build time, added binary size. *(prebuilt static, 101 MB
       cached, no system lib; clang yes, **cmake no**; 8.5 s / 12.6 s cold;
       +22 MB stripped. Findings §1b–§1e.)*
-- [~] Choose the Kokoro crate — `koko` vs. `kokoroxide` vs. `kokoro-tiny` —
+- [x] Choose the Kokoro crate — `koko` vs. `kokoroxide` vs. `kokoro-tiny` —
       on API shape against `VoiceProvider`: does it expose voice listing,
       raw f32 PCM, and (later, parked) style blending? *(`koko` is an
       unrelated crate and `kokoros` is unpublished; `kokoroxide` is
       disqualified on an incompatible `ort` major. `kokoro-tiny` is the
       recommendation but costs `libssl-dev`, a second reqwest and an
-      advisory-carrying `atty` — **open decision**, findings §1f.)*
+      advisory-carrying `atty`. **Decided 2026-09-24: none of them** — `ort`
+      directly plus `espeak-rs`, findings §1f.)*
 - [x] Decide the CI two-tier shape now (cross-cutting table assigns this to
       the link spike): a core tier that always builds, and a heavy tier
       (feature-gated or container-installed) for native-dep crates. Write
@@ -132,18 +133,20 @@ WAV codec: findings §R.)*
 crate's doc-comment invariants describe capture — that stays phase 3. This
 part delivers the speaker half only.
 
-- [ ] Native PipeWire playback stream (not `pw-play`): open at the buffer's
+- [x] Native PipeWire playback stream (not `pw-play`): open at the buffer's
       own rate and let PipeWire resample; push a `Pcm`/WAV buffer; block or
-      track completion.
-- [ ] Example binary: generated sine sweep, then a WAV file, audible on the
-      real session.
-- [ ] Half-duplex: nothing to enforce yet (no mic until phase 3) — leave the
+      track completion. *(`Player::play(&Clip) -> Playback`, RT_PROCESS,
+      drain-based completion awaitable or blocking; findings §3)*
+- [x] Example binary: generated sine sweep, then a WAV file, audible on the
+      real session. *(`play_sine`, `play_wav`; a 3 kHz tone was detected on
+      the sink monitor, findings §3)*
+- [x] Half-duplex: nothing to enforce yet (no mic until phase 3) — leave the
       gating hook and a comment at the stream site per invariant #8, so
-      phase 3 doesn't have to find the seam.
+      phase 3 doesn't have to find the seam. *(`SpeechGate::mic_open`)*
 
 **DoD:** `cargo run -p cosmo-audio --example play_sine` is audible; a
 daemon-usable "enqueue speech buffer" API exists (daemon wiring itself is
-2.7).
+2.7). *(done 2026-09-24, findings §3.)*
 
 ### 2.4 First provider: OpenAI TTS
 
@@ -183,14 +186,12 @@ downstream of §2.0. findings §4.)*
 
 ### 2.5 Kokoro provider — the default
 
-Blocked by 2.1's verdict — **which came back needing a decision** (findings
-§1f): no published Kokoro crate is a clean fit. Pick one of (a) `kokoro-tiny`
-with `default-features = false`, accepting `libssl-dev`, a second `reqwest`
-major and an advisory-carrying `atty`; or (b) drive the ONNX model through
-`ort` directly with `espeak-rs` for phonemes, which §2.1 has already proven
-links. Otherwise self-contained.
+Unblocked. §2.1's verdict needed a decision (findings §1f), and it was made
+on 2026-09-24: **(b)**. The Kokoro ONNX model runs through `ort` directly,
+which §2.1 proved links, with `espeak-rs` for phonemes. There is no Kokoro
+crate, so there is no `libssl-dev`, no second `reqwest` and no `atty`.
 
-- [ ] Implement `VoiceProvider` on the crate chosen in 2.1; enumerate
+- [ ] Implement `VoiceProvider` on `ort` + `espeak-rs`; enumerate
       voices from the model's voice pack with real `accent` values
       (`af_`/`am_` → en-US, `bf_`/`bm_` → en-GB).
 - [ ] `scripts/fetch-models`: download model + voice files into
@@ -329,7 +330,7 @@ findings §R2. Phase 5 consumes it.)*
 
 ```
 2.0 ✓ ─────────┬─→ 2.1 ✓ ───────────→ 2.5 Kokoro ──→ 2.6 phrase cache ──┐
-               └─→ 2.3 playback ──┐                                    ├─→ 2.7 CLI + wiring
+               └─→ 2.3 playback ✓ ┐                                    ├─→ 2.7 CLI + wiring
 2.2 trait/types ──────────────────┴─→ 2.4 OpenAI TTS ───────────────────┘
 anytime, independent: 2.8 Piper · 2.9 MeloTTS spike · 2.10 splitter
 ```

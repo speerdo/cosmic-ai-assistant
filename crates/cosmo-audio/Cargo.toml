@@ -10,6 +10,14 @@ repository.workspace = true
 name = "link_pipewire"
 required-features = ["pipewire-backend"]
 
+[[example]]
+name = "play_sine"
+required-features = ["pipewire-backend"]
+
+[[example]]
+name = "play_wav"
+required-features = ["pipewire-backend"]
+
 [lints]
 workspace = true
 
@@ -19,4 +27,14 @@ workspace = true
 pipewire-backend = ["dep:pipewire"]
 
 [dependencies]
-pipewire = { workspace = true, optional = true }
+# `v0_3_49` exposes `Buffer::requested()`, so a process call writes what
+# the graph asked for rather than a whole (latency-adding) buffer.
+pipewire = { workspace = true, optional = true, features = ["v0_3_49"] }
+thiserror.workspace = true
+tracing.workspace = true
+# `sync` only: completion handles are oneshots, awaitable from the daemon's
+# runtime or blocked on from a plain thread. No runtime is started here.
+tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+hound.workspace = true
