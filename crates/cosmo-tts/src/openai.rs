@@ -80,6 +80,7 @@ impl OpenAiTts {
             model: init
                 .model
                 .clone()
+                .filter(|m| !m.trim().is_empty())
                 .unwrap_or_else(|| DEFAULT_MODEL.to_owned()),
             instructions: init.instructions.clone().filter(|s| !s.trim().is_empty()),
         })

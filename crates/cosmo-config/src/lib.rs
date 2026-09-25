@@ -38,8 +38,9 @@ pub struct Config {
     /// Which voice within the provider. `"default"` defers to the provider's
     /// own choice; real ids come from `cosmo voice list`.
     pub voice_id: String,
-    /// TTS model the voice provider uses (spec §2.4). Provider-specific;
-    /// OpenAI's is `gpt-4o-mini-tts`.
+    /// TTS model the voice provider uses. Provider-specific; empty means the
+    /// provider's own default (Kokoro: the `fp32` export, §2.5; OpenAI:
+    /// `gpt-4o-mini-tts`, §2.4).
     pub voice_model: String,
     /// Speaking-style instruction for providers that take one (OpenAI's
     /// `instructions` field: affect/tone/pacing). Empty = omit from requests.
@@ -60,11 +61,12 @@ impl Default for Config {
             agent_args: vec!["mcp".into()],
             allowed_tools: default_allowed_tools(),
             tmux_session: "cosmo".into(),
-            // "kokoro" is the phase-2 end state once local models are
-            // fetched (§2.5); "openai" works today with a stored key.
-            voice_provider: "openai".into(),
+            // Local by default (§2.5): Kokoro needs no key and no network
+            // once `scripts/fetch-models` has run; "openai" is the cloud
+            // alternative with a stored key.
+            voice_provider: "kokoro".into(),
             voice_id: "default".into(),
-            voice_model: "gpt-4o-mini-tts".into(),
+            voice_model: String::new(),
             voice_instructions: String::new(),
             announce_spacing_secs: 8,
             log_filter: "info".into(),
@@ -200,8 +202,10 @@ pub fn commented_default() -> String {
     // tmux_session: "{tmux_session}",
 
     // Voice output (phase 2). A provider name only — never a key.
-    // "kokoro" is the intended default once local models are fetched
-    // (`scripts/fetch-models`); "openai" works today with a stored key.
+    // "kokoro" speaks locally once `scripts/fetch-models` has run; "openai"
+    // is the cloud alternative (uses the stored key). Voice ids come from
+    // `cosmo voice list`; "default" is the provider's pick. An empty
+    // voice_model is the provider's default (kokoro: "fp32" | "fp16" | "q8").
     // voice_provider: "{voice_provider}",
     // voice_id: "{voice_id}",
     // voice_model: "{voice_model}",
@@ -256,9 +260,9 @@ mod tests {
         assert_eq!(cfg, Config::default());
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("// model: \"gpt-4o-mini\","));
-        assert!(text.contains("// voice_provider: \"openai\","));
+        assert!(text.contains("// voice_provider: \"kokoro\","));
         assert!(text.contains("// voice_id: \"default\","));
-        assert!(text.contains("// voice_model: \"gpt-4o-mini-tts\","));
+        assert!(text.contains("// voice_model: \"\","));
         // Second load re-reads the (all-commented) file back to defaults.
         let again = load_from(&path).unwrap();
         assert_eq!(again, Config::default());

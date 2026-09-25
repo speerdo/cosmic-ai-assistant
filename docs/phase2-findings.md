@@ -5,8 +5,8 @@
 done (§1 — `ort` and `pipewire` both pass; `koko` turned out not to exist),
 §2.2 core types done and then reviewed (§R — five defects fixed), §2.4
 provider + §2.10 splitter done (§4, §10) and reviewed (§R2 — three defects
-fixed). §2.3 playback done 2026-09-24 (§3); the daemon speaks replies (§4b). §2.5's Kokoro decision is made:
-`ort` directly plus `espeak-rs`, no Kokoro crate (§1f).
+fixed). §2.3 playback done 2026-09-24 (§3); the daemon speaks replies (§4b). §2.5 Kokoro done 2026-09-24 (§5):
+`ort` plus the system eSpeak NG loaded at run time; it's the default voice.
 
 ## §0. System packages (spec part 2.0) — DONE 2026-09-18
 
@@ -182,7 +182,8 @@ No Kokoro crate has been added to `Cargo.toml`. Declaring one before the
 decision is made is the mistake `koko = "0.2"` already made once.
 
 **Decided 2026-09-24: the alternative.** §2.5 drives the Kokoro ONNX model
-through `ort` directly and uses `espeak-rs` for phonemes. No Kokoro crate,
+through `ort` directly and uses eSpeak for phonemes. §5a explains why that
+became the system `libespeak-ng` loaded at run time rather than `espeak-rs`. No Kokoro crate,
 no `libssl-dev`, no second `reqwest`, no `atty`, and model files arrive
 through `scripts/fetch-models` with checksums.
 
@@ -596,6 +597,149 @@ resampling on our side.
   `cosmo say` against the real API covers the reasoning round trip and a
   genuinely OpenAI-voiced reply. Record TTFA from `speak/synthesize` there.
 - `cosmo voice list / preview / set` is §2.7.
+
+## §5. Kokoro provider (spec part 2.5, 2026-09-24)
+
+**DoD met.** The daemon speaks through Kokoro with no speech network
+traffic and no key involved in TTS. Voices list grouped by accent. The
+real-time factor (RTF, synthesis time ÷ audio length) and time to first
+audio (TTFA) are measured below. `voice_provider` now defaults to
+`"kokoro"`.
+
+    scripts/fetch-models                                      # ~340 MB, once
+    cargo build --release -p cosmo-daemon --features speech   # PipeWire + Kokoro
+
+### 5a. Phonemes: eSpeak NG via `dlopen`, not `espeak-rs` and not `misaki-rs`
+
+§1f's decision said "`ort` + `espeak-rs`". The `ort` half stands. The
+phonemizer half changed after looking at the options:
+
+| Option | Verdict |
+|---|---|
+| `misaki-rs` 0.6 (MIT, Misaki's G2P in Rust) | **Rejected on measurement.** Without its `espeak` feature, out-of-vocabulary words are spelled letter by letter, and "Firefox", "Spotify", "Kubernetes", "PipeWire" and "htop" are all OOV. For an assistant that launches apps, that's disqualifying. Its lexicon was also rebuilt from eSpeak output (it emits eSpeak's `o‍ʊ` zero-width-joiner (ZWJ) digraphs, not Misaki's `O`), and it adds **38 MB** of embedded data. |
+| `espeak-rs` 0.2 (via `espeak-rs-sys`) | Vendors eSpeak NG's C source and builds it with **cmake**, links it **statically**, and copies a data folder into `target/`. That would put GPL-3.0 code inside cosmo's MIT binary and add a data directory to ship. |
+| `espeak-ng` 0.2 (pure-Rust port) | GPL-3.0-or-later, and its maturity is unproven. |
+| **System `libespeak-ng.so.1` loaded with `libloading`** | **Chosen.** No `-dev` package, no headers, no C build. The GPL library stays a separate system component, installed by the distro, and is not linked into our binary. If it's missing, only the Kokoro provider fails to construct, with the package name in the message. |
+
+The library and `espeak-ng-data` were already installed here, pulled in by
+`speech-dispatcher`. **Packaging note for phase 8:** declare `libespeak-ng1`
++ `espeak-ng-data` (Debian/Pop!_OS) or `espeak-ng` (Fedora) as runtime
+dependencies.
+
+One eSpeak detail worth recording: **`en-gb` isn't a voice name in eSpeak
+1.51.** `SetVoiceByName("en-gb")` returns error 2 and *silently keeps the
+previous voice*, so British text got American phonemes. British is plain
+`en`. The wrapper now fails on any non-zero return rather than speaking in
+the wrong accent.
+
+### 5b. eSpeak IPA → Kokoro's phoneme set
+
+Kokoro v1.0 was trained on Misaki phonemes. eSpeak is called with IPA
+output and `^` as the tie character, and the result is rewritten the way
+Misaki's own eSpeak fallback does:
+
+- the diphthongs become single letters: `e^ɪ`→`A`, `a^ɪ`→`I`, `o^ʊ`→`O`
+  (US) / `ə^ʊ`→`Q` (GB), `a^ʊ`→`W`, `ɔ^ɪ`→`Y`
+- the affricates collapse: `d^ʒ`→`ʤ`, `t^ʃ`→`ʧ`
+- a few other sounds are adjusted: dark l `ə^l`→`ᵊl`, the glottal + syllabic
+  n in "button" `ʔn̩`→`tᵊn`, `ɚ`→`əɹ`
+- the US set drops length marks, and `ɜː`→`ɜɹ`
+
+Triphthongs such as "fire" (`a^ɪ^ɚ`) are matched before the diphthongs
+they contain. Without the rewrite, the tokenizer would still accept the
+loose letters, but as two tokens the model never learned to read as one
+sound.
+
+eSpeak drops punctuation, and Kokoro uses it for prosody. So the text is
+split on punctuation at word boundaries, and the marks are put back. `12.5`,
+`1,000` and `10:30` are **not** split, so eSpeak still reads them as
+numbers.
+
+The token ids come from the model's own `tokenizer.json` (data, not code),
+padded with `$` on both sides. Sequences over 510 tokens are cut at the last
+space before the limit, so no word is split across two inferences. The
+style vector is row `len(tokens)` of the voice pack (510 × 256 f32).
+
+Checked on real text: every character of the mapped output is in Kokoro's
+115-symbol vocabulary. eSpeak reads "htop" as "aitch-top", reasonable for a
+word no lexicon has. G2P costs **~3 ms** per reply.
+
+### 5c. Model variant and TTFA (Core Ultra 9 275HX, 24 threads, release build)
+
+Same sentence, 3.3 s of audio, voice `af_heart`:
+
+| Variant | File | Load | Synthesis (warm) | RTF |
+|---|---|---|---|---|
+| **fp32** (default) | `model.onnx`, 326 MB | 620 ms | **~520 ms** | 0.155 |
+| fp16 | `model_fp16.onnx`, 163 MB | 674 ms | ~510 ms | 0.158 |
+| q8 | `model_quantized.onnx`, 92 MB | 376 ms | 1,960 ms | 0.598 |
+
+**The int8 export is 4× slower on this CPU**: dynamic quantization pays for
+itself on memory, not on speed here. fp16 is no faster than fp32 either.
+fp32 is the default, and the fetch script fetches only it unless asked.
+
+**TTFA (whole-utterance synthesis, then playback) scales with reply length
+at RTF ≈ 0.155:**
+
+| Reply | Audio | Synthesis |
+|---|---|---|
+| "Moving Firefox." | 1.9 s | ~320 ms |
+| one sentence | 3.3 s | ~520 ms |
+| three sentences | 7.3–7.9 s | 1.16–1.23 s |
+
+The plan expected 0.5–2 s, and that holds. **Even the shortest ack costs
+~320 ms here, twice the reflex path's 150 ms budget.** That is the number
+that justifies §2.6's phrase cache. The long-reply numbers are what phase 5's
+sentence streaming targets: at RTF 0.155, the first sentence of any reply
+is ready in a few hundred ms.
+
+The load is paid **at daemon startup**, not on the first reply: the daemon
+builds the provider in the background and `doctor` reports a failure (such
+as missing model files) before anyone speaks. Thread count is ort's default
+and was **not tuned**. That's worth one experiment before phase 5.
+
+### 5d. Live DoD (the real daemon, default config, release build)
+
+A fake server stood in for the reasoning model only.
+
+    doctor:  ✓ speech   provider kokoro, voice default
+    log:     kokoro model loaded … load_ms=634           (at startup)
+             voice provider ready provider="kokoro" local=true
+             kokoro synthesized g2p_ms=2.8 total_ms=1188 tokens=111 audio_s=7.3
+    status:  Thinking 0.28s → Speaking 1.44s → Idle 8.77s
+    fake:    POST /v1/chat/completions   ← the only request
+
+Nothing requested `/v1/audio/speech`. The speech was synthesized on this
+machine, and the keyring was never consulted for it: a local provider is
+constructed without resolving a key at all.
+
+Listening: US (`af_heart`) and GB (`bm_george`) samples were played on the
+real session. The objective checks passed: 0 clipped samples, peaks 0.58 and
+0.64, and pauses at the sentence boundaries. **Whether they sound right is
+the user's call, and it's still open.**
+
+### 5e. What else changed
+
+- `ProviderInit` gained `model_dir` (Kokoro's directory, default
+  `~/.cache/cosmo/models/kokoro-v1.0`), as §2.2 anticipated.
+- `voice_model` now defaults to empty, meaning the provider's own default.
+  An OpenAI model name must not reach Kokoro, and OpenAI treats an empty
+  value as `gpt-4o-mini-tts`.
+- The daemon's `speech` feature now covers PipeWire **and** Kokoro, so one
+  flag builds the whole voice layer.
+- The provider is built on tokio's blocking pool, so a 0.6 s model load
+  never stalls the runtime. Providers own the `speak/synthesize` span; the
+  daemon no longer wraps a duplicate around it.
+- Kokoro's worker thread owns the ONNX session (`Session::run` needs
+  `&mut`) and serializes eSpeak, which isn't thread-safe.
+
+### 5f. Open
+
+- **Listening verdict** (the user's): do `af_heart` and `bm_george` sound
+  natural, and do app names come out right?
+- **ort thread count** is untuned.
+- **Heteronyms** ("read", "live") get eSpeak's context-free guess. Misaki's
+  POS tagger would do better; revisit only if it's audible in practice.
 
 ## §10. Sentence splitter (spec part 2.10, 2026-09-17)
 

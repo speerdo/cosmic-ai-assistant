@@ -31,11 +31,11 @@ cosmo-audio.workspace = true
 zbus.workspace = true
 
 [features]
-# Spoken replies through the native PipeWire player. Off by default so the
-# core CI tier builds without libpipewire (two-tier decision, phase-2
-# findings §1g). Build the daemon you run with:
-#   cargo build -p cosmo-daemon --features speech
-speech = ["cosmo-audio/pipewire-backend"]
+# The voice layer: the native PipeWire player and the local Kokoro provider
+# (onnxruntime). Off by default so the core CI tier builds without either
+# (two-tier decision, phase-2 findings §1g). Build the daemon you run with:
+#   cargo build --release -p cosmo-daemon --features speech
+speech = ["cosmo-audio/pipewire-backend", "cosmo-tts/kokoro"]
 
 [[bin]]
 name = "cosmod"

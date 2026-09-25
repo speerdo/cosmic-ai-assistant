@@ -30,7 +30,6 @@ use std::time::Duration;
 
 use futures::future::BoxFuture;
 use tokio::sync::broadcast;
-use tracing::Instrument;
 
 use cosmo_audio::{AudioError, Clip, Outcome};
 use cosmo_config::Config;
@@ -181,15 +180,12 @@ impl Speech {
         });
     }
 
-    async fn speak_inner(&self, text: &str, generation: u64) -> Result<(), String> {
-        let provider = self.provider().map_err(|e| e.to_string())?;
+    async fn speak_inner(self: &Arc<Self>, text: &str, generation: u64) -> Result<(), String> {
+        let provider = self.provider().await.map_err(|e| e.to_string())?;
+        // Providers own the `speak/synthesize` span (they know their id and
+        // resolved voice); wrapping it again here would nest a duplicate.
         let pcm = provider
             .synthesize(text, &self.cfg.voice_id)
-            .instrument(tracing::info_span!(
-                "speak/synthesize",
-                provider = provider.id(),
-                chars = text.len()
-            ))
             .await
             .map_err(|e| e.to_string())?;
         let clip = Clip::new(pcm.sample_rate, pcm.data).map_err(|e| e.to_string())?;
@@ -206,30 +202,70 @@ impl Speech {
         }
     }
 
-    fn provider(&self) -> Result<Arc<dyn VoiceProvider>, TtsError> {
+    /// The configured provider, built on the blocking pool: a local one
+    /// loads its model (Kokoro: ~0.6s), which must not stall the runtime.
+    async fn provider(self: &Arc<Self>) -> Result<Arc<dyn VoiceProvider>, TtsError> {
+        let this = Arc::clone(self);
+        tokio::task::spawn_blocking(move || this.provider_blocking())
+            .await
+            .unwrap_or_else(|e| Err(TtsError::Synthesis(format!("provider setup panicked: {e}"))))
+    }
+
+    fn provider_blocking(&self) -> Result<Arc<dyn VoiceProvider>, TtsError> {
         let mut cached = self.provider.lock().unwrap();
         if let Some(provider) = cached.as_ref() {
             return Ok(Arc::clone(provider));
         }
-        let api_key = self.key.resolve();
-        let has_key = api_key.is_some();
-        let init = ProviderInit {
-            api_key,
+        let mut init = ProviderInit {
             // The same override the reasoner honours: one fake server can
             // stand in for both halves of the OpenAI API in a live test.
             base_url: std::env::var("COSMO_API_BASE").ok(),
-            model: Some(self.cfg.voice_model.clone()),
+            model: Some(self.cfg.voice_model.clone()).filter(|m| !m.trim().is_empty()),
             instructions: Some(self.cfg.voice_instructions.clone()),
             request_timeout: Some(Duration::from_secs(30)),
+            ..ProviderInit::default()
         };
-        let provider: Arc<dyn VoiceProvider> = self
+        // A local provider is built without touching the keyring at all;
+        // only a cloud one goes on to resolve the key.
+        let mut provider: Arc<dyn VoiceProvider> = self
             .registry
             .create(&self.cfg.voice_provider, &init)?
             .into();
-        if has_key || provider.is_local() {
-            *cached = Some(Arc::clone(&provider));
+        if !provider.is_local() {
+            init.api_key = self.key.resolve();
+            let has_key = init.api_key.is_some();
+            provider = self
+                .registry
+                .create(&self.cfg.voice_provider, &init)?
+                .into();
+            // Cached only once keyed, so `cosmo auth login` after startup
+            // takes effect without a restart.
+            if !has_key {
+                return Ok(provider);
+            }
         }
+        *cached = Some(Arc::clone(&provider));
         Ok(provider)
+    }
+
+    /// Build the provider now rather than on the first reply, so a local
+    /// model's load time is paid at startup — and a missing model shows in
+    /// `doctor` before anyone asks cosmo anything.
+    pub fn warm(self: &Arc<Self>) {
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            match this.provider().await {
+                Ok(p) => tracing::info!(
+                    provider = p.id(),
+                    local = p.is_local(),
+                    "voice provider ready"
+                ),
+                Err(e) => {
+                    tracing::warn!(error = %e, "voice provider unavailable");
+                    *this.last_error.lock().unwrap() = Some(e.to_string());
+                }
+            }
+        });
     }
 
     /// `doctor` line: provider, voice, and the last failure if any.

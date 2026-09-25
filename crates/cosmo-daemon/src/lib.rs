@@ -45,6 +45,7 @@ pub async fn run() -> anyhow::Result<()> {
     let mut engine = engine::Engine::new(cfg, events_tx.clone()).await;
     attach_speech(&mut engine);
     let engine = Arc::new(engine);
+    engine.warm_speech();
     engine.refresh_lock();
     // Agent connection: failure is not fatal (graceful absence; doctor
     // reports it and `say` errors per turn).

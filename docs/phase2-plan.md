@@ -6,8 +6,8 @@
 §2.10 done and reviewed (2026-09-17; eight defects fixed across two review
 passes, findings §R and §R2). §2.3 playback done 2026-09-24 (findings §3).
 The daemon speaks replies (§2.4 complete, findings §4b; the real-key run
-is carry-over E1). Kokoro decided: `ort` directly + `espeak-rs` (findings
-§1f). Next: §2.5.
+is carry-over E1). §2.5 Kokoro done 2026-09-24 and now the default voice
+(findings §5). Next: §2.6 phrase cache.
 
 Phase 2 looks like one phase but is five different kinds of work: unproven
 native-stack risk (`ort`, `koko`, `pipewire` — declared in
@@ -192,19 +192,28 @@ on 2026-09-24: **(b)**. The Kokoro ONNX model runs through `ort` directly,
 which §2.1 proved links, with `espeak-rs` for phonemes. There is no Kokoro
 crate, so there is no `libssl-dev`, no second `reqwest` and no `atty`.
 
-- [ ] Implement `VoiceProvider` on `ort` + `espeak-rs`; enumerate
+- [x] Implement `VoiceProvider` on `ort` + `espeak-rs`; enumerate
       voices from the model's voice pack with real `accent` values
-      (`af_`/`am_` → en-US, `bf_`/`bm_` → en-GB).
-- [ ] `scripts/fetch-models`: download model + voice files into
+      (`af_`/`am_` → en-US, `bf_`/`bm_` → en-GB). *(eSpeak is the system
+      `libespeak-ng` loaded at run time instead of `espeak-rs`, and
+      `misaki-rs` was measured and rejected: findings §5a–b. 28 English
+      voices.)*
+- [x] `scripts/fetch-models`: download model + voice files into
       `~/.cache/cosmo/models/` with checksums. Script only — the first-run
-      fetch UX is phase 8; this is its groundwork.
-- [ ] **Measure time-to-first-audio** on target hardware and record it.
+      fetch UX is phase 8; this is its groundwork. *(pinned revision,
+      SHA-256 on every file, idempotent)*
+- [x] **Measure time-to-first-audio** on target hardware and record it.
       Expected 0.5–2s; this number is the justification for the phrase
-      cache (2.6), so it gets measured, not assumed.
-- [ ] Make it the commented-default provider in config.
+      cache (2.6), so it gets measured, not assumed. *(RTF 0.155 on fp32:
+      a 1.9s ack costs ~320ms, a 7.3s reply ~1.19s; q8 is 4× slower —
+      findings §5c)*
+- [x] Make it the commented-default provider in config.
 
 **DoD:** `voice list` shows Kokoro voices grouped by accent; `say` speaks
-locally with no key in the environment; TTFA number in findings.
+locally with no key in the environment; TTFA number in findings. *(done
+2026-09-24: grouped listing via `kokoro_say --list` (the `cosmo voice list`
+front end is §2.7); the live daemon made no speech request; TTFA in
+findings §5c.)*
 
 ### 2.6 Phrase cache
 
@@ -330,7 +339,7 @@ findings §R2. Phase 5 consumes it.)*
 ## Dependency order
 
 ```
-2.0 ✓ ─────────┬─→ 2.1 ✓ ───────────→ 2.5 Kokoro ──→ 2.6 phrase cache ──┐
+2.0 ✓ ─────────┬─→ 2.1 ✓ ───────────→ 2.5 Kokoro ✓ → 2.6 phrase cache ──┐
                └─→ 2.3 playback ✓ ┐                                    ├─→ 2.7 CLI + wiring
 2.2 trait/types ──────────────────┴─→ 2.4 OpenAI TTS ───────────────────┘
 anytime, independent: 2.8 Piper · 2.9 MeloTTS spike · 2.10 splitter

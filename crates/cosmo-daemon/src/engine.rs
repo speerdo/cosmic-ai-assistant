@@ -166,6 +166,13 @@ impl Engine {
         )));
     }
 
+    /// Load the voice provider in the background (see [`Speech::warm`]).
+    pub fn warm_speech(&self) {
+        if let Some(speech) = &self.speech {
+            speech.warm();
+        }
+    }
+
     /// Record why no sink could be attached (shown by `doctor`).
     pub fn speech_unavailable(&mut self, reason: String) {
         self.speech = None;

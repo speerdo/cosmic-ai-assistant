@@ -15,16 +15,21 @@
 //! canonical mono buffer plus WAV encode/decode ([`Pcm`]), `registry`
 //! provider construction ([`Registry`], [`ProviderInit`]), `openai` the
 //! first builtin ([`OpenAiTts`], spec §2.4), `sentence` the streamed-
-//! synthesis splitter ([`split`], spec §2.10). The modules are private —
-//! everything public is re-exported at the crate root. Kokoro and the
-//! phrase cache land in §2.5–§2.6; playback is `cosmo-audio` (§2.3).
+//! synthesis splitter ([`split`], spec §2.10), and — behind the `kokoro`
+//! feature — `kokoro`, the local default (`KokoroTts`, spec §2.5). The
+//! modules are private; everything public is re-exported at the crate
+//! root. The phrase cache lands in §2.6; playback is `cosmo-audio` (§2.3).
 
+#[cfg(feature = "kokoro")]
+mod kokoro;
 mod openai;
 mod pcm;
 mod provider;
 mod registry;
 mod sentence;
 
+#[cfg(feature = "kokoro")]
+pub use kokoro::{KokoroTts, default_model_dir};
 pub use openai::OpenAiTts;
 pub use pcm::Pcm;
 pub use provider::{Accent, Gender, LatencyClass, Voice, VoiceProvider};

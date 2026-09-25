@@ -51,6 +51,10 @@ ort = { version = "2.0.0-rc.13", default-features = false, features = [
     "tls-rustls",
 ] }
 sherpa-onnx = "1.13"
+# Runtime-loaded system libespeak-ng for Kokoro's phonemes (§2.5): no
+# headers, no vendored C build, and the GPL library stays a separate system
+# component instead of being linked into the binary (findings §5).
+libloading = "0.9"
 # No Kokoro crate is declared here on purpose — see findings §1. `koko` on
 # crates.io is an unrelated self-hosting tool, `kokoros` is not published at
 # all, and the two real candidates each cost something §2.5 has to weigh.

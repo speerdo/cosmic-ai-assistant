@@ -7,6 +7,7 @@
 //! available, so `cosmo doctor` can render the fix — the phase-1 discipline.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use cosmo_config::secret::SecretKey;
@@ -37,6 +38,10 @@ pub struct ProviderInit {
     /// §1.4 states: the caller is waiting to *hear* something, so it must
     /// fail with a reason rather than never return.
     pub request_timeout: Option<Duration>,
+    /// Where a local provider's model files live (Kokoro: the directory
+    /// `scripts/fetch-models` fills). `None` → the provider's default under
+    /// `~/.cache/cosmo/models/`.
+    pub model_dir: Option<PathBuf>,
 }
 
 /// Constructs a provider. A plain fn pointer keeps the registry cheap and
@@ -62,6 +67,8 @@ impl Registry {
     pub fn with_builtins() -> Self {
         let mut reg = Self::new();
         reg.register("openai", crate::openai::factory);
+        #[cfg(feature = "kokoro")]
+        reg.register("kokoro", crate::kokoro::factory);
         reg
     }
 

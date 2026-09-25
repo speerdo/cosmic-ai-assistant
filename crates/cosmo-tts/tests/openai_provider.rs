@@ -133,6 +133,7 @@ fn init_with(base: &str) -> ProviderInit {
         model: Some("gpt-4o-mini-tts".into()),
         instructions: Some("warm and patient".into()),
         request_timeout: None,
+        ..ProviderInit::default()
     }
 }
 
