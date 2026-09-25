@@ -18,12 +18,14 @@
 //! synthesis splitter ([`split`], spec §2.10), and — behind the `kokoro`
 //! feature — `kokoro`, the local default (`KokoroTts`, spec §2.5). The
 //! modules are private; everything public is re-exported at the crate
-//! root. The phrase cache lands in §2.6; playback is `cosmo-audio` (§2.3).
+//! root. `phrases` is the phrase cache ([`PhraseCache`], spec §2.6);
+//! playback is `cosmo-audio` (§2.3).
 
 #[cfg(feature = "kokoro")]
 mod kokoro;
 mod openai;
 mod pcm;
+mod phrases;
 mod provider;
 mod registry;
 mod sentence;
@@ -32,6 +34,7 @@ mod sentence;
 pub use kokoro::{KokoroTts, default_model_dir};
 pub use openai::OpenAiTts;
 pub use pcm::Pcm;
+pub use phrases::{Phrase, PhraseCache, Progress, RenderReport, VoiceKey, default_phrases};
 pub use provider::{Accent, Gender, LatencyClass, Voice, VoiceProvider};
 pub use registry::{ProviderFactory, ProviderInit, Registry};
 pub use sentence::split;

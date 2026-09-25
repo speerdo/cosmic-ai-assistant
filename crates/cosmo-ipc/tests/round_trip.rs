@@ -154,6 +154,22 @@ fn daemon_messages_round_trip() {
                 summary: "ok".into(),
             },
         },
+        DaemonMessage::Event {
+            event: Event::VoiceCacheProgress {
+                provider: "kokoro".into(),
+                voice: "bm_george".into(),
+                done: 2,
+                total: 5,
+            },
+        },
+        DaemonMessage::Event {
+            event: Event::VoiceCacheDone {
+                provider: "kokoro".into(),
+                voice: "bm_george".into(),
+                ok: false,
+                detail: "phrase render failed: boom".into(),
+            },
+        },
     ];
     for msg in messages {
         let json = serde_json::to_string(&msg).expect("serialize");

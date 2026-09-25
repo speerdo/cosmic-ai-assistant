@@ -7,7 +7,8 @@
 passes, findings §R and §R2). §2.3 playback done 2026-09-24 (findings §3).
 The daemon speaks replies (§2.4 complete, findings §4b; the real-key run
 is carry-over E1). §2.5 Kokoro done 2026-09-24 and now the default voice
-(findings §5). Next: §2.6 phrase cache.
+(findings §5). §2.6 phrase cache done 2026-09-25 (findings §6). Next: §2.7
+voice CLI.
 
 Phase 2 looks like one phase but is five different kinds of work: unproven
 native-stack risk (`ort`, `koko`, `pipewire` — declared in
@@ -219,21 +220,29 @@ findings §5c.)*
 
 Blocked by 2.5 (a local provider is what makes the cache load-bearing).
 
-- [ ] On voice selection, synthesize the reflex vocabulary to WAV under
+- [x] On voice selection, synthesize the reflex vocabulary to WAV under
       `~/.cache/cosmo/voice/<provider>/<voice-id>/` (`ack-moving`,
       `ack-focused`, `ack-launching`, `err-notfound`, `confirm-hold`).
-- [ ] The vocabulary is a **list, not an enum hardcoded at the playback
+      *(`cosmo_tts::PhraseCache`; held in memory by the daemon; a held
+      action plays `confirm-hold` 38ms after it's queued, findings §6)*
+- [x] The vocabulary is a **list, not an enum hardcoded at the playback
       site** — phase 4 owns the final phrase set; the cache mechanism must
-      not have to change when it grows.
-- [ ] Voice switch re-renders in the background; progress flows over the
+      not have to change when it grows. *(`Vec<Phrase>`,
+      `Speech::with_vocabulary`)*
+- [x] Voice switch re-renders in the background; progress flows over the
       existing IPC event stream (phase 1 already emits events; the overlay
-      will consume this in phase 6).
-- [ ] Staleness handling: re-render when phrase text, provider, or voice
+      will consume this in phase 6). *(`VoiceCacheProgress` /
+      `VoiceCacheDone`; the old voice serves until the new one is ready)*
+- [x] Staleness handling: re-render when phrase text, provider, or voice
       changes (content hash or mtime); a cache dir killed mid-render is
-      repaired on next start.
+      repaired on next start. *(content hash in the filename, atomic
+      rename; live `kill -9` → restart rendered only the 3 missing)*
 
 **DoD:** switch voice → instant acks from the old cache while re-render
 progress streams; kill the daemon mid-render → next start completes it.
+*(done 2026-09-25. Kill/repair and the streamed progress were verified
+live; the switch itself by test, since its live trigger is §2.7's `voice
+set`. Findings §6.)*
 
 ### 2.7 Voice CLI + daemon wiring
 
@@ -339,7 +348,7 @@ findings §R2. Phase 5 consumes it.)*
 ## Dependency order
 
 ```
-2.0 ✓ ─────────┬─→ 2.1 ✓ ───────────→ 2.5 Kokoro ✓ → 2.6 phrase cache ──┐
+2.0 ✓ ─────────┬─→ 2.1 ✓ ───────────→ 2.5 Kokoro ✓ → 2.6 phrase cache ✓┐
                └─→ 2.3 playback ✓ ┐                                    ├─→ 2.7 CLI + wiring
 2.2 trait/types ──────────────────┴─→ 2.4 OpenAI TTS ───────────────────┘
 anytime, independent: 2.8 Piper · 2.9 MeloTTS spike · 2.10 splitter

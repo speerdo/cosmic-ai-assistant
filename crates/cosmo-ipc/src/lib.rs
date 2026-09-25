@@ -261,4 +261,21 @@ pub enum Event {
     },
     /// Free-form progress line (phase 1 stand-in for transcript partials).
     Log { line: String },
+    /// A voice's phrase cache is rendering (spec §2.6): `done` of `total`
+    /// phrases are current. Fires for reused phrases too, so a consumer
+    /// always sees every step.
+    VoiceCacheProgress {
+        provider: String,
+        voice: String,
+        done: u32,
+        total: u32,
+    },
+    /// A phrase render finished. `ok = false` leaves the previous voice in
+    /// place; `detail` says why.
+    VoiceCacheDone {
+        provider: String,
+        voice: String,
+        ok: bool,
+        detail: String,
+    },
 }

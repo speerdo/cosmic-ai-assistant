@@ -7,6 +7,7 @@ done (§1 — `ort` and `pipewire` both pass; `koko` turned out not to exist),
 provider + §2.10 splitter done (§4, §10) and reviewed (§R2 — three defects
 fixed). §2.3 playback done 2026-09-24 (§3); the daemon speaks replies (§4b). §2.5 Kokoro done 2026-09-24 (§5):
 `ort` plus the system eSpeak NG loaded at run time; it's the default voice.
+§2.6 phrase cache done 2026-09-25 (§6).
 
 ## §0. System packages (spec part 2.0) — DONE 2026-09-18
 
@@ -740,6 +741,132 @@ the user's call, and it's still open.**
 - **ort thread count** is untuned.
 - **Heteronyms** ("read", "live") get eSpeak's context-free guess. Misaki's
   POS tagger would do better; revisit only if it's audible in practice.
+
+## §6. Phrase cache (spec part 2.6, 2026-09-25)
+
+**DoD met**, with one part verified by test rather than live. The live
+trigger for a voice switch is §2.7's `cosmo voice set`, which doesn't exist
+yet. Everything else ran on the real daemon with the real Kokoro model.
+
+### 6a. Design
+
+**Where it lives.** `cosmo_tts::PhraseCache` is runtime-agnostic and
+generic over any `VoiceProvider`. The daemon's `Speech` holds the active
+voice's phrases **in memory** as ready-to-play clips, so an ack involves no
+disk read and no synthesis.
+
+**File layout.** Each phrase is stored at
+`~/.cache/cosmo/voice/<provider>/<voice>/<key>.<hash>.wav`.
+
+**Staleness is a lookup miss.** The hash in the filename covers the
+provider, voice, model variant, phrase text and a format version. Changing
+any of them changes the expected name, so the old file simply stops
+matching. There is no manifest that could disagree with the directory. The
+hash is FNV-1a, not `DefaultHasher`, so a Rust toolchain bump doesn't
+invalidate every cache.
+
+**Crash safety.** Each file is written as `…wav.tmp` and then renamed into
+place. A render killed midway leaves finished phrases intact and the rest
+missing. The next render fills exactly the gaps, and superseded files and
+orphan `.tmp` files are swept once a render completes. A failed render
+sweeps nothing.
+
+**The vocabulary is a list, not an enum.** It's a `Vec<Phrase { key, text
+}>`, currently `default_phrases()`: `ack-moving`, `ack-focused`,
+`ack-launching`, `err-notfound` and `confirm-hold`. Phase 4 passes its own
+list through `Speech::with_vocabulary`, and nothing in the cache changes.
+
+**Voice switching is atomic.** `Speech::switch_to` renders the new voice
+while the old one keeps serving both replies and cached acks. Progress
+streams as `VoiceCacheProgress { done, total }` events over IPC. Then the
+provider, the voice and the phrases all swap together.
+
+- **If the render fails**, nothing switches. `VoiceCacheDone { ok: false }`
+  is emitted, and `doctor` shows the error.
+- **A switch superseded by a newer one never lands.** A generation ticket
+  checks this at swap time.
+- The one trade-off: for a second or two after a switch, *replies* are
+  still in the old voice. That's deliberate. Acks and replies never
+  disagree, and a failed switch costs nothing.
+
+**Startup is the repair path.** `warm()` renders only what's missing for
+the configured voice, so the same code handles a first run, an edited
+phrase, and a render killed by `kill -9`.
+
+**First live consumer: `confirm-hold`.** A held action now plays the cached
+"That one needs your confirmation." The token itself is never spoken, and
+confirmation stays local, as invariant #4 requires.
+
+**Observability.** `doctor` reads `5/5 phrases cached` or `phrases
+rendering 2/5`. The CLI prints `[voice] …` lines for the new events during
+`say`. Phrase playback emits the `ack` span agreed in phase 1, and
+`speak/first_audio` measures the push.
+
+### 6b. Live verification (release daemon, Kokoro fp32, `af_heart`)
+
+**A: first start with an empty cache.** An IPC client on the control socket
+received:
+
+     918ms voice_cache_progress done=1 total=5
+    1132ms …done=2   1371ms …done=3   1637ms …done=4   2025ms …done=5
+    2025ms voice_cache_done ok=true "5 phrases ready"
+    log:     phrase cache up to date rendered=5 reused=0 swept=0
+    doctor:  ✓ speech  provider kokoro, voice default, 5/5 phrases cached
+
+The model loaded in 649ms, then five phrases rendered in about 1.1s.
+
+**B: `kill -9` mid-render.** The test deleted the cache, started the
+daemon, and SIGKILLed it as soon as two WAVs existed:
+
+    after kill -9:   ack-focused.….wav  ack-moving.….wav          (2 of 5)
+    restart log:     removing stale socket
+                     phrase cache up to date rendered=3 reused=2 swept=0
+    after restart:   all five
+
+The restart repaired the phrase cache and the phase-1 socket in one go.
+
+**C: a held action speaks its cue from the cache.** `cosmo say "install
+cowsay for me"` went to the fake model, which returned `run_in_terminal`
+with `apt install cowsay`. The gate held it (Waiting), and then:
+
+    speak/first_audio latency_ms=37.8   (queued → first sample, including
+                                          creating a cold PipeWire stream)
+    clip done outcome=Ok(Played)         2.42s later — the whole phrase
+
+That's **38ms against a 150ms budget**, where live synthesis of the same
+line would have cost about 400ms (§5c). The hold was never confirmed. It
+lived in the gate's memory and ended with the daemon.
+
+### 6c. Verified by test (core tier, a gated fake provider)
+
+Synthesis in these tests waits for one permit per phrase, so each test can
+hold a render mid-flight. The audio length encodes which voice made it.
+
+- `a_switch_serves_the_old_voice_until_the_new_one_is_ready` is the DoD
+  sentence. With the switch 2 of 5 phrases in, an ack plays the old voice's
+  clip and `doctor` says `rendering 2/5`. When the render finishes, voice
+  and phrases swap together.
+- `a_failed_render_keeps_the_old_voice` checks that the failure appears in
+  `doctor` and the old acks still play.
+- `a_superseded_switch_never_lands`.
+- `the_next_start_completes_an_interrupted_render` gives exactly three
+  permits for three missing phrases, so re-rendering all five would hang
+  the test.
+- In `cosmo-tts`: staleness when a phrase's text changes, voice and model
+  as part of the identity, repair of a half-written `.tmp`, a failed render
+  keeping its finished files, and hostile ids (`../../etc`) staying inside
+  the cache root.
+
+The daemon's speech tests passed 20 of 20 consecutive runs (no flakes).
+Totals: 122 core-tier and 78 heavy-tier tests.
+
+### 6d. Open
+
+- **Live voice switch.** It becomes exercisable with §2.7's `cosmo voice
+  set`, which calls `Speech::switch_to` and persists the choice.
+- **Whether cloud voices get a phrase cache.** Rendering phrases for an
+  `openai` voice costs five API calls once per voice. That's accepted for
+  now; phase 4 might prefer Kokoro acks even when replies are cloud-voiced.
 
 ## §10. Sentence splitter (spec part 2.10, 2026-09-17)
 

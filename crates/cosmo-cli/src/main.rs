@@ -158,6 +158,15 @@ fn print_event(event: &Event) {
             )
         }
         Event::Reply { text } => println!("{text}"),
+        Event::VoiceCacheProgress {
+            voice, done, total, ..
+        } => println!("[voice] rendering {voice} phrases {done}/{total}"),
+        Event::VoiceCacheDone {
+            voice, ok, detail, ..
+        } => println!(
+            "[voice] {voice} {}: {detail}",
+            if *ok { "ready" } else { "FAILED" }
+        ),
         Event::Usage { .. } | Event::Log { .. } => {}
     }
 }

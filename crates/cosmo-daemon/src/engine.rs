@@ -488,6 +488,12 @@ impl Engine {
             }
             Ok(cosmo_reason::ToolOutcome::Held { token, tool }) => {
                 self.set_state(State::Waiting);
+                // The phrase cache's first live consumer: an instant spoken
+                // cue that something is waiting on the user. The token
+                // itself is never spoken; confirmation stays local.
+                if let Some(speech) = &self.speech {
+                    speech.play_phrase("confirm-hold");
+                }
                 let action = format!("{tool} — confirm with: cosmo confirm {token}");
                 let _ = self.events.send(Event::Held {
                     token: token.clone(),

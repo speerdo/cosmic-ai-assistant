@@ -1,4 +1,5 @@
-//! Spoken replies (spec §2.4's daemon box): after a turn completes, the
+//! Spoken replies (spec §2.4's daemon box) and cached reflex phrases
+//! (§2.6). After a turn completes, the
 //! reply is synthesized with the configured voice provider and played
 //! through `cosmo-audio`. This is what makes the reserved `Speaking` state
 //! real.
@@ -20,10 +21,17 @@
 //!   delivered as text; a synthesis or playback error is logged and kept
 //!   for `doctor`.
 //!
+//! - **Reflex phrases are cached per voice** (spec §2.6): rendered to disk
+//!   by `cosmo_tts::PhraseCache` and held in memory, so
+//!   [`Speech::play_phrase`] is a buffer push. A voice switch keeps the old
+//!   voice (replies and phrases) until the new one's phrases are rendered,
+//!   then swaps both at once.
+//!
 //! The sink is a trait so the core tier (no PipeWire) can test all of the
 //! above with a fake; the real sink is `cosmo_audio::Player`, behind the
 //! `speech` feature.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -35,7 +43,9 @@ use cosmo_audio::{AudioError, Clip, Outcome};
 use cosmo_config::Config;
 use cosmo_config::secret::SecretKey;
 use cosmo_ipc::{Event, State};
-use cosmo_tts::{ProviderInit, Registry, TtsError, VoiceProvider};
+use cosmo_tts::{
+    Phrase, PhraseCache, ProviderInit, Registry, TtsError, VoiceKey, VoiceProvider, default_phrases,
+};
 
 /// Where synthesized audio goes.
 pub trait SpeechSink: Send + Sync {
@@ -91,6 +101,11 @@ impl StateCell {
         *self.state.lock().unwrap()
     }
 
+    /// Broadcast a non-state event on the same stream.
+    pub fn emit(&self, event: Event) {
+        let _ = self.events.send(event);
+    }
+
     pub fn set(&self, state: State) {
         let mut guard = self.state.lock().unwrap();
         *guard = state;
@@ -111,17 +126,35 @@ impl StateCell {
     }
 }
 
+/// The voice in use, and its reflex phrases held in memory so an ack is
+/// a buffer push with no disk read and no synthesis.
+struct Active {
+    key: VoiceKey,
+    phrases: HashMap<String, Clip>,
+}
+
 pub struct Speech {
     cfg: Config,
     registry: Registry,
     sink: Arc<dyn SpeechSink>,
     key: Arc<dyn SpeechKey>,
     state: Arc<StateCell>,
-    /// Built lazily on first use (the keyring may be locked at boot) and
-    /// cached only once it was built with a key, so `cosmo auth login`
-    /// after startup takes effect without a restart.
-    provider: Mutex<Option<Arc<dyn VoiceProvider>>>,
+    /// `None` when there is no cache directory (HOME unset): acks then
+    /// fall back to live synthesis.
+    cache: Option<PhraseCache>,
+    vocabulary: Vec<Phrase>,
+    active: Mutex<Arc<Active>>,
+    /// Providers by (name, model). Built lazily (the keyring may be locked
+    /// at boot); a cloud one is cached only once it was built with a key,
+    /// so `cosmo auth login` after startup takes effect without a restart.
+    providers: Mutex<HashMap<(String, String), Arc<dyn VoiceProvider>>>,
+    /// Turn generation: see [`Speech::interrupt`].
     generation: AtomicU64,
+    /// Voice-switch generation: a render superseded by a newer switch
+    /// never swaps its voice in.
+    switch_generation: AtomicU64,
+    /// `Some((done, total))` while a phrase render is running.
+    rendering: Mutex<Option<(usize, usize)>>,
     last_error: Mutex<Option<String>>,
 }
 
@@ -133,6 +166,7 @@ impl Speech {
         state: Arc<StateCell>,
     ) -> Self {
         Self::with_registry(cfg, Registry::with_builtins(), sink, key, state)
+            .with_cache(PhraseCache::default_root().map(PhraseCache::new))
     }
 
     pub fn with_registry(
@@ -142,16 +176,50 @@ impl Speech {
         key: Arc<dyn SpeechKey>,
         state: Arc<StateCell>,
     ) -> Self {
+        let voice = VoiceKey {
+            provider: cfg.voice_provider.clone(),
+            voice: cfg.voice_id.clone(),
+            model: cfg.voice_model.clone(),
+        };
         Self {
             cfg,
             registry,
             sink,
             key,
             state,
-            provider: Mutex::new(None),
+            cache: None,
+            vocabulary: default_phrases(),
+            active: Mutex::new(Arc::new(Active {
+                key: voice,
+                phrases: HashMap::new(),
+            })),
+            providers: Mutex::new(HashMap::new()),
             generation: AtomicU64::new(0),
+            switch_generation: AtomicU64::new(0),
+            rendering: Mutex::new(None),
             last_error: Mutex::new(None),
         }
+    }
+
+    /// Where phrase WAVs live; `None` disables the on-disk cache.
+    pub fn with_cache(mut self, cache: Option<PhraseCache>) -> Self {
+        self.cache = cache;
+        self
+    }
+
+    /// Replace the reflex vocabulary (phase 4 passes its own list).
+    pub fn with_vocabulary(mut self, phrases: Vec<Phrase>) -> Self {
+        self.vocabulary = phrases;
+        self
+    }
+
+    fn active(&self) -> Arc<Active> {
+        Arc::clone(&self.active.lock().unwrap())
+    }
+
+    /// The voice currently speaking.
+    pub fn voice(&self) -> VoiceKey {
+        self.active().key.clone()
     }
 
     /// Stop whatever is being said and invalidate every in-flight speech
@@ -181,11 +249,12 @@ impl Speech {
     }
 
     async fn speak_inner(self: &Arc<Self>, text: &str, generation: u64) -> Result<(), String> {
-        let provider = self.provider().await.map_err(|e| e.to_string())?;
+        let voice = self.voice();
+        let provider = self.provider(&voice).await.map_err(|e| e.to_string())?;
         // Providers own the `speak/synthesize` span (they know their id and
         // resolved voice); wrapping it again here would nest a duplicate.
         let pcm = provider
-            .synthesize(text, &self.cfg.voice_id)
+            .synthesize(text, &voice.voice)
             .await
             .map_err(|e| e.to_string())?;
         let clip = Clip::new(pcm.sample_rate, pcm.data).map_err(|e| e.to_string())?;
@@ -202,59 +271,79 @@ impl Speech {
         }
     }
 
-    /// The configured provider, built on the blocking pool: a local one
+    /// Play a cached reflex phrase by key — a buffer push, no synthesis.
+    /// Does not touch the daemon state: an ack is short and the caller's
+    /// state (Acting, Waiting, …) is the one that matters. Returns `false`
+    /// when the phrase is not cached (unknown key, or its render has not
+    /// finished yet); the caller decides whether silence is acceptable.
+    pub fn play_phrase(&self, key: &str) -> bool {
+        let Some(clip) = self.active().phrases.get(key).cloned() else {
+            tracing::debug!(key, "phrase not cached; not played");
+            return false;
+        };
+        let _span = tracing::debug_span!("ack", phrase = key).entered();
+        let playing = self.sink.play(clip);
+        tokio::spawn(async move {
+            if let Err(e) = playing.await {
+                tracing::warn!(error = %e, "phrase playback failed");
+            }
+        });
+        true
+    }
+
+    /// The provider for `voice`, built on the blocking pool: a local one
     /// loads its model (Kokoro: ~0.6s), which must not stall the runtime.
-    async fn provider(self: &Arc<Self>) -> Result<Arc<dyn VoiceProvider>, TtsError> {
+    async fn provider(
+        self: &Arc<Self>,
+        voice: &VoiceKey,
+    ) -> Result<Arc<dyn VoiceProvider>, TtsError> {
         let this = Arc::clone(self);
-        tokio::task::spawn_blocking(move || this.provider_blocking())
+        let voice = voice.clone();
+        tokio::task::spawn_blocking(move || this.provider_blocking(&voice))
             .await
             .unwrap_or_else(|e| Err(TtsError::Synthesis(format!("provider setup panicked: {e}"))))
     }
 
-    fn provider_blocking(&self) -> Result<Arc<dyn VoiceProvider>, TtsError> {
-        let mut cached = self.provider.lock().unwrap();
-        if let Some(provider) = cached.as_ref() {
+    fn provider_blocking(&self, voice: &VoiceKey) -> Result<Arc<dyn VoiceProvider>, TtsError> {
+        let slot = (voice.provider.clone(), voice.model.clone());
+        let mut cached = self.providers.lock().unwrap();
+        if let Some(provider) = cached.get(&slot) {
             return Ok(Arc::clone(provider));
         }
         let mut init = ProviderInit {
             // The same override the reasoner honours: one fake server can
             // stand in for both halves of the OpenAI API in a live test.
             base_url: std::env::var("COSMO_API_BASE").ok(),
-            model: Some(self.cfg.voice_model.clone()).filter(|m| !m.trim().is_empty()),
+            model: Some(voice.model.clone()).filter(|m| !m.trim().is_empty()),
             instructions: Some(self.cfg.voice_instructions.clone()),
             request_timeout: Some(Duration::from_secs(30)),
             ..ProviderInit::default()
         };
         // A local provider is built without touching the keyring at all;
         // only a cloud one goes on to resolve the key.
-        let mut provider: Arc<dyn VoiceProvider> = self
-            .registry
-            .create(&self.cfg.voice_provider, &init)?
-            .into();
+        let mut provider: Arc<dyn VoiceProvider> =
+            self.registry.create(&voice.provider, &init)?.into();
         if !provider.is_local() {
             init.api_key = self.key.resolve();
             let has_key = init.api_key.is_some();
-            provider = self
-                .registry
-                .create(&self.cfg.voice_provider, &init)?
-                .into();
-            // Cached only once keyed, so `cosmo auth login` after startup
-            // takes effect without a restart.
+            provider = self.registry.create(&voice.provider, &init)?.into();
             if !has_key {
                 return Ok(provider);
             }
         }
-        *cached = Some(Arc::clone(&provider));
+        cached.insert(slot, Arc::clone(&provider));
         Ok(provider)
     }
 
-    /// Build the provider now rather than on the first reply, so a local
-    /// model's load time is paid at startup — and a missing model shows in
-    /// `doctor` before anyone asks cosmo anything.
+    /// Startup: build the configured provider (a local model's load is paid
+    /// now, not on the first reply) and bring its phrase cache up to date.
+    /// Rendering only what is missing is also what repairs a cache whose
+    /// render was killed midway.
     pub fn warm(self: &Arc<Self>) {
         let this = Arc::clone(self);
+        let voice = self.voice();
         tokio::spawn(async move {
-            match this.provider().await {
+            match this.provider(&voice).await {
                 Ok(p) => tracing::info!(
                     provider = p.id(),
                     local = p.is_local(),
@@ -263,20 +352,111 @@ impl Speech {
                 Err(e) => {
                     tracing::warn!(error = %e, "voice provider unavailable");
                     *this.last_error.lock().unwrap() = Some(e.to_string());
+                    return;
                 }
             }
+            let _ = this.switch_to(voice).await;
         });
     }
 
-    /// `doctor` line: provider, voice, and the last failure if any.
+    /// Switch to another voice (spec §2.6; §2.7's `cosmo voice set` drives
+    /// it). The old voice keeps speaking — replies and cached acks alike —
+    /// while the new voice's phrases render, with progress on the event
+    /// stream; then both switch together. If the render fails, nothing
+    /// switches and the error is kept for `doctor`.
+    pub async fn switch_to(self: &Arc<Self>, voice: VoiceKey) -> Result<(), String> {
+        let ticket = self.switch_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let result = self.render_and_load(&voice, ticket).await;
+        let (ok, detail) = match &result {
+            Ok(Some(n)) => (true, format!("{n} phrases ready")),
+            Ok(None) => (true, "superseded by a newer voice switch".to_owned()),
+            Err(e) => (false, e.clone()),
+        };
+        *self.rendering.lock().unwrap() = None;
+        self.state.emit(Event::VoiceCacheDone {
+            provider: voice.provider.clone(),
+            voice: voice.voice.clone(),
+            ok,
+            detail: detail.clone(),
+        });
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                tracing::warn!(error = %e, voice = %voice.voice, "voice switch failed; keeping the current voice");
+                *self.last_error.lock().unwrap() = Some(e.clone());
+                Err(e)
+            }
+        }
+    }
+
+    /// Render `voice`'s phrases, load them, and swap them in — unless a
+    /// newer switch took over meanwhile (`Ok(None)`).
+    async fn render_and_load(
+        self: &Arc<Self>,
+        voice: &VoiceKey,
+        ticket: u64,
+    ) -> Result<Option<usize>, String> {
+        let provider = self.provider(voice).await.map_err(|e| e.to_string())?;
+        let mut phrases = HashMap::new();
+        if let Some(cache) = &self.cache {
+            let total = self.vocabulary.len();
+            *self.rendering.lock().unwrap() = Some((0, total));
+            let report = cache
+                .render(provider.as_ref(), voice, &self.vocabulary, |p| {
+                    *self.rendering.lock().unwrap() = Some((p.done, p.total));
+                    self.state.emit(Event::VoiceCacheProgress {
+                        provider: voice.provider.clone(),
+                        voice: voice.voice.clone(),
+                        done: p.done as u32,
+                        total: p.total as u32,
+                    });
+                })
+                .await
+                .map_err(|e| format!("phrase render failed: {e}"))?;
+            tracing::info!(
+                voice = %voice.voice,
+                rendered = report.rendered,
+                reused = report.reused,
+                swept = report.swept,
+                "phrase cache up to date"
+            );
+            for phrase in &self.vocabulary {
+                let pcm = cache
+                    .load(voice, phrase)
+                    .ok_or_else(|| format!("phrase {} vanished after render", phrase.key))?;
+                let clip = Clip::new(pcm.sample_rate, pcm.data).map_err(|e| e.to_string())?;
+                phrases.insert(phrase.key.clone(), clip);
+            }
+        }
+        if self.switch_generation.load(Ordering::SeqCst) != ticket {
+            return Ok(None);
+        }
+        let n = phrases.len();
+        *self.active.lock().unwrap() = Arc::new(Active {
+            key: voice.clone(),
+            phrases,
+        });
+        Ok(Some(n))
+    }
+
+    /// `doctor` line: provider, voice, phrase-cache state, last failure.
     pub fn doctor(&self) -> (bool, String) {
+        let active = self.active();
+        let cache = match *self.rendering.lock().unwrap() {
+            Some((done, total)) => format!("phrases rendering {done}/{total}"),
+            None => format!(
+                "{}/{} phrases cached",
+                active.phrases.len(),
+                self.vocabulary.len()
+            ),
+        };
         let base = format!(
-            "provider {}, voice {}",
-            self.cfg.voice_provider, self.cfg.voice_id
+            "provider {}, voice {}, {cache}",
+            active.key.provider, active.key.voice
         );
         match self.last_error.lock().unwrap().as_ref() {
             None => (true, base),
-            Some(err) => (false, format!("{base} — last reply not spoken: {err}")),
+            Some(err) => (false, format!("{base} — {err}")),
         }
     }
 }
@@ -457,5 +637,254 @@ mod tests {
         speech.speak("hi".into());
         assert_eq!(next_state(&mut rx).await, State::Idle);
         assert!(speech.doctor().1.contains("unknown voice provider"));
+    }
+
+    // ---- phrase cache + voice switching (spec §2.6) -------------------
+
+    /// Synthesis waits for a permit per call, so a test can hold a render
+    /// mid-flight. Audio length encodes the voice: `len(text) × n`, where
+    /// `n` is the voice id's trailing digit — so a played clip's length
+    /// says which voice it came from.
+    struct GatedVoice {
+        permits: Arc<tokio::sync::Semaphore>,
+    }
+
+    impl VoiceProvider for GatedVoice {
+        fn id(&self) -> &str {
+            "fake"
+        }
+        fn list_voices(&self) -> Vec<Voice> {
+            Vec::new()
+        }
+        fn synthesize(&self, text: &str, voice: &str) -> BoxFuture<'_, Result<Pcm, TtsError>> {
+            let permits = Arc::clone(&self.permits);
+            let n = voice
+                .chars()
+                .last()
+                .and_then(|c| c.to_digit(10))
+                .unwrap_or(1) as usize;
+            let len = text.len() * n;
+            let fail = voice == "broken";
+            Box::pin(async move {
+                permits.acquire().await.expect("open").forget();
+                if fail {
+                    Err(TtsError::Synthesis("model exploded".into()))
+                } else {
+                    Ok(Pcm::new(24_000, vec![0.0; len]))
+                }
+            })
+        }
+        fn is_local(&self) -> bool {
+            true
+        }
+        fn latency_class(&self) -> LatencyClass {
+            LatencyClass::Fast
+        }
+    }
+
+    struct Rig {
+        speech: Arc<Speech>,
+        sink: Arc<FakeSink>,
+        permits: Arc<tokio::sync::Semaphore>,
+        rx: broadcast::Receiver<Event>,
+        root: std::path::PathBuf,
+    }
+
+    fn rig(name: &str, voice: &str) -> Rig {
+        let root = std::env::temp_dir().join(format!("cosmo-speech-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (events, rx) = broadcast::channel(256);
+        let state = Arc::new(StateCell::new(events));
+        let sink = Arc::new(FakeSink::default());
+        let cfg = Config {
+            voice_provider: "fake".into(),
+            voice_id: voice.into(),
+            ..Config::default()
+        };
+        let speech =
+            Speech::with_registry(cfg, Registry::new(), sink.clone(), Arc::new(NoKey), state)
+                .with_cache(Some(PhraseCache::new(&root)));
+        let permits = Arc::new(tokio::sync::Semaphore::new(0));
+        speech.providers.lock().unwrap().insert(
+            ("fake".into(), String::new()),
+            Arc::new(GatedVoice {
+                permits: Arc::clone(&permits),
+            }),
+        );
+        Rig {
+            speech: Arc::new(speech),
+            sink,
+            permits,
+            rx,
+            root,
+        }
+    }
+
+    fn key(voice: &str) -> VoiceKey {
+        VoiceKey {
+            provider: "fake".into(),
+            voice: voice.into(),
+            model: String::new(),
+        }
+    }
+
+    /// "ack-moving" is "Moving it." — 10 characters.
+    const ACK: &str = "ack-moving";
+    const ACK_LEN: usize = 10;
+
+    async fn next_voice_event(rx: &mut broadcast::Receiver<Event>) -> Event {
+        loop {
+            match tokio::time::timeout(Duration::from_secs(2), rx.recv()).await {
+                Ok(Ok(e @ (Event::VoiceCacheProgress { .. } | Event::VoiceCacheDone { .. }))) => {
+                    return e;
+                }
+                Ok(Ok(_)) => continue,
+                other => panic!("no voice event: {other:?}"),
+            }
+        }
+    }
+
+    async fn played_last(sink: &FakeSink) -> usize {
+        for _ in 0..200 {
+            if let Some(&n) = sink.played.lock().unwrap().last() {
+                return n;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("nothing played");
+    }
+
+    #[tokio::test]
+    async fn startup_renders_the_cache_and_acks_become_instant() {
+        let mut r = rig("startup", "v1");
+        assert!(!r.speech.play_phrase(ACK), "nothing cached before warm");
+        r.permits.add_permits(5);
+        r.speech.warm();
+        for step in 1..=5u32 {
+            match next_voice_event(&mut r.rx).await {
+                Event::VoiceCacheProgress { done, total, .. } => {
+                    assert_eq!((done, total), (step, 5))
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(matches!(
+            next_voice_event(&mut r.rx).await,
+            Event::VoiceCacheDone { ok: true, .. }
+        ));
+        assert!(r.speech.play_phrase(ACK));
+        assert_eq!(played_last(&r.sink).await, ACK_LEN);
+        assert!(r.speech.doctor().1.contains("5/5 phrases cached"));
+        let _ = std::fs::remove_dir_all(&r.root);
+    }
+
+    /// The §2.6 DoD: switch voice → acks keep coming, instantly, from the
+    /// old cache while the new render's progress streams; then everything
+    /// switches at once.
+    #[tokio::test]
+    async fn a_switch_serves_the_old_voice_until_the_new_one_is_ready() {
+        let mut r = rig("switch", "v1");
+        r.permits.add_permits(5);
+        r.speech.switch_to(key("v1")).await.unwrap();
+        while r.rx.try_recv().is_ok() {} // the first render's own events
+
+        let speech = Arc::clone(&r.speech);
+        let switching = tokio::spawn(async move { speech.switch_to(key("v2")).await });
+        r.permits.add_permits(2);
+        for _ in 0..2 {
+            assert!(matches!(
+                next_voice_event(&mut r.rx).await,
+                Event::VoiceCacheProgress { .. }
+            ));
+        }
+        // Mid-render: the old voice answers, and the doctor says so.
+        assert_eq!(r.speech.voice().voice, "v1");
+        assert!(r.speech.play_phrase(ACK));
+        assert_eq!(played_last(&r.sink).await, ACK_LEN);
+        assert!(
+            r.speech.doctor().1.contains("rendering 2/5"),
+            "{}",
+            r.speech.doctor().1
+        );
+
+        r.permits.add_permits(3);
+        switching.await.unwrap().unwrap();
+        assert_eq!(r.speech.voice().voice, "v2");
+        assert!(r.speech.play_phrase(ACK));
+        assert_eq!(*r.sink.played.lock().unwrap().last().unwrap(), ACK_LEN * 2);
+        let _ = std::fs::remove_dir_all(&r.root);
+    }
+
+    #[tokio::test]
+    async fn a_failed_render_keeps_the_old_voice() {
+        let mut r = rig("failed", "v1");
+        r.permits.add_permits(5);
+        r.speech.switch_to(key("v1")).await.unwrap();
+
+        r.permits.add_permits(1);
+        let err = r.speech.switch_to(key("broken")).await.unwrap_err();
+        assert!(err.contains("model exploded"), "{err}");
+        loop {
+            if let Event::VoiceCacheDone { ok, voice, .. } = next_voice_event(&mut r.rx).await
+                && voice == "broken"
+            {
+                assert!(!ok);
+                break;
+            }
+        }
+        assert_eq!(r.speech.voice().voice, "v1");
+        assert!(r.speech.play_phrase(ACK));
+        let (ok, detail) = r.speech.doctor();
+        assert!(!ok && detail.contains("model exploded"), "{detail}");
+        let _ = std::fs::remove_dir_all(&r.root);
+    }
+
+    /// Two switches in a row: the first finishes last but must not win.
+    #[tokio::test]
+    async fn a_superseded_switch_never_lands() {
+        let r = rig("superseded", "v1");
+        let (a, b) = (Arc::clone(&r.speech), Arc::clone(&r.speech));
+        let first = tokio::spawn(async move { a.switch_to(key("v2")).await });
+        tokio::task::yield_now().await;
+        let second = tokio::spawn(async move { b.switch_to(key("v3")).await });
+        r.permits.add_permits(10);
+        second.await.unwrap().unwrap();
+        first.await.unwrap().unwrap();
+        assert_eq!(r.speech.voice().voice, "v3");
+        let _ = std::fs::remove_dir_all(&r.root);
+    }
+
+    /// A render killed midway (here: two phrases on disk, the rest absent)
+    /// is completed by the next start — only the gaps are synthesized.
+    #[tokio::test]
+    async fn the_next_start_completes_an_interrupted_render() {
+        let r = rig("repair", "v1");
+        let cache = PhraseCache::new(&r.root);
+        let vocab = default_phrases();
+        r.permits.add_permits(2);
+        let provider = r
+            .speech
+            .providers
+            .lock()
+            .unwrap()
+            .values()
+            .next()
+            .cloned()
+            .unwrap();
+        cache
+            .render(provider.as_ref(), &key("v1"), &vocab[..2], |_| {})
+            .await
+            .unwrap();
+        assert_eq!(cache.missing(&key("v1"), &vocab).len(), 3);
+
+        // Exactly three permits: a re-render of all five would hang here.
+        r.permits.add_permits(3);
+        tokio::time::timeout(Duration::from_secs(2), r.speech.switch_to(key("v1")))
+            .await
+            .expect("only the missing phrases are rendered")
+            .unwrap();
+        assert!(cache.missing(&key("v1"), &vocab).is_empty());
+        assert!(r.speech.play_phrase("confirm-hold"));
+        let _ = std::fs::remove_dir_all(&r.root);
     }
 }
