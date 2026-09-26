@@ -153,6 +153,65 @@ impl Config {
     }
 }
 
+/// Set single-line string fields in the config file, keeping everything
+/// else — the user's comments, the commented defaults, field order —
+/// exactly as it was (`cosmo voice set`, spec §2.7).
+///
+/// Per key: an active `key: …,` line is rewritten in place; otherwise its
+/// commented default (`// key: …,`) is uncommented with the new value;
+/// otherwise the field is added before the closing `)`. The result must
+/// parse and validate as a [`Config`] before anything is written, and the
+/// write is tmp-then-rename, so a failure leaves the old file intact.
+///
+/// Only for string-valued fields whose value fits on one line. This is not
+/// a way to store a credential: callers pass provider and voice names.
+pub fn set_string_fields(
+    path: &std::path::Path,
+    fields: &[(&str, &str)],
+) -> Result<Config, ConfigError> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => commented_default(),
+        Err(e) => return Err(ConfigError::Io(format!("{}: {e}", path.display()))),
+    };
+    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    for (key, value) in fields {
+        let literal = ron::to_string(value).map_err(|e| ConfigError::Parse(e.to_string()))?;
+        let active = |l: &str| l.trim_start().starts_with(&format!("{key}:"));
+        let commented = |l: &str| {
+            l.trim_start()
+                .strip_prefix("//")
+                .is_some_and(|rest| rest.trim_start().starts_with(&format!("{key}:")))
+        };
+        let indent = |l: &str| l[..l.len() - l.trim_start().len()].to_owned();
+        if let Some(i) = lines.iter().position(|l| active(l)) {
+            lines[i] = format!("{}{key}: {literal},", indent(&lines[i]));
+        } else if let Some(i) = lines.iter().position(|l| commented(l)) {
+            lines[i] = format!("{}{key}: {literal},", indent(&lines[i]));
+        } else if let Some(i) = lines.iter().rposition(|l| l.trim() == ")") {
+            lines.insert(i, format!("    {key}: {literal},"));
+        } else {
+            return Err(ConfigError::Parse(format!(
+                "{}: no closing `)` to add `{key}` before",
+                path.display()
+            )));
+        }
+    }
+    let mut new_text = lines.join("\n");
+    new_text.push('\n');
+    let cfg: Config = ron::from_str(&new_text).map_err(|e| ConfigError::Parse(e.to_string()))?;
+    cfg.validate()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| ConfigError::Io(format!("{}: {e}", parent.display())))?;
+    }
+    let tmp = path.with_extension("ron.tmp");
+    std::fs::write(&tmp, &new_text)
+        .map_err(|e| ConfigError::Io(format!("{}: {e}", tmp.display())))?;
+    std::fs::rename(&tmp, path).map_err(|e| ConfigError::Io(format!("{}: {e}", path.display())))?;
+    Ok(cfg)
+}
+
 /// Errors surfaced by loading/validating the config.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -267,6 +326,79 @@ mod tests {
         let again = load_from(&path).unwrap();
         assert_eq!(again, Config::default());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("cosmo-cfg-set-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("config.ron")
+    }
+
+    /// The first-run file: the commented default is uncommented in place;
+    /// every other line — comments included — is untouched.
+    #[test]
+    fn set_uncomments_the_default_and_keeps_everything_else() {
+        let path = scratch("uncomment");
+        std::fs::write(&path, commented_default()).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+        let cfg = set_string_fields(
+            &path,
+            &[("voice_provider", "kokoro"), ("voice_id", "bm_george")],
+        )
+        .unwrap();
+        assert_eq!(cfg.voice_id, "bm_george");
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("    voice_id: \"bm_george\","));
+        assert!(!after.contains("// voice_id:"));
+        let changed = before
+            .lines()
+            .zip(after.lines())
+            .filter(|(a, b)| a != b)
+            .count();
+        assert_eq!(changed, 2, "only the two voice lines change");
+        assert_eq!(before.lines().count(), after.lines().count());
+        assert_eq!(load_from(&path).unwrap().voice_id, "bm_george");
+    }
+
+    /// A value the user already set is rewritten, not duplicated; a field
+    /// missing entirely is added before the closing paren.
+    #[test]
+    fn set_rewrites_active_lines_and_adds_missing_ones() {
+        let path = scratch("rewrite");
+        std::fs::write(
+            &path,
+            "// mine\n(\n    voice_id: \"af_bella\", // my pick\n)\n",
+        )
+        .unwrap();
+        set_string_fields(
+            &path,
+            &[("voice_id", "bm_lewis"), ("voice_provider", "kokoro")],
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.matches("voice_id:").count(), 1);
+        assert!(text.starts_with("// mine\n"));
+        let cfg = load_from(&path).unwrap();
+        assert_eq!(
+            (cfg.voice_id.as_str(), cfg.voice_provider.as_str()),
+            ("bm_lewis", "kokoro")
+        );
+    }
+
+    /// Quotes and backslashes are escaped by RON itself, and a file the
+    /// edit would break is left exactly as it was.
+    #[test]
+    fn set_escapes_values_and_never_writes_a_broken_file() {
+        let path = scratch("escape");
+        std::fs::write(&path, commented_default()).unwrap();
+        set_string_fields(&path, &[("voice_id", "we\"ird\\id")]).unwrap();
+        assert_eq!(load_from(&path).unwrap().voice_id, "we\"ird\\id");
+
+        let broken = "(\n    announce_spacing_secs: 2,\n)\n";
+        std::fs::write(&path, broken).unwrap();
+        assert!(set_string_fields(&path, &[("voice_id", "x")]).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
     }
 
     #[test]

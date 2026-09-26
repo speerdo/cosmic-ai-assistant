@@ -122,6 +122,30 @@ pub trait VoiceProvider: Send + Sync {
     fn is_local(&self) -> bool;
 
     fn latency_class(&self) -> LatencyClass;
+
+    /// The concrete voice `"default"` stands for, so `doctor` and `cosmo
+    /// voice list` can name it. `None` when the provider cannot say.
+    fn default_voice(&self) -> Option<&str> {
+        None
+    }
+
+    /// Resolve a configured voice id to the one that will actually speak:
+    /// `"default"` becomes [`default_voice`](Self::default_voice) when the
+    /// provider names one.
+    fn resolve_voice<'a>(&'a self, voice: &'a str) -> &'a str {
+        match (voice, self.default_voice()) {
+            ("default", Some(concrete)) => concrete,
+            _ => voice,
+        }
+    }
+
+    /// Whether `voice` (after resolving `"default"`) is one this provider
+    /// can speak. Used to refuse a `cosmo voice set` typo before anything
+    /// is persisted.
+    fn has_voice(&self, voice: &str) -> bool {
+        let voice = self.resolve_voice(voice);
+        voice == "default" || self.list_voices().iter().any(|v| v.id == voice)
+    }
 }
 
 /// Compile-time guard: providers are shared across the daemon's await

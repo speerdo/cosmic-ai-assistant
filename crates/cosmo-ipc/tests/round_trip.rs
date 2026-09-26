@@ -92,6 +92,33 @@ fn every_response_variant_round_trips() {
             reason: Some("no pending hold with that token".into()),
         },
         Response::Toggled { paused: true },
+        Response::Voices {
+            provider: "kokoro".into(),
+            active: Some("af_heart".into()),
+            voices: vec![
+                VoiceInfo {
+                    id: "bm_george".into(),
+                    label: "George".into(),
+                    accent: "en-GB".into(),
+                    gender: Some("male".into()),
+                },
+                VoiceInfo {
+                    id: "alloy".into(),
+                    label: "alloy".into(),
+                    accent: "en-US".into(),
+                    gender: None,
+                },
+            ],
+        },
+        Response::VoicePreviewed {
+            provider: "kokoro".into(),
+            voice: "bm_george".into(),
+        },
+        Response::VoiceSet {
+            provider: "kokoro".into(),
+            voice: "bm_george".into(),
+            persisted_to: "/home/u/.config/cosmo/config.ron".into(),
+        },
         Response::Error {
             message: "bad request".into(),
         },
@@ -115,6 +142,18 @@ fn every_command_round_trips() {
             token: "38e1b3fb".into(),
         },
         Command::Toggle,
+        Command::VoiceList { provider: None },
+        Command::VoiceList {
+            provider: Some("openai".into()),
+        },
+        Command::VoicePreview {
+            provider: None,
+            voice: "bm_george".into(),
+        },
+        Command::VoiceSet {
+            provider: Some("kokoro".into()),
+            voice: "bm_george".into(),
+        },
     ] {
         let json = serde_json::to_string(&cmd).expect("serialize");
         let back: Command = serde_json::from_str(&json)

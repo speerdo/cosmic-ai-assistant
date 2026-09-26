@@ -25,11 +25,15 @@ impl DaemonToolHost {
         self.agent.registered_tools().len()
     }
 
-    pub fn new(agent: Arc<McpHost>, tmux_session: &str) -> Self {
+    pub fn new(
+        agent: Arc<McpHost>,
+        tmux_session: &str,
+        announcer: cosmo_tools::announce::Announcer,
+    ) -> Self {
         Self {
             agent,
             terminal: Terminal::new(tmux_session.to_string()),
-            announcer: cosmo_tools::announce::Announcer::new(),
+            announcer,
         }
     }
 }

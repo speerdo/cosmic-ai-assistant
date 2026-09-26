@@ -104,6 +104,14 @@ fn attach_speech(engine: &mut engine::Engine) {
 #[cfg(not(feature = "speech"))]
 fn attach_speech(_engine: &mut engine::Engine) {}
 
+async fn write_msg(
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    msg: &DaemonMessage,
+) -> std::io::Result<()> {
+    let out = serde_json::to_string(msg).unwrap_or_default() + "\n";
+    writer.write_all(out.as_bytes()).await
+}
+
 /// Bind the control socket, cleaning up a stale one first.
 ///
 /// A leftover socket is *stale* only when nothing is listening: we probe by
@@ -151,10 +159,51 @@ async fn serve(
                     Ok(Some(line)) => {
                         match serde_json::from_str::<Request>(&line) {
                             Ok(req) => {
-                                let response = engine.handle(req.cmd).await;
+                                // Events keep flowing while the command runs:
+                                // `say` shows its tool calls live and `voice
+                                // set` its render progress. Awaiting the
+                                // command alone would hold every event until
+                                // after the response — which the CLI stops
+                                // reading at.
+                                let handling = engine.handle(req.cmd);
+                                tokio::pin!(handling);
+                                let response = loop {
+                                    tokio::select! {
+                                        response = &mut handling => break Some(response),
+                                        event = events.recv() => match event {
+                                            Ok(event) => {
+                                                if write_msg(&mut writer, &DaemonMessage::Event { event }).await.is_err() {
+                                                    break None;
+                                                }
+                                            }
+                                            Err(broadcast::error::RecvError::Lagged(n)) => {
+                                                tracing::debug!(skipped = n, "event lag");
+                                            }
+                                            // No more events will come; just finish the command.
+                                            Err(broadcast::error::RecvError::Closed) => {
+                                                break Some((&mut handling).await);
+                                            }
+                                        },
+                                    }
+                                };
+                                let Some(response) = response else { break };
+                                // Events the command emitted in its last
+                                // instant are already queued: send them
+                                // before the response, which is where the
+                                // client stops reading. `voice set` lost its
+                                // final progress and "ready" lines to this.
+                                let mut dropped = false;
+                                while let Ok(event) = events.try_recv() {
+                                    if write_msg(&mut writer, &DaemonMessage::Event { event }).await.is_err() {
+                                        dropped = true;
+                                        break;
+                                    }
+                                }
+                                if dropped {
+                                    break;
+                                }
                                 let msg = DaemonMessage::Response { id: req.id, response };
-                                let out = serde_json::to_string(&msg).unwrap_or_default() + "\n";
-                                if writer.write_all(out.as_bytes()).await.is_err() {
+                                if write_msg(&mut writer, &msg).await.is_err() {
                                     break;
                                 }
                             }

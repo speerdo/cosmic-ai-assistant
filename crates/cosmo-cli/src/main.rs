@@ -47,6 +47,35 @@ enum Cmd {
     AuthLogout,
     /// Report whether a key is resolvable and from which source.
     AuthStatus,
+    /// Voices: list them, hear one, pick one (the daemon plays audio; this
+    /// CLI never does).
+    Voice {
+        #[command(subcommand)]
+        cmd: VoiceCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum VoiceCmd {
+    /// Voices grouped by accent; the active one is marked.
+    List {
+        /// Another provider's voices (default: the active provider).
+        #[arg(long)]
+        provider: Option<String>,
+    },
+    /// Hear a voice say a fixed sample line.
+    Preview {
+        voice: String,
+        #[arg(long)]
+        provider: Option<String>,
+    },
+    /// Make a voice the active one: renders its phrases, then switches and
+    /// saves it to config.ron.
+    Set {
+        voice: String,
+        #[arg(long)]
+        provider: Option<String>,
+    },
 }
 
 fn main() {
@@ -102,6 +131,11 @@ async fn exchange(
             Cmd::Confirm { token } => Command::Confirm { token },
             Cmd::Cancel { token } => Command::Cancel { token },
             Cmd::Toggle => Command::Toggle,
+            Cmd::Voice { cmd } => match cmd {
+                VoiceCmd::List { provider } => Command::VoiceList { provider },
+                VoiceCmd::Preview { voice, provider } => Command::VoicePreview { provider, voice },
+                VoiceCmd::Set { voice, provider } => Command::VoiceSet { provider, voice },
+            },
             Cmd::AuthLogin | Cmd::AuthLogout | Cmd::AuthStatus => {
                 unreachable!("auth subcommands are handled before the daemon connection")
             }
@@ -122,12 +156,10 @@ async fn exchange(
         }
         match serde_json::from_slice::<DaemonMessage>(&buf)? {
             DaemonMessage::Event { event } => print_event(&event),
-            DaemonMessage::Response { response, .. } => {
-                if response_is_error(&response) {
-                    return Ok(2);
-                }
-                return Ok(render(response));
-            }
+            // A structured error renders its message and exits 1 (general
+            // error). Exit 2 is reserved for gate denials, which arrive as
+            // turn results, not as `Response::Error`.
+            DaemonMessage::Response { response, .. } => return Ok(render(response)),
         }
     }
 }
@@ -169,12 +201,6 @@ fn print_event(event: &Event) {
         ),
         Event::Usage { .. } | Event::Log { .. } => {}
     }
-}
-
-/// Exit code 2 is only for gate denials; everything else the daemon reports
-/// as a structured error still renders normally.
-fn response_is_error(response: &Response) -> bool {
-    matches!(response, Response::Error { .. })
 }
 
 fn render(response: Response) -> i32 {
@@ -253,6 +279,44 @@ fn render(response: Response) -> i32 {
         }
         Response::Toggled { paused } => {
             println!("{}", if paused { "paused" } else { "running" });
+            0
+        }
+        Response::Voices {
+            provider,
+            active,
+            mut voices,
+        } => {
+            voices.sort_by(|a, b| (&a.accent, &a.id).cmp(&(&b.accent, &b.id)));
+            println!("{provider} voices:");
+            let mut accent = "";
+            for v in &voices {
+                if v.accent != accent {
+                    accent = &v.accent;
+                    println!("  {accent}");
+                }
+                let mark = if active.as_deref() == Some(v.id.as_str()) {
+                    "*"
+                } else {
+                    " "
+                };
+                let gender = v.gender.as_deref().unwrap_or("");
+                println!("   {mark} {:<12} {:<10} {gender}", v.id, v.label);
+            }
+            if active.is_some() {
+                println!("(* active — change with: cosmo voice set <id>)");
+            }
+            0
+        }
+        Response::VoicePreviewed { provider, voice } => {
+            println!("previewed {provider}/{voice}");
+            0
+        }
+        Response::VoiceSet {
+            provider,
+            voice,
+            persisted_to,
+        } => {
+            println!("voice set to {provider}/{voice} (saved to {persisted_to})");
             0
         }
         Response::Error { message } => {

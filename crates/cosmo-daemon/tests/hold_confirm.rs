@@ -135,3 +135,26 @@ async fn cancel_discards_without_executing() {
         }
     ));
 }
+
+/// Cancelling the last pending hold returns the daemon to Idle. It stayed
+/// in Waiting before, so the next turn started from a state that was no
+/// longer true (found live in spec §2.7's run, findings §7).
+#[tokio::test]
+async fn cancelling_the_last_hold_leaves_waiting() {
+    let engine = engine().await;
+    let gate = engine.gate();
+    gate.begin_turn();
+    let token = gate.park(
+        "run_in_terminal",
+        json!({"command": "apt install cowsay"}),
+        "install cowsay".to_owned(),
+    );
+    engine.set_state(cosmo_ipc::State::Waiting);
+
+    let response = engine.handle(Command::Cancel { token }).await;
+    assert!(matches!(response, Response::Cancelled { ok: true, .. }));
+    match engine.handle(Command::Status).await {
+        Response::Status(status) => assert_eq!(status.state, cosmo_ipc::State::Idle),
+        other => panic!("{other:?}"),
+    }
+}

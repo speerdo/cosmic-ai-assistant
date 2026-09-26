@@ -102,6 +102,21 @@ pub enum Command {
     Cancel { token: String },
     /// Pause/resume accepting new turns.
     Toggle,
+    /// Voices a provider can speak (`None` = the active provider).
+    VoiceList { provider: Option<String> },
+    /// Speak a fixed sample line in `voice` (synthesized once, cached).
+    /// Answered when the audio has finished.
+    VoicePreview {
+        provider: Option<String>,
+        voice: String,
+    },
+    /// Make `voice` the active voice: persist it to `config.ron`, render
+    /// its phrase cache (progress arrives as events), then switch.
+    /// Answered when the switch is done or has failed.
+    VoiceSet {
+        provider: Option<String>,
+        voice: String,
+    },
 }
 
 /// Daemon → client message: a response or a broadcast event, one per line.
@@ -143,9 +158,38 @@ pub enum Response {
     Toggled {
         paused: bool,
     },
+    Voices {
+        provider: String,
+        /// The active voice id when `provider` is the active provider,
+        /// resolved (`"default"` → the concrete voice).
+        active: Option<String>,
+        voices: Vec<VoiceInfo>,
+    },
+    VoicePreviewed {
+        provider: String,
+        voice: String,
+    },
+    VoiceSet {
+        provider: String,
+        voice: String,
+        /// The config file the choice was written to.
+        persisted_to: String,
+    },
     Error {
         message: String,
     },
+}
+
+/// One voice in a [`Response::Voices`] listing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VoiceInfo {
+    pub id: String,
+    pub label: String,
+    /// BCP-47-ish accent code (`en-US`, `en-GB`); the listing groups by it.
+    pub accent: String,
+    /// `"female"` / `"male"` when the provider says.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gender: Option<String>,
 }
 
 /// One entry of the pending-hold list.

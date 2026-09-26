@@ -34,7 +34,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::future::BoxFuture;
 use tokio::sync::broadcast;
@@ -156,7 +156,18 @@ pub struct Speech {
     /// `Some((done, total))` while a phrase render is running.
     rendering: Mutex<Option<(usize, usize)>>,
     last_error: Mutex<Option<String>>,
+    /// The last reply's time to first audio (turn handed over → clip
+    /// admitted to playback) and its length, for `doctor`.
+    last_ttfa: Mutex<Option<(Duration, Duration)>>,
 }
+
+/// What `cosmo voice preview` says. Fixed, so previews compare voices and
+/// not sentences; cached per voice like any phrase.
+const PREVIEW: &str = "Hello, I'm Cosmo. This is how I'll sound when I answer you.";
+
+/// Previews live in their own tree beside the vocabulary: a vocabulary
+/// render sweeps its voice directory, and must not take the preview along.
+const PREVIEW_DIR: &str = ".previews";
 
 impl Speech {
     pub fn new(
@@ -198,6 +209,7 @@ impl Speech {
             switch_generation: AtomicU64::new(0),
             rendering: Mutex::new(None),
             last_error: Mutex::new(None),
+            last_ttfa: Mutex::new(None),
         }
     }
 
@@ -249,6 +261,7 @@ impl Speech {
     }
 
     async fn speak_inner(self: &Arc<Self>, text: &str, generation: u64) -> Result<(), String> {
+        let started = Instant::now();
         let voice = self.voice();
         let provider = self.provider(&voice).await.map_err(|e| e.to_string())?;
         // Providers own the `speak/synthesize` span (they know their id and
@@ -265,6 +278,7 @@ impl Speech {
         {
             return Ok(());
         }
+        *self.last_ttfa.lock().unwrap() = Some((started.elapsed(), clip.duration()));
         match self.sink.play(clip).await {
             Ok(Outcome::Played | Outcome::Cancelled) => Ok(()),
             Err(e) => Err(e.to_string()),
@@ -277,11 +291,13 @@ impl Speech {
     /// when the phrase is not cached (unknown key, or its render has not
     /// finished yet); the caller decides whether silence is acceptable.
     pub fn play_phrase(&self, key: &str) -> bool {
-        let Some(clip) = self.active().phrases.get(key).cloned() else {
+        let active = self.active();
+        let Some(clip) = active.phrases.get(key).cloned() else {
             tracing::debug!(key, "phrase not cached; not played");
             return false;
         };
-        let _span = tracing::debug_span!("ack", phrase = key).entered();
+        let _span = tracing::debug_span!("ack", phrase = key, voice = %active.key.voice).entered();
+        tracing::debug!("phrase played from cache");
         let playing = self.sink.play(clip);
         tokio::spawn(async move {
             if let Err(e) = playing.await {
@@ -439,6 +455,121 @@ impl Speech {
         Ok(Some(n))
     }
 
+    /// `voice` with `provider` swapped in, or the active provider when
+    /// `None`. Another provider starts at its own default model.
+    fn target(&self, provider: Option<&str>, voice: &str) -> VoiceKey {
+        let active = self.voice();
+        match provider {
+            Some(p) if p != active.provider => VoiceKey {
+                provider: p.to_owned(),
+                voice: voice.to_owned(),
+                model: String::new(),
+            },
+            _ => VoiceKey {
+                voice: voice.to_owned(),
+                ..active
+            },
+        }
+    }
+
+    /// `cosmo voice list`: every voice `provider` (default: the active
+    /// one) can speak, plus the active voice resolved when it is that
+    /// provider's.
+    pub async fn list_voices(
+        self: &Arc<Self>,
+        provider: Option<&str>,
+    ) -> Result<(String, Option<String>, Vec<cosmo_tts::Voice>), String> {
+        let active = self.voice();
+        let key = self.target(provider, "default");
+        let built = self.provider(&key).await.map_err(|e| e.to_string())?;
+        let current = (key.provider == active.provider)
+            .then(|| built.resolve_voice(&active.voice).to_owned());
+        Ok((key.provider, current, built.list_voices()))
+    }
+
+    /// `cosmo voice preview`: say a fixed sample line in `voice`, interrupting
+    /// whatever is playing. Synthesized once per voice, then cached.
+    /// Resolves when the audio has finished.
+    pub async fn preview(
+        self: &Arc<Self>,
+        provider: Option<&str>,
+        voice: &str,
+    ) -> Result<VoiceKey, String> {
+        let key = self.target(provider, voice);
+        let built = self.provider(&key).await.map_err(|e| e.to_string())?;
+        if !built.has_voice(&key.voice) {
+            return Err(unknown_voice(&key));
+        }
+        let phrase = Phrase::new("preview", PREVIEW);
+        let pcm = match &self.cache {
+            Some(cache) => {
+                let previews = PhraseCache::new(cache.root().join(PREVIEW_DIR));
+                previews
+                    .ensure(built.as_ref(), &key, std::slice::from_ref(&phrase))
+                    .await
+                    .map_err(|e| e.to_string())?;
+                previews
+                    .load(&key, &phrase)
+                    .ok_or("preview vanished after render")?
+            }
+            None => built
+                .synthesize(PREVIEW, &key.voice)
+                .await
+                .map_err(|e| e.to_string())?,
+        };
+        let clip = Clip::new(pcm.sample_rate, pcm.data).map_err(|e| e.to_string())?;
+        self.interrupt();
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        self.state
+            .set_if_current(&self.generation, generation, State::Speaking);
+        let played = self.sink.play(clip).await;
+        self.state
+            .set_if_current(&self.generation, generation, State::Idle);
+        played.map_err(|e| e.to_string())?;
+        Ok(key)
+    }
+
+    /// `cosmo voice set`: validate, switch (rendering the phrase cache, old
+    /// voice serving meanwhile), and only then persist — a voice that
+    /// failed to render is never written to the config.
+    pub async fn set_voice(
+        self: &Arc<Self>,
+        provider: Option<&str>,
+        voice: &str,
+        config: &std::path::Path,
+    ) -> Result<VoiceKey, String> {
+        let key = self.target(provider, voice);
+        let built = self.provider(&key).await.map_err(|e| e.to_string())?;
+        if !built.has_voice(&key.voice) {
+            return Err(unknown_voice(&key));
+        }
+        self.switch_to(key.clone()).await?;
+        cosmo_config::set_string_fields(
+            config,
+            &[("voice_provider", &key.provider), ("voice_id", &key.voice)],
+        )
+        .map_err(|e| format!("switched to {}, but saving it failed: {e}", key.voice))?;
+        Ok(key)
+    }
+
+    /// `announce` delivery (spec §2.7): speak `text` in the active voice,
+    /// queued behind anything already playing. No state change and no
+    /// interrupt — an announcement is not a turn.
+    pub async fn announce(self: &Arc<Self>, text: &str) -> Result<(), String> {
+        let voice = self.voice();
+        let provider = self.provider(&voice).await.map_err(|e| e.to_string())?;
+        let pcm = provider
+            .synthesize(text, &voice.voice)
+            .await
+            .map_err(|e| e.to_string())?;
+        let clip = Clip::new(pcm.sample_rate, pcm.data).map_err(|e| e.to_string())?;
+        self.sink
+            .play(clip)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
     /// `doctor` line: provider, voice, phrase-cache state, last failure.
     pub fn doctor(&self) -> (bool, String) {
         let active = self.active();
@@ -450,15 +581,49 @@ impl Speech {
                 self.vocabulary.len()
             ),
         };
+        // The resolved voice, when its provider is already built — doctor
+        // must answer instantly, so it never builds one.
+        let voice = self
+            .providers
+            .lock()
+            .unwrap()
+            .get(&(active.key.provider.clone(), active.key.model.clone()))
+            .map(|p| p.resolve_voice(&active.key.voice).to_owned())
+            .filter(|resolved| *resolved != active.key.voice)
+            .map_or_else(
+                || active.key.voice.clone(),
+                |resolved| format!("{} → {resolved}", active.key.voice),
+            );
+        let ttfa = match *self.last_ttfa.lock().unwrap() {
+            Some((ttfa, audio)) => format!(
+                ", last reply: first audio {:.2}s ({:.1}s spoken)",
+                ttfa.as_secs_f64(),
+                audio.as_secs_f64()
+            ),
+            None => String::new(),
+        };
         let base = format!(
-            "provider {}, voice {}, {cache}",
-            active.key.provider, active.key.voice
+            "provider {}, voice {voice}, {cache}{ttfa}",
+            active.key.provider
         );
         match self.last_error.lock().unwrap().as_ref() {
             None => (true, base),
             Some(err) => (false, format!("{base} — {err}")),
         }
     }
+}
+
+fn unknown_voice(key: &VoiceKey) -> String {
+    format!(
+        "{} has no voice \"{}\" — see `cosmo voice list{}`",
+        key.provider,
+        key.voice,
+        if key.provider.is_empty() {
+            String::new()
+        } else {
+            format!(" --provider {}", key.provider)
+        }
+    )
 }
 
 #[cfg(test)]
@@ -654,7 +819,16 @@ mod tests {
             "fake"
         }
         fn list_voices(&self) -> Vec<Voice> {
-            Vec::new()
+            ["v1", "v2", "v3", "broken"]
+                .into_iter()
+                .map(|id| Voice {
+                    id: id.into(),
+                    label: id.into(),
+                    accent: Accent::from_code("en-GB"),
+                    gender: None,
+                    sample: None,
+                })
+                .collect()
         }
         fn synthesize(&self, text: &str, voice: &str) -> BoxFuture<'_, Result<Pcm, TtsError>> {
             let permits = Arc::clone(&self.permits);
@@ -886,5 +1060,114 @@ mod tests {
         assert!(cache.missing(&key("v1"), &vocab).is_empty());
         assert!(r.speech.play_phrase("confirm-hold"));
         let _ = std::fs::remove_dir_all(&r.root);
+    }
+
+    // ---- voice CLI back end (spec §2.7) --------------------------------
+
+    fn config_in(root: &std::path::Path) -> std::path::PathBuf {
+        let path = root.join("config.ron");
+        std::fs::create_dir_all(root).unwrap();
+        std::fs::write(&path, cosmo_config::commented_default()).unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn set_switches_first_and_persists_only_on_success() {
+        let r = rig("set", "v1");
+        let config = config_in(&r.root);
+        r.permits.add_permits(5);
+        let key = r.speech.set_voice(None, "v2", &config).await.unwrap();
+        assert_eq!(key.voice, "v2");
+        assert_eq!(r.speech.voice().voice, "v2");
+        let saved = cosmo_config::load_from(&config).unwrap();
+        assert_eq!(
+            (saved.voice_provider.as_str(), saved.voice_id.as_str()),
+            ("fake", "v2")
+        );
+
+        // A render that fails switches nothing and writes nothing.
+        r.permits.add_permits(1);
+        let before = std::fs::read_to_string(&config).unwrap();
+        assert!(r.speech.set_voice(None, "broken", &config).await.is_err());
+        assert_eq!(r.speech.voice().voice, "v2");
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), before);
+        let _ = std::fs::remove_dir_all(&r.root);
+    }
+
+    #[tokio::test]
+    async fn set_and_preview_refuse_unknown_voices_before_doing_anything() {
+        let r = rig("typo", "v1");
+        let config = config_in(&r.root);
+        let before = std::fs::read_to_string(&config).unwrap();
+        let err = r.speech.set_voice(None, "v9", &config).await.unwrap_err();
+        assert!(
+            err.contains("no voice \"v9\"") && err.contains("cosmo voice list"),
+            "{err}"
+        );
+        assert!(r.speech.preview(None, "v9").await.is_err());
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), before);
+        assert!(r.sink.played.lock().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&r.root);
+    }
+
+    /// A preview is synthesized once per voice and kept apart from the
+    /// vocabulary, so the sweep of a later vocabulary render keeps it.
+    #[tokio::test]
+    async fn preview_is_cached_speaks_and_survives_a_vocabulary_render() {
+        let mut r = rig("preview", "v1");
+        r.permits.add_permits(1);
+        let speech = Arc::clone(&r.speech);
+        let previewing = tokio::spawn(async move { speech.preview(None, "v3").await });
+        assert_eq!(next_state(&mut r.rx).await, State::Speaking);
+        assert_eq!(played_last(&r.sink).await, PREVIEW.len() * 3);
+        r.sink.release.notify_one();
+        previewing.await.unwrap().unwrap();
+        assert_eq!(next_state(&mut r.rx).await, State::Idle);
+
+        // Render v3's vocabulary (sweeps v3's directory), then preview
+        // again with no permit left for a re-synthesis: it must come from
+        // the cache.
+        r.permits.add_permits(5);
+        r.speech.switch_to(key("v3")).await.unwrap();
+        r.sink.release.notify_one();
+        tokio::time::timeout(Duration::from_secs(2), r.speech.preview(None, "v3"))
+            .await
+            .expect("second preview needs no synthesis")
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&r.root);
+    }
+
+    #[tokio::test]
+    async fn list_marks_the_resolved_active_voice() {
+        let r = rig("list", "v2");
+        let (provider, active, voices) = r.speech.list_voices(None).await.unwrap();
+        assert_eq!(provider, "fake");
+        assert_eq!(active.as_deref(), Some("v2"));
+        assert_eq!(voices.len(), 4);
+        let _ = std::fs::remove_dir_all(&r.root);
+    }
+
+    /// An announcement plays in the active voice, queued, without taking
+    /// the daemon's state away from whatever turn is running.
+    #[tokio::test]
+    async fn announce_speaks_without_touching_state() {
+        let r = rig("announce", "v2");
+        r.permits.add_permits(1);
+        r.sink.release.notify_one();
+        r.speech.announce("build done").await.unwrap();
+        assert_eq!(*r.sink.played.lock().unwrap(), ["build done".len() * 2]);
+        assert_eq!(r.speech.state.get(), State::Idle);
+        let _ = std::fs::remove_dir_all(&r.root);
+    }
+
+    #[tokio::test]
+    async fn doctor_reports_the_last_time_to_first_audio() {
+        let (speech, sink, _state, mut rx) = setup();
+        speech.speak("hello there".into());
+        assert_eq!(next_state(&mut rx).await, State::Speaking);
+        sink.release.notify_one();
+        assert_eq!(next_state(&mut rx).await, State::Idle);
+        let (_, detail) = speech.doctor();
+        assert!(detail.contains("last reply: first audio"), "{detail}");
     }
 }

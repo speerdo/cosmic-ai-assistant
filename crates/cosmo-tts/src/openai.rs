@@ -135,6 +135,10 @@ impl VoiceProvider for OpenAiTts {
     fn latency_class(&self) -> LatencyClass {
         LatencyClass::Network
     }
+
+    fn default_voice(&self) -> Option<&str> {
+        Some(DEFAULT_VOICE)
+    }
 }
 
 impl OpenAiTts {

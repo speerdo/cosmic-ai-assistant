@@ -93,6 +93,10 @@ impl PhraseCache {
         Self { root: root.into() }
     }
 
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// `$XDG_CACHE_HOME/cosmo/voice`, else `~/.cache/cosmo/voice`.
     pub fn default_root() -> Option<PathBuf> {
         let cache = std::env::var_os("XDG_CACHE_HOME")
@@ -131,6 +135,24 @@ impl PhraseCache {
             .iter()
             .filter(|p| !self.path(voice, p).is_file())
             .collect()
+    }
+
+    /// Synthesize whichever of `phrases` are missing, and touch nothing
+    /// else in the directory. For one-off entries (a voice preview) whose
+    /// render must not sweep the voice's full vocabulary.
+    pub async fn ensure(
+        &self,
+        provider: &dyn VoiceProvider,
+        voice: &VoiceKey,
+        phrases: &[Phrase],
+    ) -> Result<(), TtsError> {
+        let dir = self.dir(voice);
+        std::fs::create_dir_all(&dir).map_err(|e| io_err(&dir, e))?;
+        for phrase in self.missing(voice, phrases) {
+            let pcm = provider.synthesize(&phrase.text, &voice.voice).await?;
+            write_atomically(&self.path(voice, phrase), &pcm.to_wav_bytes()?)?;
+        }
+        Ok(())
     }
 
     /// Bring `voice`'s directory up to date with `phrases`: synthesize what
@@ -378,6 +400,23 @@ mod tests {
         assert!(block_on(cache.render(&p, &voice("a"), &phrases, |_| {})).is_err());
         assert_eq!(cache.missing(&voice("a"), &phrases).len(), 2);
         assert!(cache.load(&voice("a"), &phrases[0]).is_some());
+    }
+
+    #[test]
+    fn ensure_adds_without_sweeping() {
+        let cache = PhraseCache::new(tmp_root("ensure"));
+        let p = Counting::default();
+        let phrases = default_phrases();
+        block_on(cache.render(&p, &voice("a"), &phrases, |_| {})).unwrap();
+        let preview = Phrase::new("preview", "This is how I sound.");
+        block_on(cache.ensure(&p, &voice("a"), std::slice::from_ref(&preview))).unwrap();
+        block_on(cache.ensure(&p, &voice("a"), std::slice::from_ref(&preview))).unwrap();
+        assert_eq!(p.calls.load(Ordering::SeqCst), phrases.len() + 1);
+        assert!(
+            cache.missing(&voice("a"), &phrases).is_empty(),
+            "vocabulary kept"
+        );
+        assert!(cache.load(&voice("a"), &preview).is_some());
     }
 
     #[test]

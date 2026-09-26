@@ -31,6 +31,57 @@ use cosmo_reason::tools::ToolHost;
 use crate::speech::{DefaultSpeechKey, Speech, SpeechSink, StateCell};
 use crate::toolhost::DaemonToolHost;
 
+/// How `announce` reaches the user (spec §2.7): spoken in the active voice
+/// when speech is live, else — or if speaking fails — a desktop
+/// notification, else only the log line the announcer always writes.
+struct AnnounceDelivery {
+    speech: Option<Arc<Speech>>,
+}
+
+impl cosmo_tools::announce::Delivery for AnnounceDelivery {
+    fn deliver<'a>(
+        &'a self,
+        text: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            if let Some(speech) = &self.speech {
+                match speech.announce(text).await {
+                    Ok(()) => return,
+                    Err(e) => tracing::warn!(error = %e, "announce not spoken; notifying instead"),
+                }
+            }
+            if let Err(e) = notify(text).await {
+                tracing::warn!(error = %e, "announce notification failed");
+            }
+        })
+    }
+}
+
+/// `org.freedesktop.Notifications.Notify` on the session bus.
+async fn notify(body: &str) -> zbus::Result<()> {
+    let conn = zbus::Connection::session().await?;
+    let hints: std::collections::HashMap<&str, zbus::zvariant::Value<'_>> =
+        std::collections::HashMap::new();
+    conn.call_method(
+        Some("org.freedesktop.Notifications"),
+        "/org/freedesktop/Notifications",
+        Some("org.freedesktop.Notifications"),
+        "Notify",
+        &(
+            "Cosmo",
+            0u32,
+            "",
+            "Cosmo",
+            body,
+            Vec::<&str>::new(),
+            hints,
+            -1i32,
+        ),
+    )
+    .await?;
+    Ok(())
+}
+
 /// Lock policy mode (findings §L).
 #[derive(Debug, Clone, Copy)]
 enum LockMode {
@@ -179,6 +230,34 @@ impl Engine {
         self.speech_absent = reason;
     }
 
+    fn no_speech(&self) -> Response {
+        Response::Error {
+            message: format!("speech is off — {}", self.speech_absent),
+        }
+    }
+
+    async fn voice_list(&self, provider: Option<&str>) -> Response {
+        let Some(speech) = &self.speech else {
+            return self.no_speech();
+        };
+        match speech.list_voices(provider).await {
+            Ok((provider, active, voices)) => Response::Voices {
+                provider,
+                active,
+                voices: voices
+                    .into_iter()
+                    .map(|v| cosmo_ipc::VoiceInfo {
+                        id: v.id,
+                        label: v.label,
+                        accent: v.accent.as_str().to_owned(),
+                        gender: v.gender.map(|g| format!("{g:?}").to_lowercase()),
+                    })
+                    .collect(),
+            },
+            Err(message) => Response::Error { message },
+        }
+    }
+
     /// Cut off any reply still being spoken: a new turn has begun.
     fn interrupt_speech(&self) {
         if let Some(speech) = &self.speech {
@@ -195,8 +274,13 @@ impl Engine {
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let tmux_session = cosmo_config::load()?.tmux_session;
-        *self.tools.lock().unwrap() =
-            Some(Arc::new(DaemonToolHost::new(Arc::new(host), &tmux_session)));
+        *self.tools.lock().unwrap() = Some(Arc::new(DaemonToolHost::new(
+            Arc::new(host),
+            &tmux_session,
+            cosmo_tools::announce::Announcer::with_delivery(Arc::new(AnnounceDelivery {
+                speech: self.speech.clone(),
+            })),
+        )));
         Ok(())
     }
 
@@ -257,10 +341,42 @@ impl Engine {
                         executed: false,
                         summary: "rejected".into(),
                     });
+                    // Nothing left to wait on: leave Waiting, or the next
+                    // turn starts from a state that is no longer true.
+                    if self.gate.pending().is_empty() && self.state() == State::Waiting {
+                        self.set_state(State::Idle);
+                    }
                 }
                 Response::Cancelled {
                     ok,
                     reason: (!ok).then(|| "no pending hold with that token".to_string()),
+                }
+            }
+            Command::VoiceList { provider } => self.voice_list(provider.as_deref()).await,
+            Command::VoicePreview { provider, voice } => {
+                let Some(speech) = &self.speech else {
+                    return self.no_speech();
+                };
+                match speech.preview(provider.as_deref(), &voice).await {
+                    Ok(key) => Response::VoicePreviewed {
+                        provider: key.provider,
+                        voice: key.voice,
+                    },
+                    Err(message) => Response::Error { message },
+                }
+            }
+            Command::VoiceSet { provider, voice } => {
+                let Some(speech) = &self.speech else {
+                    return self.no_speech();
+                };
+                let path = cosmo_config::config_path();
+                match speech.set_voice(provider.as_deref(), &voice, &path).await {
+                    Ok(key) => Response::VoiceSet {
+                        provider: key.provider,
+                        voice: key.voice,
+                        persisted_to: path.display().to_string(),
+                    },
+                    Err(message) => Response::Error { message },
                 }
             }
             Command::Toggle => {
@@ -495,9 +611,12 @@ impl Engine {
                     speech.play_phrase("confirm-hold");
                 }
                 let action = format!("{tool} — confirm with: cosmo confirm {token}");
+                // The event carries the action alone; clients add their own
+                // confirm affordance (the CLI prints the command, the
+                // overlay will draw a button).
                 let _ = self.events.send(Event::Held {
                     token: token.clone(),
-                    action: action.clone(),
+                    action: tool.clone(),
                 });
                 Response::Said {
                     result: cosmo_ipc::TurnResult::Completed {

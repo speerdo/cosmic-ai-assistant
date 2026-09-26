@@ -7,7 +7,8 @@ done (§1 — `ort` and `pipewire` both pass; `koko` turned out not to exist),
 provider + §2.10 splitter done (§4, §10) and reviewed (§R2 — three defects
 fixed). §2.3 playback done 2026-09-24 (§3); the daemon speaks replies (§4b). §2.5 Kokoro done 2026-09-24 (§5):
 `ort` plus the system eSpeak NG loaded at run time; it's the default voice.
-§2.6 phrase cache done 2026-09-25 (§6).
+§2.6 phrase cache done 2026-09-25 (§6). §2.7 voice CLI done 2026-09-26
+(§7). The phase-2 headline is met; E1 (real key), §2.8 and §2.9 remain.
 
 ## §0. System packages (spec part 2.0) — DONE 2026-09-18
 
@@ -867,6 +868,136 @@ Totals: 122 core-tier and 78 heavy-tier tests.
 - **Whether cloud voices get a phrase cache.** Rendering phrases for an
   `openai` voice costs five API calls once per voice. That's accepted for
   now; phase 4 might prefer Kokoro acks even when replies are cloud-voiced.
+
+## §7. Voice CLI and daemon wiring (spec part 2.7, 2026-09-26)
+
+**DoD met, live.** You can pick a voice, hear its preview, and `say` then
+answers in that voice, with `cosmo status` showing `Speaking` during
+playback. This closes the phase-2 headline. The only item left from the
+original checklist is the real-key run (E1). Piper (§2.8) and MeloTTS
+(§2.9) are independent.
+
+### 7a. What was built
+
+| Command | What the daemon does |
+|---|---|
+| `cosmo voice list [--provider P]` | Lists voices grouped by accent. The active voice is **resolved** and marked (`default` → `* af_heart`). |
+| `cosmo voice preview <id> [--provider P]` | Says a fixed sample line in that voice, interrupting whatever is playing. The CLI returns when the audio ends. |
+| `cosmo voice set <id> [--provider P]` | Validates the voice, **switches first** (§2.6's atomic switch, with render progress streamed to the CLI), and only then persists to `config.ron`. |
+
+The CLI never links audio (invariant #3). The three commands are IPC
+`Command`s, with typed `Response`s covered by the round-trip suite.
+
+- **Validation before side effects.** A typo (`bm_gorge`) is refused before
+  anything renders or is written. The error is `kokoro has no voice
+  "bm_gorge" — see cosmo voice list --provider kokoro`, with exit 1.
+  Providers gained `default_voice()`, `resolve_voice()` and `has_voice()` as
+  default-implemented trait methods.
+- **Switch, then persist.** A voice that fails to render is never written
+  to the config, and the old voice stays active.
+  `cosmo_config::set_string_fields` edits only the named lines:
+  - it rewrites an active line in place,
+  - otherwise it uncomments the commented default,
+  - otherwise it adds the field before the closing `)`.
+
+  The result must parse and validate before a tmp-then-rename write. Your
+  real config (written in phase 1, before the voice fields existed) took
+  the "add the field" path. One accepted limitation: rewriting a
+  hand-edited line drops any trailing comment on that same line.
+- **Previews are synthesized once, then cached, in a separate tree**
+  (`~/.cache/cosmo/voice/.previews/…`). They're not a bundled WAV, so a
+  preview is always the real voice. They also sit outside the vocabulary
+  directory, because every vocabulary render (at each daemon start) sweeps
+  that directory. A new `PhraseCache::ensure` renders missing entries
+  without sweeping.
+- **`announce` speaks.** The Announcer (still enforcing ≥8s spacing) now
+  hands messages to a `Delivery` the daemon supplies. That delivery uses
+  speech in the active voice, queued behind whatever is playing and with no
+  state change. If speech is off or fails, it sends a desktop notification
+  (`org.freedesktop.Notifications.Notify`). If even that fails, the
+  announcer's log line is what's left. `cosmo-tools` stays free of audio
+  and D-Bus. One behavior to know: an announcement resolves only once it
+  has been heard, so a turn that announces delays its own spoken reply by
+  the announcement's length. That ordering is intended.
+- **`doctor`** reads, for example: `provider kokoro, voice default →
+  af_heart, 5/5 phrases cached, last reply: first audio 0.66s (4.1s
+  spoken)`. The resolved voice is shown only when its provider is already
+  built, because `doctor` never blocks on building one.
+
+### 7b. Live run (release daemon, Kokoro fp32; config backed up and restored)
+
+    voice list          en-GB: bf_alice … bm_lewis / en-US: af_alloy … ; "* af_heart"
+    voice preview bm_george     [state] Speaking → "previewed kokoro/bm_george", 5.3s
+                                (first preview: synthesis + ~4.5s of audio)
+    voice set bm_george  +  a held action 250ms later:
+        [voice] rendering bm_george phrases 1/5
+        [state] Thinking → Waiting, [hold] run_in_terminal …
+        log: ack{phrase="confirm-hold" voice=default}   ← old voice, :03.4
+        log: phrase cache up to date voice=bm_george     ← render done, :04.7
+        voice set to kokoro/bm_george (saved to ~/.config/cosmo/config.ron)
+    say "hello"         Thinking → Speaking (16 polls) → Idle, in bm_george
+    say "announce…"     announce synthesized 2.98s in 483ms, played, then the reply
+    voice set bm_gorge  error: kokoro has no voice "bm_gorge" …   exit 1
+    daemon restart      came back on bm_george, the persisted voice
+    doctor              ✓ speech  provider kokoro, voice bm_george, 5/5 phrases
+                        cached, last reply: first audio 0.66s (4.1s spoken)
+
+The §2.6 claim, *instant acks from the old cache while the new voice
+renders*, is shown in the log: the held action's cue played in the old
+voice 1.3s before the new voice's render finished.
+
+**Notification fallback**, run on a daemon built *without* `speech`:
+`dbus-monitor` caught `Notify("Cosmo", …, "Heads up: your build just
+finished.")` on the session bus.
+
+### 7c. Defects found by the live run and fixed
+
+The live run found five defects. Four had been latent since phase 1 and
+only became visible once events flowed live, or once `Response::Error`
+gained its first producer:
+
+1. **Events weren't forwarded while a command ran (latent since phase 1).**
+   `serve` awaited `engine.handle()` inside its select arm, so every event a
+   command emitted was held until *after* its response, which is exactly
+   where the CLI stops reading. `say` had never shown its tool calls live,
+   and `voice set` progress would have been invisible. The command now runs
+   concurrently with event forwarding.
+2. **The last events before a response were dropped** (a result of fix 1).
+   When the command finished in the same instant it emitted its final
+   events, `select!` could pick the response first. `voice set` lost "5/5"
+   and "ready". The queue is now drained before the response is written.
+3. **`Response::Error` was silent, with exit 2 (latent).** The CLI returned
+   exit 2, the gate-denial code, *without printing the message*. Nothing
+   produced `Error` until now, so the path was dead. It now prints to stderr
+   and exits 1, as the exit-code contract says.
+4. **The hold instruction was printed twice (latent).** The engine put
+   "confirm with: cosmo confirm <token>" into the `Held` event's `action`,
+   and the CLI appended it again. The event now carries the action alone,
+   and clients render their own confirm affordance.
+5. **`cancel` left the state at `Waiting` (latent).** Rejecting the last
+   hold now returns to `Idle`. There's a regression test in
+   `tests/hold_confirm.rs`.
+
+### 7d. Tests
+
+The new tests cover:
+
+- `set` switching first and persisting only on success (a failed render
+  leaves the config byte-identical)
+- typos refused before any side effect
+- the preview cached, spoken, and surviving a later vocabulary render
+- `list` marking the resolved active voice
+- `announce` playing without touching state
+- TTFA in `doctor`
+- the config edits (uncomment, rewrite, add, escaping, never writing a
+  broken file)
+- `PhraseCache::ensure` not sweeping
+- the Announcer's delivery hook
+- the IPC round trips for every new variant
+- cancel → `Idle`
+
+The speech suite passed 20 of 20 consecutive runs. Totals: **134 core-tier,
+86 heavy-tier**, with fmt, clippy (both tiers) and rustdoc clean.
 
 ## §10. Sentence splitter (spec part 2.10, 2026-09-17)
 

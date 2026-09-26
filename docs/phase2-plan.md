@@ -7,8 +7,9 @@
 passes, findings §R and §R2). §2.3 playback done 2026-09-24 (findings §3).
 The daemon speaks replies (§2.4 complete, findings §4b; the real-key run
 is carry-over E1). §2.5 Kokoro done 2026-09-24 and now the default voice
-(findings §5). §2.6 phrase cache done 2026-09-25 (findings §6). Next: §2.7
-voice CLI.
+(findings §5). §2.6 phrase cache done 2026-09-25 (findings §6). §2.7 voice CLI done
+2026-09-26 (findings §7), which completes the phase-2 headline. Remaining: §2.8
+Piper, §2.9 MeloTTS spike (both independent), and carry-over E1.
 
 Phase 2 looks like one phase but is five different kinds of work: unproven
 native-stack risk (`ort`, `koko`, `pipewire` — declared in
@@ -248,18 +249,22 @@ set`. Findings §6.)*
 
 Blocked by 2.3 + (2.4 or 2.5).
 
-- [ ] `cosmo voice list / preview / set`, over the control socket — the
+- [x] `cosmo voice list / preview / set`, over the control socket — the
       daemon owns playback; the CLI never links audio (invariant #3).
-- [ ] `preview` speaks a fixed sample line in the chosen voice (synthesized
+- [x] `preview` speaks a fixed sample line in the chosen voice (synthesized
       once, cached) — not a bundled WAV, so the preview is always honest.
-- [ ] `set` persists to `config.ron` and triggers 2.6's re-render.
-- [ ] `announce` (phase 1) upgrades from notification-only to speech when
-      voice is live; the ≥8s spacing and queue already exist.
-- [ ] `doctor` additions: provider, resolved voice, cache state, last
+      *(cached in `.previews/`, apart from the vocabulary sweep)*
+- [x] `set` persists to `config.ron` and triggers 2.6's re-render.
+      *(switches first, persists only on success; comment-preserving edit)*
+- [x] `announce` (phase 1) upgrades from notification-only to speech when
+      voice is live; the ≥8s spacing and queue already exist. *(speech, then
+      a D-Bus notification; both paths verified live)*
+- [x] `doctor` additions: provider, resolved voice, cache state, last
       measured TTFA.
 
 **DoD:** pick a voice, hear the preview, `say` answers in that voice;
-`cosmo status` shows `Speaking` during playback.
+`cosmo status` shows `Speaking` during playback. *(done 2026-09-26, live;
+the run found five defects, four latent since phase 1 — findings §7c.)*
 
 ### 2.8 Piper fallback provider
 
@@ -349,7 +354,7 @@ findings §R2. Phase 5 consumes it.)*
 
 ```
 2.0 ✓ ─────────┬─→ 2.1 ✓ ───────────→ 2.5 Kokoro ✓ → 2.6 phrase cache ✓┐
-               └─→ 2.3 playback ✓ ┐                                    ├─→ 2.7 CLI + wiring
+               └─→ 2.3 playback ✓ ┐                                    ├─→ 2.7 CLI + wiring ✓
 2.2 trait/types ──────────────────┴─→ 2.4 OpenAI TTS ───────────────────┘
 anytime, independent: 2.8 Piper · 2.9 MeloTTS spike · 2.10 splitter
 ```

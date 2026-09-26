@@ -201,6 +201,10 @@ impl VoiceProvider for KokoroTts {
     fn latency_class(&self) -> LatencyClass {
         LatencyClass::Fast
     }
+
+    fn default_voice(&self) -> Option<&str> {
+        Some(voices::DEFAULT_VOICE)
+    }
 }
 
 /// Owns the session; lives on the worker thread.
