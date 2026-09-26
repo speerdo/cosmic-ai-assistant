@@ -18,6 +18,10 @@ required-features = ["pipewire-backend"]
 name = "play_wav"
 required-features = ["pipewire-backend"]
 
+[[example]]
+name = "record"
+required-features = ["pipewire-backend"]
+
 [lints]
 workspace = true
 

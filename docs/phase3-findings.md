@@ -173,3 +173,74 @@ What §3.5 and §3.6 need to settle:
 - Kokoro sets its intra-op thread count explicitly (§1d).
 - The ASR model for the spike lives under `~/.cache/cosmo/models/asr/`.
   §3.5 folds ASR models into `scripts/fetch-models` with pinned checksums.
+
+## §2. Capture (spec part 3.2, 2026-09-26)
+
+**DoD met.** The microphone streams into the pre-roll ring. The ring never
+holds cosmo's own voice, and capture survives a machine loaded to twice its
+core count.
+
+### 2a. What was built
+
+- **`Ring`** (`cosmo-audio/src/ring.rs`, core tier, 5 tests). The design is
+  lifted from cosmic-voice: `AtomicU32` sample bits, absolute `u64`
+  positions, a single RT writer and lock-free readers. A lapped reader
+  skips the overwritten span rather than returning garbage.
+  `mark_preroll(ms)` reaches back to where an utterance should start.
+  `write_silence(n)` keeps positions continuous while the gate is closed.
+- **`Capture`** (`capture.rs`, heavy tier). It's a native PipeWire capture
+  stream with `RT_PROCESS`, mono F32LE at **16 kHz** (PipeWire resamples),
+  and it's always on. Node `cosmo-mic`, role `Communication`, and
+  `COSMO_SOURCE` pins a source. A stream that errors is rebuilt every 2 s.
+  The RT callback converts through a stack window: no locks, no allocation.
+- **Half-duplex at the ring** (invariant #8). While
+  `SpeechGate::mic_open(now, SETTLE)` is false, the callback writes zeros
+  instead of samples. It's the same gate playback drives (§2.3); there is
+  no second notion of "speaking".
+- **`CaptureStats`** counts callbacks, samples, gated samples, the **longest
+  gap between callbacks**, reconnects, and whether the stream is streaming.
+  These back `doctor` and the saturated-machine test.
+- The `record` example has three modes: plain (writes a 16-bit WAV),
+  `--ungated` (acoustic-loop tests), and `--gate-test`.
+
+### 2b. Live verification
+
+**Half-duplex gate.** A 1 s tone was played through `Player` at t = 1 s
+while capturing:
+
+    tone played 1.00s → drained 2.02s; expect silence until 2.37s
+      silent 0.98s – 2.37s                  (room noise on either side)
+    gated: 22186 samples (1.39 s)
+
+**The acoustic loop.** A Kokoro sentence went out through the speaker,
+through the air into the laptop mic (`--ungated`), into the ring and a WAV,
+then to sherpa:
+
+    greedy:    "Open Firebox and move it to workspace three."   70 ms
+    hotwords:  "Open firefox and move it to work space three."   82 ms
+
+The capture path carries intelligible speech end to end. Hotwords fixed a
+real misrecognition on real acoustic audio, not just on synthesized input.
+With the speaker right beside the mic, 266 of 96,256 samples clipped.
+PipeWire delivers floats slightly above 1.0 (peak 1.018); the ring stores
+them unclamped, and only the WAV writer clamps.
+
+**The saturated-machine test** (spec §3.8, run early because capture is
+where it's decided):
+
+| Condition | Duration | Samples, expected → got | Max callback gap |
+|---|---|---|---|
+| idle | 10 s | ~167k → 166,885 | 21.7 ms |
+| clean `--release` workspace build (load ~11) | 25 s | ~408k → 408,890 | 28.1 ms |
+| **48 CPU hogs on 24 cores** (load → 23+, still rising) | 20 s | ~328k → 327,653 | 27.7 ms |
+
+No samples were lost in any condition. The worst gap sits at one PipeWire
+quantum (~21.3 ms at 1024/48k) plus about 6 ms. That's the RT data loop
+doing what blueprint §3.2 said it would, and the reason capture is a native
+client. The §3.8 box stays open until it has been repeated end to end with
+a real utterance and a transcript.
+
+### 2c. Open
+
+- `doctor`'s capture line (stream up, max gap) lands with the daemon wiring
+  (§3.7).

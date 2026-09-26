@@ -6,7 +6,9 @@
 **Status:** §3.1 link spike done 2026-09-26 (findings §1). Two static
 ONNX Runtimes don't link, so both crates now share sherpa's via
 `scripts/fetch-native`. One licensing decision is open (findings §1e).
-Next: §3.2 capture and §3.4 hotkey (independent), then §3.5.
+§3.2 capture done 2026-09-26 (findings §2), with the saturated-machine
+test already passing on capture. Next: §3.4 hotkey (it needs the user's
+trigger-key choice), §3.3 VAD, then §3.5.
 
 Goal: **hold the key, speak, release → a transcript**, with live partials
 while you talk. Transcripts are *shown*, not acted on. Wiring them into
@@ -74,20 +76,23 @@ answer.
 
 ### 3.2 Capture (`cosmo-audio`, input half)
 
-- [ ] Native PipeWire capture stream (RT data loop), mono f32 at 16 kHz,
+- [x] Native PipeWire capture stream (RT data loop), mono f32 at 16 kHz,
       where PipeWire resamples, not us. Continuous, into a lock-free
       pre-roll ring (≥750 ms), with the design lifted from cosmic-voice's
       `audio.rs`: atomic samples and absolute positions.
-- [ ] **Half-duplex at the ring** (invariant #8): samples captured while
+- [x] **Half-duplex at the ring** (invariant #8): samples captured while
       `SpeechGate::mic_open(now, SETTLE)` is false are zeroed, so the ring
       never holds cosmo's own voice. This consults the gate §2.3 built; it
       doesn't create a second one.
-- [ ] Reconnect when the source goes away. The mic target is overridable by
+- [x] Reconnect when the source goes away. The mic target is overridable by
       env var for tests, like `COSMO_SINK`.
 
 **DoD:** an example records 3 s through the ring, and a `play_wav` of the
 result is your voice. With a clip playing, the ring stays silent for the
-clip plus 350 ms.
+clip plus 350 ms. *(done 2026-09-26. "Your voice" was proven with an
+acoustic loop: Kokoro out of the speaker, into the mic, then sherpa, which
+transcribed it correctly. The gate was silent from 0.98 s to 2.37 s against
+an expected 1.00 s to 2.37 s. Findings §2.)*
 
 ### 3.3 VAD and segmentation
 

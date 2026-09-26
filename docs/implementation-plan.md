@@ -186,8 +186,8 @@ Goal: hold the key, see a transcript. Steal from cosmic-voice directly (`hotkey.
 
 ### 3.1 Audio capture
 
-- [ ] `cosmo-audio`: **native** PipeWire client (not `pw-record`); callback on the RT data-loop.
-- [ ] Continuous capture into a pre-roll ring buffer (~750ms+) so the first syllable survives key-press latency.
+- [x] `cosmo-audio`: **native** PipeWire client (not `pw-record`); callback on the RT data-loop. *(phase-3 findings §2: no samples lost under 48 CPU hogs on 24 cores; worst callback gap 27.7 ms)*
+- [x] Continuous capture into a pre-roll ring buffer (~750ms+) so the first syllable survives key-press latency. *(lock-free `Ring`; half-duplex zeroing at the ring verified live)*
 - [ ] VAD at the ring buffer: half-duplex gating (mic shut while speaking + 350ms settle), and pause-based **segment cuts** for long utterances (offline cost is super-linear in duration: RTF ~0.052 on a 30s clip vs ~0.093 on 120s — both faster than realtime, but efficiency drops as the buffer grows).
 
 ### 3.2 Hotkey
