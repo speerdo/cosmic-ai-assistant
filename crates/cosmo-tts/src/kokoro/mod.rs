@@ -221,8 +221,16 @@ struct Worker {
 impl Worker {
     fn load(model: &Path, vocab: Vocab, voice_dir: PathBuf) -> Result<Self, TtsError> {
         let ort_err = |e: ort::Error| TtsError::Synthesis(format!("onnxruntime: {e}"));
+        // Explicit thread count (phase-3 findings §1d): the ONNX Runtime
+        // shared with sherpa-onnx defaults to a count that spills onto the
+        // E-cores of a hybrid CPU — RTF 0.215 at its default against 0.170
+        // at 8 on the 24-core dev box. Eight is past where Kokoro stops
+        // scaling anyway, and smaller machines use all their cores.
+        let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
         let session = Session::builder()
             .map_err(ort_err)?
+            .with_intra_threads(threads)
+            .map_err(|e| TtsError::Synthesis(format!("onnxruntime: {e}")))?
             .commit_from_file(model)
             .map_err(ort_err)?;
         let names: Vec<&str> = session.inputs().iter().map(|i| i.name()).collect();

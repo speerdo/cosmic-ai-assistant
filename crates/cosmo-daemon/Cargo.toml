@@ -28,14 +28,22 @@ cosmo-tts.workspace = true
 # Always a dependency: `Clip`, `Outcome` and `AudioError` are native-free.
 # Only the `speech` feature pulls in PipeWire.
 cosmo-audio.workspace = true
+cosmo-stt.workspace = true
 zbus.workspace = true
 
 [features]
 # The voice layer: the native PipeWire player and the local Kokoro provider
 # (onnxruntime). Off by default so the core CI tier builds without either
 # (two-tier decision, phase-2 findings §1g). Build the daemon you run with:
+#   scripts/fetch-native   # once: the shared ONNX Runtime (phase-3 §1)
 #   cargo build --release -p cosmo-daemon --features speech
 speech = ["cosmo-audio/pipewire-backend", "cosmo-tts/kokoro"]
+# Speech recognition (phase 3): sherpa-onnx and its native ONNX Runtime.
+ears = ["cosmo-stt/sherpa"]
+
+[[example]]
+name = "link_asr_tts"
+required-features = ["speech", "ears"]
 
 [[bin]]
 name = "cosmod"

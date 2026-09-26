@@ -268,7 +268,11 @@ the run found five defects, four latent since phase 1 — findings §7c.)*
 
 ### 2.8 Piper fallback provider
 
-Independent; can slip without hurting anything.
+Independent; can slip without hurting anything. **Deferred 2026-09-26.**
+Piper exists for weak hardware. The dev box synthesizes Kokoro at RTF
+~0.17, OpenAI TTS is already a second provider, and `doctor` names the fix
+when Kokoro's models are missing. It'll be revisited if cosmo is packaged
+for hardware where Kokoro is too slow (phase 8).
 
 - [ ] Subprocess provider (`piper` binary), voices discovered from its
       voices directory; `latency_class() = Fast`.

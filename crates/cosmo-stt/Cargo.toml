@@ -8,3 +8,15 @@ repository.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+# sherpa-onnx and the native ONNX Runtime it brings. Feature-gated so the
+# core CI tier builds without it (two-tier rule, phase-2 findings §1g).
+sherpa = ["dep:sherpa-onnx"]
+
+[[example]]
+name = "link_sherpa"
+required-features = ["sherpa"]
+
+[dependencies]
+sherpa-onnx = { workspace = true, optional = true }

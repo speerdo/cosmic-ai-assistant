@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Fetch the native libraries the heavy build tier links: sherpa-onnx's
+# static bundle, whose ONNX Runtime (1.28.2) is also the one `ort` links for
+# Kokoro. One runtime serves both, because two static ONNX Runtimes in one
+# binary do not link (duplicate re2/protobuf symbols; phase-3 findings §1).
+#
+#   scripts/fetch-native
+#
+# Unpacks into .native/ (gitignored). `.cargo/config.toml` points both
+# SHERPA_ONNX_LIB_DIR and ORT_LIB_PATH there, so neither crate's build
+# script downloads anything: builds are offline and deterministic after
+# this runs once. The archive is SHA-256 checked before unpacking.
+#
+# Licensing note (phase-3 findings §1): this prebuilt bundle includes
+# eSpeak NG and piper-phonemize (GPL-3.0), which sherpa's C API pulls into
+# the binary. Fine for building and running from source; a from-source
+# sherpa-onnx build with TTS disabled removes them before packaging (phase 8).
+set -euo pipefail
+
+VERSION="1.13.8"
+NAME="sherpa-onnx-v${VERSION}-linux-x64-static-lib"
+URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/v${VERSION}/${NAME}.tar.bz2"
+SHA256="e1fdc5b67530e15741ef897fa5ffff297056f3bf0c6d829a27af9225a4c4b5a6"
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+DEST="$ROOT/.native"
+mkdir -p "$DEST"
+
+if [[ "$(uname -m)" != "x86_64" ]]; then
+    echo "only linux x86_64 is wired up so far ($(uname -m))" >&2
+    exit 1
+fi
+
+if [[ -f "$DEST/$NAME/lib/libonnxruntime.a" && -f "$DEST/$NAME/.verified" ]]; then
+    echo "$NAME already present → $DEST/$NAME"
+    exit 0
+fi
+
+tmp="$DEST/$NAME.tar.bz2.part"
+echo "fetching $NAME (23 MB)"
+curl --fail --location --retry 3 --progress-bar -o "$tmp" "$URL"
+if ! echo "$SHA256  $tmp" | sha256sum --check --status; then
+    rm -f "$tmp"
+    echo "checksum mismatch for $NAME — refusing to unpack it" >&2
+    exit 1
+fi
+rm -rf "${DEST:?}/$NAME"
+tar -xjf "$tmp" -C "$DEST"
+rm -f "$tmp"
+touch "$DEST/$NAME/.verified"
+echo "$NAME → $DEST/$NAME"
