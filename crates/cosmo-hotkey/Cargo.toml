@@ -1,6 +1,6 @@
 [package]
 name = "cosmo-hotkey"
-description = "Global trigger key via evdev EVIOCGRAB + EVIOCSMASK, with udev hotplug re-attach"
+description = "Hold-to-talk trigger key via evdev with EVIOCSMASK, inotify hotplug"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,6 +8,9 @@ repository.workspace = true
 
 [dependencies]
 libc.workspace = true
+# inotify (hotplug) and poll: no libudev, so no `-dev` package (spec §3.0).
+rustix = { workspace = true, features = ["fs", "event"] }
+tracing.workspace = true
 
 [lints]
 workspace = true

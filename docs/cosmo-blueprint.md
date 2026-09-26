@@ -45,6 +45,8 @@ These four findings are load-bearing. All of them contradict earlier versions of
 
 cosmic-comp's shortcut system only spawns processes on key **press**, and `xdg-desktop-portal-cosmic` does not implement GlobalShortcuts, so neither can report a **release**. Hold-to-talk is therefore impossible through COSMIC's shortcut system.
 
+> **Corrected in phase 3 (findings §3a):** the grab below was dropped. A grab can only start after the press has reached the compositor, and it then swallows the release, which leaves a modifier trigger stuck down. The trigger is instead a key that does nothing on its own (Right Ctrl, taps under 300 ms ignored), never grabbed. `EVIOCSMASK` stays, so the not-a-keylogger property is unchanged.
+
 The working approach, taken from `hotkey.rs`: read the trigger straight off evdev, **grab** the device with `EVIOCGRAB` so the key never leaks onward to the compositor or focused client, and use `EVIOCSMASK` to restrict this process's file descriptor to the trigger keycode, so no other keystroke — and no `MSC_SCAN` metadata — is ever delivered to the daemon. That combination matters for correctness, for not typing your trigger into your editor, and for being able to say honestly that the daemon is not a keylogger.
 
 Critically: **no root and no `input` group.** logind's `uaccess` ACL is sufficient. Add udev hotplug handling so a keyboard replug doesn't kill the trigger.

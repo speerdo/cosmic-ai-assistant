@@ -192,7 +192,7 @@ Goal: hold the key, see a transcript. Steal from cosmic-voice directly (`hotkey.
 
 ### 3.2 Hotkey
 
-- [ ] `cosmo-hotkey`: evdev + `EVIOCGRAB` grab of the keyboard and `EVIOCSMASK` restricting this process to the trigger keycode (filtering `MSC_SCAN` for the daemon's fd). udev hotplug re-attach on replug. No root, no `input` group.
+- [x] *(done 2026-09-26: Right Ctrl, **no grab** since a grab swallows a modifier's release; inotify hotplug; attaches to every keyboard with the key. Phase-3 findings §3.)* `cosmo-hotkey`: evdev + `EVIOCGRAB` grab of the keyboard and `EVIOCSMASK` restricting this process to the trigger keycode (filtering `MSC_SCAN` for the daemon's fd). udev hotplug re-attach on replug. No root, no `input` group.
 - [ ] Hold-to-talk on key press/release; `cosmo toggle` (COSMIC `Spawn` shortcut) as the press-only fallback.
 
 ### 3.3 STT

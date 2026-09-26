@@ -91,6 +91,6 @@ Three runs, all on the live session:
 - evdev: **PASS, fully verified** — uaccess open/ioctl as plain user, press+release edges, zero non-trigger delivery, and the focused-app leak check all confirmed on real hardware (§5 item 1). Autorepeat filtering (`value==2`) is a new `cosmo-hotkey` requirement.
 - **Phase 0 is complete.** All three riskiest assumptions (COSMIC window control, layer shell, evdev hold-to-talk) are proven on real hardware. Phase 1 is unblocked.
 
-## 7. Trigger key choice — open
+## 7. Trigger key choice — decided in phase 3: Right Ctrl, no grab (phase-3 findings §3)
 
 Keycode 67 (F9) was a discovery artifact, not a decision. A grabbed trigger is swallowed session-wide, so the final binding must be a key the user never otherwise needs. F9 conflicts with common developer bindings (toggle-breakpoint in VS Code/Cursor, LibreOffice, some browsers). Candidates that exist physically on this hardware and carry no default COSMIC or app binding should be re-checked with `--capture` before phase 3 hardcodes a default. The probe result transfers unchanged to any keycode — only the choice is open.

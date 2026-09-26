@@ -7,8 +7,8 @@
 ONNX Runtimes don't link, so both crates now share sherpa's via
 `scripts/fetch-native`. One licensing decision is open (findings §1e).
 §3.2 capture done 2026-09-26 (findings §2), with the saturated-machine
-test already passing on capture. Next: §3.4 hotkey (it needs the user's
-trigger-key choice), §3.3 VAD, then §3.5.
+test already passing on capture. §3.4 hotkey done 2026-09-26 (findings §3): the trigger is Right Ctrl,
+and the grab was removed as unsound. Next: §3.3 VAD, then §3.5.
 
 Goal: **hold the key, speak, release → a transcript**, with live partials
 while you talk. Transcripts are *shown*, not acted on. Wiring them into
@@ -105,13 +105,16 @@ an expected 1.00 s to 2.37 s. Findings §2.)*
 
 ### 3.4 Hotkey (`cosmo-hotkey`)
 
-- [ ] evdev directly (the fd is ours; `EVIOCSMASK` belongs visibly at the
+- [x] evdev directly (the fd is ours; `EVIOCSMASK` belongs visibly at the
       open site): `EVIOCGRAB` + a mask containing only the trigger. Filter
       autorepeat (`value == 2`, phase-0 finding). No root, no `input` group.
-- [ ] **Hotplug via inotify** on `/dev/input` (`IN_CREATE`, plus `IN_ATTRIB`
+      *(**No `EVIOCGRAB`**: it leaks the press anyway and swallows the
+      release, which leaves a modifier stuck. Findings §3a.)*
+- [x] **Hotplug via inotify** on `/dev/input` (`IN_CREATE`, plus `IN_ATTRIB`
       because logind's ACL lands just after the node appears). A replugged
       keyboard re-attaches.
-- [ ] **The trigger key decision** (phase-0 findings §7, open): a config key
+- [x] **The trigger key decision** *(Right Ctrl, the user's choice; holds
+      under 300 ms are discarded as taps or shortcuts, §3.7)* (phase-0 findings §7, open): a config key
       `trigger_key`, plus a `cosmo trigger capture` that listens for the next
       key press (a user-initiated window, mask off for at most 10 s, as
       cosmic-voice does). The default must be a key with no common binding

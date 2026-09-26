@@ -730,6 +730,8 @@ name = "cosmo-hotkey"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "rustix",
+ "tracing",
 ]
 
 [[package]]

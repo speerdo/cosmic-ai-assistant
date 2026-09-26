@@ -244,3 +244,85 @@ a real utterance and a transcript.
 
 - `doctor`'s capture line (stream up, max gap) lands with the daemon wiring
   (§3.7).
+
+## §3. Hotkey (spec part 3.4, 2026-09-26)
+
+**The trigger is Right Ctrl** (evdev 97), chosen by the user on
+2026-09-26. The Launch has no physical F13. **And the blueprint's grab is
+gone:** it was unsound.
+
+### 3a. Why `EVIOCGRAB` came out (a blueprint correction)
+
+Blueprint §3.1 and phase 0 grabbed the keyboard *while the trigger was
+held*, "so the key never leaks to the focused application". Working
+through it for a modifier trigger showed three problems:
+
+1. **The press always leaks.** A grab can only be taken *after* this
+   process reads the press, and by then libinput has read it too. Grabbing
+   cannot un-send it.
+2. **The release is swallowed.** While grabbed, the release goes only to
+   the grabber, so the compositor believes the key is **still down**.
+   Phase 0's F9 test didn't show this, because a stuck F9 does nothing
+   visible. A stuck **Right Ctrl** would turn every later keystroke into a
+   Ctrl-shortcut.
+3. **A permanent grab isn't an option**: it takes the *whole* device, the
+   whole keyboard.
+
+cosmic-voice (the design's source) never grabbed at all. It relied on F13
+being a key nothing uses.
+
+**New rule:** no grab. `EVIOCSMASK` still restricts each descriptor to the
+trigger code (and masks `EV_MSC` scancodes off), so the "not a keylogger"
+property is unchanged and still kernel-enforced. The trigger must be a key
+that is **inert on its own**. Its press and release flow to the desktop
+normally, so nothing is ever stuck.
+
+**Cost, and how it's contained.** Right Ctrl shortcuts (RCtrl+C and so on)
+also press the trigger. Cosmo can't see the other key, and by design it
+shouldn't. The mitigation is at the utterance layer (§3.7): **a hold
+under 300 ms is discarded** as a tap or shortcut. A longer shortcut hold
+opens the mic briefly, and silence transcribes to nothing, so the worst
+case is a transcript that's empty. There is no action path from
+transcripts in phase 3 at all.
+
+### 3b. What was built (`cosmo-hotkey`)
+
+- A `Watcher` thread that attaches to **every** `/dev/input/event*` whose
+  key bitmap has the trigger, sets the two masks, and polls. **Hotplug is
+  inotify** on `/dev/input` (`IN_CREATE`, `IN_ATTRIB`, `IN_DELETE` →
+  rescan). `IN_ATTRIB` matters because logind's uaccess ACL lands just
+  *after* a node appears. There's no libudev, so no `-dev` package.
+- `TriggerState` (pure, 4 tests) combines edges across keyboards: held
+  while any keyboard holds the key. Autorepeat (`value == 2`) is ignored,
+  a double press or stray release is harmless, and **a device vanishing
+  mid-hold counts as a release**, so an unplug can't leave cosmo listening.
+- Every `unsafe` in the crate is an ioctl in `evdev.rs`.
+- The config key is `trigger_key` (default 97), validated as a keyboard
+  code (1–255; `BTN_*` codes refused).
+- The `trigger` example prints edges with hold durations and flags holds
+  under 300 ms.
+
+### 3c. Live
+
+With no root, no `input` group and no grab, it attached to five keyboard
+nodes that advertise Right Ctrl:
+
+    event3   AT Translated Set 2 keyboard
+    event6   ITE Tech. Inc. ITE Device(8258) Keyboard     (laptop)
+    event11  Logitech K400 Plus
+    event14  System76 Launch Configurable Keyboard (launch_1)
+    event17  System76 Launch Configurable Keyboard (launch_1) Keyboard
+
+**Not yet verified live:** actual press and release edges from Right Ctrl.
+That needs a human at the keyboard (`cargo run -p cosmo-hotkey --example
+trigger`), and so does replug handling. Phase 0 already proved edge
+delivery through the same masks on this hardware (F9, 1 press / 1 release,
+0 non-trigger events).
+
+### 3d. Deferred to §3.7
+
+- The 300 ms minimum hold, `cosmo listen` (the press-only fallback, bound
+  as a COSMIC `Spawn` shortcut), and `doctor`'s "trigger attached on N
+  keyboards" line.
+- `cosmo trigger capture` for rebinding without editing the config. Not
+  needed now that the default is settled.

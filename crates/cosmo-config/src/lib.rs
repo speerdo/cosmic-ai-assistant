@@ -48,6 +48,10 @@ pub struct Config {
     pub voice_instructions: String,
     /// `announce` minimum spacing between notifications, seconds.
     pub announce_spacing_secs: u64,
+    /// Hold-to-talk trigger: an evdev key code (phase 3). 97 is Right Ctrl.
+    /// Must be a key that does nothing on its own — it is never grabbed, so
+    /// its press and release still reach the desktop (phase-3 findings §3).
+    pub trigger_key: u16,
     /// Log filter string, e.g. `cosmo=debug`. Overridden by `RUST_LOG`.
     pub log_filter: String,
 }
@@ -69,6 +73,7 @@ impl Default for Config {
             voice_model: String::new(),
             voice_instructions: String::new(),
             announce_spacing_secs: 8,
+            trigger_key: 97,
             log_filter: "info".into(),
         }
     }
@@ -143,6 +148,13 @@ impl Config {
             return Err(ConfigError::Parse(
                 "allowed_tools is empty — the agent would have no tools".into(),
             ));
+        }
+        // Codes from BTN_MISC (0x100) up are mouse/joystick buttons.
+        if self.trigger_key == 0 || self.trigger_key >= 0x100 {
+            return Err(ConfigError::Parse(format!(
+                "trigger_key {} is not a keyboard key code (1–255; Right Ctrl is 97)",
+                self.trigger_key
+            )));
         }
         if self.announce_spacing_secs < 8 {
             return Err(ConfigError::Parse(
@@ -274,6 +286,10 @@ pub fn commented_default() -> String {
     // Minimum spacing between `announce` notifications (seconds).
     // announce_spacing_secs: {spacing},
 
+    // Hold-to-talk key, as an evdev key code. 97 = Right Ctrl. It is never
+    // grabbed, so pick a key that does nothing when pressed on its own.
+    // trigger_key: {trigger_key},
+
     // Log filter, e.g. "cosmo=debug". RUST_LOG wins when set.
     // log_filter: "{log_filter}",
 )
@@ -294,6 +310,7 @@ pub fn commented_default() -> String {
         voice_model = d.voice_model,
         voice_instructions = d.voice_instructions,
         spacing = d.announce_spacing_secs,
+        trigger_key = d.trigger_key,
         log_filter = d.log_filter,
     )
 }
@@ -399,6 +416,21 @@ mod tests {
         std::fs::write(&path, broken).unwrap();
         assert!(set_string_fields(&path, &[("voice_id", "x")]).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
+    }
+
+    #[test]
+    fn trigger_key_must_be_a_keyboard_key() {
+        let ok = Config::default();
+        assert_eq!(ok.trigger_key, 97);
+        assert!(ok.validate().is_ok());
+        for bad in [0u16, 0x100, 0x110] {
+            let cfg = Config {
+                trigger_key: bad,
+                ..Config::default()
+            };
+            assert!(cfg.validate().is_err(), "{bad} accepted");
+        }
+        assert!(commented_default().contains("// trigger_key: 97,"));
     }
 
     #[test]
