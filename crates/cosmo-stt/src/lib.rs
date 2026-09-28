@@ -11,6 +11,9 @@
 //! focused `app_id`. Segmented decoding cuts at pauses so long utterances
 //! decode incrementally instead of super-linearly.
 
+#[cfg(feature = "sherpa")]
+pub mod vad;
+
 /// Link-spike access (phase-3 spec §3.1). Replaced by this crate's own API
 /// in §3.5.
 #[cfg(feature = "sherpa")]

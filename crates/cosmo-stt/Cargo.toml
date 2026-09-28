@@ -18,5 +18,18 @@ sherpa = ["dep:sherpa-onnx"]
 name = "link_sherpa"
 required-features = ["sherpa"]
 
+[[example]]
+name = "vad_segments"
+required-features = ["sherpa"]
+
+[[test]]
+name = "vad_cuts"
+required-features = ["sherpa"]
+
 [dependencies]
 sherpa-onnx = { workspace = true, optional = true }
+thiserror.workspace = true
+
+[dev-dependencies]
+cosmo-audio.workspace = true
+hound.workspace = true

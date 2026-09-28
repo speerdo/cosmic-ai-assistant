@@ -23,6 +23,8 @@
 //! - `Player` (feature `pipewire-backend`) — a dedicated PipeWire thread
 //!   that queues clips, plays them gaplessly, and resolves each clip's
 //!   [`Playback`] handle once its audio has actually drained.
+//! - [`Segmenter`] — pause cuts and the silence backstop (spec §3.3), from
+//!   per-window VAD decisions. The VAD itself is Silero, in `cosmo-stt`.
 
 #[cfg(feature = "pipewire-backend")]
 mod capture;
@@ -33,6 +35,7 @@ mod gate;
 #[cfg_attr(not(feature = "pipewire-backend"), allow(dead_code))]
 mod queue;
 mod ring;
+mod segment;
 
 #[cfg(feature = "pipewire-backend")]
 mod player;
@@ -45,6 +48,7 @@ pub use gate::{SETTLE, SpeechGate};
 pub use player::Player;
 pub use queue::{Outcome, Playback};
 pub use ring::{CAPTURE_RATE, Ring};
+pub use segment::{SegmentConfig, SegmentEvent, Segmenter};
 
 /// Everything playback can report. Carries enough to render an actionable
 /// `doctor` line — "PipeWire not running" is a different fix from "the

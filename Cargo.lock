@@ -789,7 +789,10 @@ version = "0.1.0"
 name = "cosmo-stt"
 version = "0.1.0"
 dependencies = [
+ "cosmo-audio",
+ "hound",
  "sherpa-onnx",
+ "thiserror",
 ]
 
 [[package]]

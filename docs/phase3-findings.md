@@ -326,3 +326,82 @@ delivery through the same masks on this hardware (F9, 1 press / 1 release,
   keyboards" line.
 - `cosmo trigger capture` for rebinding without editing the config. Not
   needed now that the default is settled.
+
+## §4. VAD and segmentation (spec part 3.3, 2026-09-28)
+
+**Done.** Silero finds speech, a small rule engine decides where to cut,
+and on a real speech–silence–speech buffer every cut lands in silence.
+
+### 4a. The split: Silero decides per window, the segmenter owns the rules
+
+- **`cosmo_stt::vad::Vad`** (feature `sherpa`) wraps sherpa's Silero
+  detector and returns one speech/silence decision per 512-sample (32 ms)
+  window. It takes whatever chunk sizes capture delivers and carries the
+  partial window over. Only sherpa's frame-level `detected()` state is used;
+  its queue of silence-stripped segments is cleared as it fills. The
+  utterance is cut from the ring, where positions are absolute and the
+  pre-roll lives.
+- sherpa's own debounce is set short (100 ms either way) and its
+  `max_speech_duration` far out of reach, since that setting forces an end
+  *inside speech* by raising the threshold. What counts as a pause is
+  decided in one place:
+- **`cosmo_audio::Segmenter`** (core tier, 7 tests) turns the decisions
+  into two events:
+  - **`Cut(pos)`** once a silence after speech reaches **400 ms**, at a
+    point 200 ms into it. It fires *during* the pause, so the finished
+    segment can decode while the next is spoken (§3.5). One cut per pause.
+    None for silence that follows no speech, so quiet isn't split into
+    empty segments. **No forced cuts**: a long stretch without a pause
+    decodes as one segment.
+  - **`Backstop`** after **6 s** of continuous silence, once per
+    recording, whether or not anything was said. It's generous on
+    purpose: someone holding the key while they think mustn't be cut off.
+    It exists for lost releases, not end-pointing.
+
+Both durations are `SegmentConfig` defaults for now. Whether they become
+config keys is a §3.7 question, once they've been tried with real speech.
+
+### 4b. Verified (`cosmo-stt/tests/vad_cuts.rs`)
+
+The buffer: 0.5 s room noise, "I love you." (1 s), 1.0 s noise, a 7.4 s
+read sentence, 0.8 s noise, "I love you." again, then 7 s noise. The
+noise sits at about −50 dBFS, so silence isn't digital zero. It's fed
+through in 1024-sample chunks, the size PipeWire delivers.
+
+| Event | Where | |
+|---|---|---|
+| cut | 1.64 s | inserted 1.0 s pause |
+| cut | 5.80 s | the reader's own pause, mid-sentence |
+| cut | 7.24 s | the reader's own pause |
+| cut | 9.90 s | inserted 0.8 s pause |
+| cut | 11.85 s | the tail |
+| backstop | 6.13 s after the audio went quiet | 6 s + VAD hangover |
+
+The test asserts the property rather than these positions: each cut has
+room-level audio (RMS < 0.01) for 40 ms either side, and each inserted
+pause gets exactly one. That was also a lesson: the clips carry their own
+leading and trailing silence, so the pause the VAD hears starts *before*
+the inserted gap. The test measures a pause as the whole quiet stretch
+around it, which is also how a real recording behaves.
+
+Cost: 18.5 s of audio through Silero in about 70 ms, one thread (RTF
+~0.004). Negligible beside the recognizer.
+
+### 4c. Model and fetch
+
+`scripts/fetch-models --vad` fetches `silero_vad.onnx` (644 KB, MIT) into
+`~/.cache/cosmo/models/vad/`, from sherpa-onnx's `asr-models` release,
+pinned by SHA-256 because a release asset has no git revision.
+
+The heavy test also reads the two clips shipped with the 110M transducer.
+They're on disk from the §3.1 spike; `scripts/fetch-models --asr` (§3.5)
+will make that reproducible.
+
+### 4d. What changed in the tree
+
+- `cosmo-audio`: `segment.rs` (`Segmenter`, `SegmentConfig`,
+  `SegmentEvent`).
+- `cosmo-stt`: `vad.rs` (behind `sherpa`), the `vad_cuts` test, and the
+  `vad_segments` example, which prints a speech timeline and the cuts for
+  any 16 kHz WAV.
+- `scripts/fetch-models --vad`.

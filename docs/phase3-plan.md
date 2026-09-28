@@ -8,7 +8,8 @@ ONNX Runtimes don't link, so both crates now share sherpa's via
 `scripts/fetch-native`. One licensing decision is open (findings §1e).
 §3.2 capture done 2026-09-26 (findings §2), with the saturated-machine
 test already passing on capture. §3.4 hotkey done 2026-09-26 (findings §3): the trigger is Right Ctrl,
-and the grab was removed as unsound. Next: §3.3 VAD, then §3.5.
+and the grab was removed as unsound. §3.3 VAD done 2026-09-28 (findings §4).
+Next: §3.5.
 
 Goal: **hold the key, speak, release → a transcript**, with live partials
 while you talk. Transcripts are *shown*, not acted on. Wiring them into
@@ -96,12 +97,16 @@ an expected 1.00 s to 2.37 s. Findings §2.)*
 
 ### 3.3 VAD and segmentation
 
-- [ ] Silero VAD through `sherpa_onnx` (cosmic-voice shipped an energy
+- [x] Silero VAD through `sherpa_onnx` (cosmic-voice shipped an energy
       placeholder). It serves two jobs: **segment cuts** inside long
       utterances (the offline pass costs more than linearly in length), and a
       **silence backstop** that ends a recording if a key release is lost.
-- [ ] Cuts land only inside silence. Tested on a synthetic
-      speech-silence-speech buffer.
+      *(Silero decides per 32 ms window; a pure `Segmenter` in
+      `cosmo-audio` owns the rules: cut after a 400 ms pause, backstop
+      after 6 s of silence. Findings §4.)*
+- [x] Cuts land only inside silence. Tested on a synthetic
+      speech-silence-speech buffer. *(Real speech clips with room noise
+      between them: five cuts, all in quiet audio, one per pause.)*
 
 ### 3.4 Hotkey (`cosmo-hotkey`)
 

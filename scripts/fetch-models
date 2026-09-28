@@ -5,6 +5,7 @@
 #   scripts/fetch-models              # the default variant (fp32) + all English voices
 #   scripts/fetch-models --variant q8 # the int8-quantized model instead
 #   scripts/fetch-models --all-variants
+#   scripts/fetch-models --vad        # the Silero VAD model only (phase-3 §3.3)
 #
 # Every file is pinned to one repository revision and checked against a
 # SHA-256 before it is moved into place: a truncated or tampered download
@@ -15,6 +16,12 @@
 # Source: huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX (Apache-2.0),
 # the ONNX export of hexgrad/Kokoro-82M (Apache-2.0).
 set -euo pipefail
+
+# Silero VAD, as sherpa-onnx republishes it (MIT). A release asset, not a
+# git revision, so the checksum is what pins it.
+VAD_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx"
+VAD_SHA="9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6"
+VAD_DEST="${XDG_CACHE_HOME:-$HOME/.cache}/cosmo/models/vad"
 
 REPO="onnx-community/Kokoro-82M-v1.0-ONNX"
 REV="1939ad2a8e416c0acfeecc08a694d14ef25f2231"
@@ -62,18 +69,19 @@ VOICES="
 "
 
 variants=(fp32)
+vad=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --variant) variants=("$2"); shift 2 ;;
         --all-variants) variants=(fp32 fp16 q8); shift ;;
-        -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+        --vad) vad=1; shift ;;
+        -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
 
 command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
 command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 1; }
-mkdir -p "$DEST/voices"
 
 fetched=0 skipped=0
 # fetch <url-path> <dest-path> <sha256>
@@ -84,7 +92,9 @@ fetch() {
         return
     fi
     echo "fetching $src"
-    curl --fail --location --retry 3 --progress-bar -o "$out.part" "$BASE/$src"
+    local url="$src"
+    [[ "$url" == https://* ]] || url="$BASE/$src"
+    curl --fail --location --retry 3 --progress-bar -o "$out.part" "$url"
     if ! echo "$want  $out.part" | sha256sum --check --status; then
         rm -f "$out.part"
         echo "checksum mismatch for $src — refusing to install it" >&2
@@ -94,6 +104,14 @@ fetch() {
     fetched=$((fetched + 1))
 }
 
+if [[ $vad == 1 ]]; then
+    mkdir -p "$VAD_DEST"
+    fetch "$VAD_URL" "$VAD_DEST/silero_vad.onnx" "$VAD_SHA"
+    echo "silero-vad: $fetched fetched, $skipped already verified → $VAD_DEST"
+    exit 0
+fi
+
+mkdir -p "$DEST/voices"
 for v in "${variants[@]}"; do
     line=$(awk -v v="$v" '$1 == v' <<<"$VARIANTS")
     [[ -n "$line" ]] || { echo "unknown variant: $v (fp32, fp16, q8)" >&2; exit 2; }
