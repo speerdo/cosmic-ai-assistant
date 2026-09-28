@@ -790,9 +790,12 @@ name = "cosmo-stt"
 version = "0.1.0"
 dependencies = [
  "cosmo-audio",
+ "cosmo-config",
  "hound",
  "sherpa-onnx",
  "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

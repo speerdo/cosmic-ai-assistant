@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Fetch the Kokoro-82M ONNX model, its tokenizer and the English voice packs
-# into ${XDG_CACHE_HOME:-~/.cache}/cosmo/models/kokoro-v1.0/ (spec §2.5).
+# Fetch cosmo's local models into ${XDG_CACHE_HOME:-~/.cache}/cosmo/models/.
 #
-#   scripts/fetch-models              # the default variant (fp32) + all English voices
-#   scripts/fetch-models --variant q8 # the int8-quantized model instead
+#   scripts/fetch-models              # Kokoro (default variant fp32) + all English voices
+#   scripts/fetch-models --variant q8 # Kokoro, the int8-quantized model instead
 #   scripts/fetch-models --all-variants
-#   scripts/fetch-models --vad        # the Silero VAD model only (phase-3 §3.3)
+#   scripts/fetch-models --vad        # the Silero VAD model (phase-3 §3.3)
+#   scripts/fetch-models --asr        # the default speech-recognition pair (§3.5)
+#   scripts/fetch-models --asr-bench  # every model scripts/bench-asr compares (§3.6)
+#
+# Component flags combine (--vad --asr); with none, Kokoro is fetched.
 #
 # Every file is pinned to one repository revision and checked against a
 # SHA-256 before it is moved into place: a truncated or tampered download
@@ -13,20 +16,35 @@
 # already verify are skipped. This is the groundwork for phase 8's first-run
 # fetch UX, not that UX itself.
 #
-# Source: huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX (Apache-2.0),
-# the ONNX export of hexgrad/Kokoro-82M (Apache-2.0).
+# Kokoro source: huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX
+# (Apache-2.0), the ONNX export of hexgrad/Kokoro-82M (Apache-2.0).
 set -euo pipefail
+
+MODELS="${XDG_CACHE_HOME:-$HOME/.cache}/cosmo/models"
 
 # Silero VAD, as sherpa-onnx republishes it (MIT). A release asset, not a
 # git revision, so the checksum is what pins it.
 VAD_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx"
 VAD_SHA="9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6"
-VAD_DEST="${XDG_CACHE_HOME:-$HOME/.cache}/cosmo/models/vad"
+VAD_DEST="$MODELS/vad"
+
+# Speech recognition (phase-3 §3.5): sherpa-onnx's int8 exports of NVIDIA's
+# NeMo models (CC-BY-4.0), as release archives unpacked under asr/<name>/.
+# Also pinned by SHA-256 (the digests GitHub publishes for these assets).
+ASR_BASE="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models"
+ASR_DEST="$MODELS/asr"
+# set     archive name (without .tar.bz2)                                   sha256
+ASR_MODELS="
+    asr     sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25  78e2b79fcf7271553a74402a76b771b09ea40117a39566a79f52235b23db6358
+    asr     sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8                            157c157bc51155e03e37d2466522a3a737dd9c72bb25f36eb18912964161e1ad
+    bench   sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8           f628312e9fdf8686374cb01a69425c41732529d540860311f16f37cbc32cfe9b
+    bench   sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming          99f63605b3a85a54c250c0869670a687b7d6598a47bf2421515e1f839a76e150
+"
 
 REPO="onnx-community/Kokoro-82M-v1.0-ONNX"
 REV="1939ad2a8e416c0acfeecc08a694d14ef25f2231"
 BASE="https://huggingface.co/${REPO}/resolve/${REV}"
-DEST="${XDG_CACHE_HOME:-$HOME/.cache}/cosmo/models/kokoro-v1.0"
+DEST="$MODELS/kokoro-v1.0"
 
 # variant  file                       sha256
 VARIANTS="
@@ -69,19 +87,23 @@ VOICES="
 "
 
 variants=(fp32)
-vad=0
+kokoro=0 vad=0 asr=0 bench=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --variant) variants=("$2"); shift 2 ;;
-        --all-variants) variants=(fp32 fp16 q8); shift ;;
+        --variant) variants=("$2"); kokoro=1; shift 2 ;;
+        --all-variants) variants=(fp32 fp16 q8); kokoro=1; shift ;;
+        --kokoro) kokoro=1; shift ;;
         --vad) vad=1; shift ;;
-        -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+        --asr) asr=1; shift ;;
+        --asr-bench) asr=1; bench=1; shift ;;
+        -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
 
 command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
 command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 1; }
+(( vad || asr )) || kokoro=1
 
 fetched=0 skipped=0
 # fetch <url-path> <dest-path> <sha256>
@@ -104,13 +126,49 @@ fetch() {
     fetched=$((fetched + 1))
 }
 
-if [[ $vad == 1 ]]; then
+# fetch_archive <name> <sha256>: download, verify, then unpack into
+# $ASR_DEST/<name>/. The verified checksum is kept beside the files, so a
+# re-run skips a model without re-downloading it, and a half-unpacked one
+# (no marker) is fetched again.
+fetch_archive() {
+    local name="$1" want="$2" out="$ASR_DEST/$1"
+    if [[ -f "$out/.sha256" && "$(cat "$out/.sha256")" == "$want" ]]; then
+        skipped=$((skipped + 1))
+        return
+    fi
+    mkdir -p "$ASR_DEST"
+    local tmp="$ASR_DEST/.$name.part"
+    rm -rf "$tmp" && mkdir -p "$tmp"
+    fetch "$ASR_BASE/$name.tar.bz2" "$tmp/archive.tar.bz2" "$want"
+    fetched=$((fetched - 1)) # counted once, below, when it's in place
+    echo "unpacking $name"
+    tar -xjf "$tmp/archive.tar.bz2" -C "$tmp"
+    [[ -d "$tmp/$name" ]] || { echo "$name: archive has no $name/ directory" >&2; exit 1; }
+    echo "$want" >"$tmp/$name/.sha256"
+    rm -rf "$out"
+    mv "$tmp/$name" "$out"
+    rm -rf "$tmp"
+    fetched=$((fetched + 1))
+}
+
+if (( vad )); then
     mkdir -p "$VAD_DEST"
     fetch "$VAD_URL" "$VAD_DEST/silero_vad.onnx" "$VAD_SHA"
     echo "silero-vad: $fetched fetched, $skipped already verified → $VAD_DEST"
-    exit 0
+    fetched=0 skipped=0
 fi
 
+if (( asr )); then
+    while read -r set name sha; do
+        [[ -n "$set" ]] || continue
+        [[ "$set" == asr ]] || (( bench )) || continue
+        fetch_archive "$name" "$sha"
+    done <<<"$ASR_MODELS"
+    echo "asr: $fetched fetched, $skipped already verified → $ASR_DEST"
+    fetched=0 skipped=0
+fi
+
+(( kokoro )) || exit 0
 mkdir -p "$DEST/voices"
 for v in "${variants[@]}"; do
     line=$(awk -v v="$v" '$1 == v' <<<"$VARIANTS")

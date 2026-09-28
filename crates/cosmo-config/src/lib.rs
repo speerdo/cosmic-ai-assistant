@@ -52,6 +52,17 @@ pub struct Config {
     /// Must be a key that does nothing on its own — it is never grabbed, so
     /// its press and release still reach the desktop (phase-3 findings §3).
     pub trigger_key: u16,
+    /// Speech-recognition models (phase 3), as directory names under
+    /// `~/.cache/cosmo/models/asr/`. Empty is cosmo's default; `"none"`
+    /// turns that model off (at least one must stay on). Streaming gives
+    /// the live partials; offline gives the text that commits.
+    pub asr_streaming_model: String,
+    pub asr_offline_model: String,
+    /// Threads for the streaming model. Nobody waits on a partial.
+    pub asr_threads: u8,
+    /// Threads for the offline model, 1–4: past four it stops getting
+    /// faster (blueprint §3.3).
+    pub offline_threads: u8,
     /// Log filter string, e.g. `cosmo=debug`. Overridden by `RUST_LOG`.
     pub log_filter: String,
 }
@@ -74,6 +85,10 @@ impl Default for Config {
             voice_instructions: String::new(),
             announce_spacing_secs: 8,
             trigger_key: 97,
+            asr_streaming_model: String::new(),
+            asr_offline_model: String::new(),
+            asr_threads: 2,
+            offline_threads: 4,
             log_filter: "info".into(),
         }
     }
@@ -155,6 +170,20 @@ impl Config {
                 "trigger_key {} is not a keyboard key code (1–255; Right Ctrl is 97)",
                 self.trigger_key
             )));
+        }
+        if !(1..=4).contains(&self.offline_threads) {
+            return Err(ConfigError::Parse(format!(
+                "offline_threads {} is out of range (1–4; more stops helping)",
+                self.offline_threads
+            )));
+        }
+        if self.asr_threads == 0 {
+            return Err(ConfigError::Parse("asr_threads must be at least 1".into()));
+        }
+        if self.asr_streaming_model == "none" && self.asr_offline_model == "none" {
+            return Err(ConfigError::Parse(
+                "asr_streaming_model and asr_offline_model are both \"none\" — nothing would transcribe".into(),
+            ));
         }
         if self.announce_spacing_secs < 8 {
             return Err(ConfigError::Parse(
@@ -290,6 +319,15 @@ pub fn commented_default() -> String {
     // grabbed, so pick a key that does nothing when pressed on its own.
     // trigger_key: {trigger_key},
 
+    // Speech recognition: model directory names under
+    // ~/.cache/cosmo/models/asr/ (`scripts/fetch-models --asr`). Empty is
+    // the default pair; "none" turns one off. Streaming shows live
+    // partials; offline produces the text that commits.
+    // asr_streaming_model: "{asr_streaming_model}",
+    // asr_offline_model: "{asr_offline_model}",
+    // asr_threads: {asr_threads},
+    // offline_threads: {offline_threads},
+
     // Log filter, e.g. "cosmo=debug". RUST_LOG wins when set.
     // log_filter: "{log_filter}",
 )
@@ -311,6 +349,10 @@ pub fn commented_default() -> String {
         voice_instructions = d.voice_instructions,
         spacing = d.announce_spacing_secs,
         trigger_key = d.trigger_key,
+        asr_streaming_model = d.asr_streaming_model,
+        asr_offline_model = d.asr_offline_model,
+        asr_threads = d.asr_threads,
+        offline_threads = d.offline_threads,
         log_filter = d.log_filter,
     )
 }
@@ -431,6 +473,34 @@ mod tests {
             assert!(cfg.validate().is_err(), "{bad} accepted");
         }
         assert!(commented_default().contains("// trigger_key: 97,"));
+    }
+
+    #[test]
+    fn asr_settings_are_validated() {
+        let d = Config::default();
+        for bad in [0, 5] {
+            let c = Config {
+                offline_threads: bad,
+                ..d.clone()
+            };
+            assert!(c.validate().is_err(), "offline_threads {bad}");
+        }
+        let c = Config {
+            asr_threads: 0,
+            ..d.clone()
+        };
+        assert!(c.validate().is_err());
+        let off = Config {
+            asr_streaming_model: "none".into(),
+            ..d.clone()
+        };
+        assert!(off.validate().is_ok(), "one model is enough");
+        let both = Config {
+            asr_offline_model: "none".into(),
+            ..off
+        };
+        assert!(both.validate().is_err());
+        assert!(commented_default().contains("// offline_threads: 4,"));
     }
 
     #[test]

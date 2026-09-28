@@ -97,6 +97,12 @@ impl Segmenter {
         self.pos
     }
 
+    /// Speech has been heard since the last cut (or the start): the audio
+    /// after the last cut holds something worth decoding.
+    pub fn speech_pending(&self) -> bool {
+        self.speech_since_cut
+    }
+
     /// Feed the VAD's decision for the next `len` samples.
     pub fn push(&mut self, len: usize, speech: bool) -> Option<SegmentEvent> {
         let end = self.pos + len as u64;

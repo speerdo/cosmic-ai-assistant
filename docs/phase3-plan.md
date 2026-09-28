@@ -8,8 +8,9 @@ ONNX Runtimes don't link, so both crates now share sherpa's via
 `scripts/fetch-native`. One licensing decision is open (findings §1e).
 §3.2 capture done 2026-09-26 (findings §2), with the saturated-machine
 test already passing on capture. §3.4 hotkey done 2026-09-26 (findings §3): the trigger is Right Ctrl,
-and the grab was removed as unsound. §3.3 VAD done 2026-09-28 (findings §4).
-Next: §3.5.
+and the grab was removed as unsound. §3.3 VAD done 2026-09-28 (findings §4). §3.5 STT done
+2026-09-28 (findings §5). Next: §3.6 bench-asr, which needs the user's
+recorded commands.
 
 Goal: **hold the key, speak, release → a transcript**, with live partials
 while you talk. Transcripts are *shown*, not acted on. Wiring them into
@@ -130,18 +131,24 @@ an expected 1.00 s to 2.37 s. Findings §2.)*
 
 ### 3.5 STT (`cosmo-stt`)
 
-- [ ] Two resident models on their own worker threads, following
+- [x] Two resident models on their own worker threads, following
       cosmic-voice's `asr.rs`: **streaming** (greedy, around 560 ms chunks)
       producing partials, and **offline** (modified beam search + hotwords)
       producing the commit. Thread counts are configurable (`asr_threads`,
-      `offline_threads` ≤ 4).
-- [ ] **Segmented decoding**: each finished segment (§3.3) is decoded while
-      the next is still being spoken.
-- [ ] Hotwords: the reflex vocabulary plus installed app names (from
+      `offline_threads` ≤ 4). *(Both resident in 1.77 s, loading in
+      parallel. The commit never waits on the streaming model. Findings
+      §5a–b.)*
+- [x] **Segmented decoding**: each finished segment (§3.3) is decoded while
+      the next is still being spoken. *(A 7.4 s sentence commits 116 ms
+      after release; a 1 s command, 57 ms.)*
+- [x] Hotwords: the reflex vocabulary plus installed app names (from
       `.desktop` files), keyed by the focused `app_id` from `cosmo-focus`.
-      The mechanism lands now; phase 4 owns the final list.
-- [ ] `scripts/fetch-models` grows `--asr`: pinned SHA-256s, the same
-      discipline as Kokoro.
+      The mechanism lands now; phase 4 owns the final list. *(98 of 102
+      installed apps are usable hotwords, with no latency cost. Findings
+      §5c.)*
+- [x] `scripts/fetch-models` grows `--asr`: pinned SHA-256s, the same
+      discipline as Kokoro. *(`--asr` for the default pair, `--asr-bench`
+      for all four §3.6 candidates.)*
 
 ### 3.6 `scripts/bench-asr`: the model choice, on data
 

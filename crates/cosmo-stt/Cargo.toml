@@ -26,10 +26,25 @@ required-features = ["sherpa"]
 name = "vad_cuts"
 required-features = ["sherpa"]
 
+[[example]]
+name = "transcribe"
+required-features = ["sherpa"]
+
+[[test]]
+name = "session"
+required-features = ["sherpa"]
+
 [dependencies]
 sherpa-onnx = { workspace = true, optional = true }
 thiserror.workspace = true
+tracing.workspace = true
+# `sync` only, as in cosmo-audio: results are awaitable from the daemon's
+# runtime or blocked on from a thread. No runtime is started here.
+tokio = { workspace = true, features = ["sync"] }
+# Core tier only (no PipeWire): the segmenter's pause rules.
+cosmo-audio.workspace = true
+cosmo-config.workspace = true
 
 [dev-dependencies]
-cosmo-audio.workspace = true
 hound.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }

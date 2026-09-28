@@ -393,9 +393,8 @@ Cost: 18.5 s of audio through Silero in about 70 ms, one thread (RTF
 `~/.cache/cosmo/models/vad/`, from sherpa-onnx's `asr-models` release,
 pinned by SHA-256 because a release asset has no git revision.
 
-The heavy test also reads the two clips shipped with the 110M transducer.
-They're on disk from the §3.1 spike; `scripts/fetch-models --asr` (§3.5)
-will make that reproducible.
+The heavy test also reads the two clips shipped with the 110M transducer,
+fetched by `scripts/fetch-models --asr-bench` since §3.5.
 
 ### 4d. What changed in the tree
 
@@ -405,3 +404,147 @@ will make that reproducible.
   `vad_segments` example, which prints a speech timeline and the cuts for
   any 16 kHz WAV.
 - `scripts/fetch-models --vad`.
+
+## §5. Speech recognition (spec part 3.5, 2026-09-28)
+
+**Done.** Hold-to-talk's recognition half works end to end on recorded
+speech: live partials while audio arrives, and a committed transcript
+**57–116 ms after release**. What's left is the daemon wiring (§3.7) and
+choosing models on the user's own voice (§3.6).
+
+### 5a. Models and fetching
+
+`scripts/fetch-models` now takes components (`--kokoro`, `--vad`, `--asr`,
+`--asr-bench`, combinable). The ASR models are sherpa-onnx's int8 NeMo
+exports, as release archives. They're pinned by the SHA-256 digests GitHub
+publishes for release assets, verified before unpacking, with the verified
+hash kept beside the files so a re-run skips them.
+
+| Set | Model | Archive | Role |
+|---|---|---|---|
+| `--asr` | `nemotron-speech-streaming-en-0.6b` (560 ms chunks) | 464 MB | streaming (default) |
+| `--asr` | `parakeet-tdt-0.6b-v2` | 482 MB | offline (default) |
+| `--asr-bench` | `parakeet_tdt_transducer_110m` | 108 MB | §3.6 candidate |
+| `--asr-bench` | `parakeet-unified-en-0.6b` (non-streaming) | 501 MB | §3.6 candidate |
+
+All four are transducers with the same layout, so one loader covers them,
+and a model is chosen by naming its directory. The defaults are the
+blueprint's pair, pending §3.6. The config keys are
+`asr_streaming_model` / `asr_offline_model` (directory names; empty is the
+default, `"none"` turns one off), `asr_threads` (default 2) and
+`offline_threads` (default 4, validated 1–4).
+
+### 5b. Shape (`cosmo-stt`)
+
+- **`Stt`** loads both models, each on its **own thread**, in parallel:
+  **1.77 s** until both are resident (1.76 s and 1.48 s individually).
+  Peak RSS with both loaded is about **1.8 GB**, which §3.6 should weigh.
+  `Stt` is cheap to clone. Dropping the last clone closes the channels and
+  **joins** the threads (see §5e for why).
+- **`Session`** is one recording. `push` never blocks on a model. Each
+  chunk goes three ways: to the streaming thread (partials), through Silero
+  and the segmenter (cuts, §4), and into the current segment's buffer. At a
+  cut, the finished segment is queued on the offline thread immediately.
+  `finish` queues the tail (only if speech was heard since the last cut)
+  and awaits the segments in order. The pure pieces (`Hotwords`, the BPE
+  vocab, `join`) are core tier; everything that loads a model is behind
+  `sherpa`.
+- **The commit never waits on the streaming model.** The first version of
+  `finish` asked the streaming model to flush its final text, so a
+  streaming backlog delayed the commit. Feeding the clip faster than real
+  time showed it: **1,217 ms** from release to commit. Now, with an offline
+  model present, the streaming recording is ended without a flush, and an
+  **epoch counter** makes its queued audio stale, so it's skipped rather
+  than decoded. `Transcript::streaming` is then the last partial seen.
+  Only without an offline model does the commit wait for the streaming
+  final, because then that *is* the commit.
+
+Real-time pace (the `transcribe` example feeds 1024-sample chunks on the
+clock, as capture would):
+
+| Clip | Segments | Partials | Release → commit |
+|---|---|---|---|
+| 7.4 s read sentence | 3 (cut at 3.3 s and 4.7 s, decoded while "speaking") | every ~0.5 s | **116 ms** (was 194 ms before the fix above) |
+| "I love you." (1 s) | 1 | — | **57 ms** |
+| the same, fed as fast as possible | 3 / 1 | — | 330 ms / 72 ms (everything decodes after "release") |
+
+Segment decodes on the 0.6B offline model take 60–180 ms each.
+
+### 5c. Hotwords
+
+- **Mechanism.** `Hotwords` holds a base set plus per-`app_id` sets;
+  `for_app(focused)` gives sherpa's one-phrase-per-line form. Phrases are
+  kept in display casing (§1f). Unusable phrases are dropped before they
+  reach the tokenizer: symbols, non-Latin scripts, number-only phrases,
+  more than 4 words.
+- **App names.** `desktop_apps()` reads `Name=` from `.desktop` files in
+  the XDG data dirs (the user's entries win; `NoDisplay`/`Hidden` and
+  non-applications skipped). On this machine it finds **102 apps, and 98
+  make usable hotwords**. With all 98 active, the test clips transcribe
+  the same, at the same latency, with no tokenizer errors.
+- **`bpe.vocab`** is derived from `tokens.txt` beside the model on first
+  load (§1f). If it can't be written, the model runs unbiased and says so
+  (`Loaded::hotwords`).
+- **It works through a session.** Unbiased, the 0.6B model writes the
+  name in the test sentence as "Phebe"; with "Phoebe" as a hotword it's
+  right. The §3.1 Kokoro check (`link_asr_tts`, ported to this API and the
+  default pair):
+
+| Spoken (voice) | Plain | Hotwords |
+|---|---|---|
+| "Restart PipeWire, please." (af_heart) | "Restart **pipe wire** please." | "Restart **PipeWire** please." |
+| "Restart PipeWire, please." (bm_george) | "Restart **pipe wire**, please." | "Restart **PipeWire**, please." |
+| "Launch Spotube." (af_heart) | "Launch **Spotoob**." | "Launch **Spotube**." |
+| "Open my notes in Obsidian." (bm_george) | "…in **obsidian**." | "…in **Obsidian**." |
+
+  "PipeWire" with `bm_george`, which the 110M model got wrong even with
+  the hotword (§1f), is right on the 0.6B model. Everything else was
+  already correct unbiased. Hotwords cost 0–60 ms per utterance here.
+- **Still open for phase 4:** mapping a Wayland `app_id` to a `.desktop`
+  id isn't always an exact match (`firefox` vs `org.mozilla.firefox`).
+  `DesktopApp` keeps the id for that. The reflex phrase list itself is
+  phase 4's.
+
+### 5d. A quirk of segmenting: punctuation at every cut
+
+The offline model sees each segment alone, so it ends each with a full
+stop:
+
+    streaming: "…any more, observed Phoebe, turning away her eyes. It is…"
+    commit:    "…any more, observed Phebe. turning away her eyes. It is…"
+
+For commands, which are usually one segment, this rarely shows. For a
+long utterance, the commit's punctuation is less trustworthy than its
+words. Options for later: strip a segment's trailing punctuation when the
+next segment starts lowercase, or cut less eagerly (a longer
+`min_pause`). §3.6 should look at it on real recordings before anything is
+tuned.
+
+### 5e. Exit race: ONNX Runtime torn down under a decode
+
+The first run of the ported `link_asr_tts` ended with:
+
+    [E:onnxruntime … ExecuteKernel] Non-zero status code returned while running
+    Reshape node. Name:'/layers.4/self_attn/Reshape_3' … GetElementType is not implemented
+
+The node is from the speech models (Kokoro has no such layer). `main`
+returned while the streaming thread was still decoding, and the process's
+teardown pulled the runtime out from under it. Harmless at exit, but not
+something to leave. Dropping the last `Stt` now bumps the epoch (so any
+backlog is skipped), closes both channels and joins both threads. Three
+further runs were clean. The daemon gets this for free when it drops its
+`Stt` on shutdown.
+
+### 5f. What changed in the tree
+
+- `cosmo-stt`: `engine.rs` (`Stt`, `SttConfig`, workers), `session.rs`
+  (`Session`, `Event`, `Transcript`), `model.rs` (finding and building
+  transducers), `hotwords.rs`, `bpe.rs`, `join`. The spike's
+  `pub use sherpa_onnx` is gone. There's a `session` test (heavy, 3
+  tests) and a `transcribe` example (`--fast`, `--hotwords`, `--apps`;
+  `COSMO_ASR_STREAMING`/`COSMO_ASR_OFFLINE` pick other models).
+- `cosmo-audio`: `Segmenter::speech_pending`.
+- `cosmo-config`: the four ASR keys, validated, in the commented default.
+- `cosmo-daemon`: `link_asr_tts` now runs through `cosmo_stt`'s API with
+  the default pair (no `BPE_VOCAB` needed).
+- `scripts/fetch-models`: components, `--asr`, `--asr-bench`.
