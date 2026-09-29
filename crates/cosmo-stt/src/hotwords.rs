@@ -69,6 +69,12 @@ impl Hotwords {
         all.into_iter().collect::<Vec<_>>().join("\n")
     }
 
+    /// Whether any phrases depend on the focused window: if not, looking
+    /// the focus up can be skipped.
+    pub fn has_app_sets(&self) -> bool {
+        !self.per_app.is_empty()
+    }
+
     pub fn len(&self) -> usize {
         self.base.len() + self.per_app.values().map(BTreeSet::len).sum::<usize>()
     }

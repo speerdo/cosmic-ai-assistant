@@ -687,6 +687,7 @@ dependencies = [
  "anyhow",
  "cosmo-audio",
  "cosmo-config",
+ "cosmo-focus",
  "cosmo-gate",
  "cosmo-hotkey",
  "cosmo-ipc",

@@ -10,7 +10,9 @@ ONNX Runtimes don't link, so both crates now share sherpa's via
 test already passing on capture. §3.4 hotkey done 2026-09-26 (findings §3): the trigger is Right Ctrl,
 and the grab was removed as unsound. §3.3 VAD done 2026-09-28 (findings §4). §3.5 STT done
 2026-09-28 (findings §5). §3.6's tool is built (findings §6); the
-decision waits on the user's recordings. Next: §3.7.
+decision waits on the user's recordings. §3.7 daemon wiring done
+2026-09-29 (findings §7): live through the real daemon by acoustic loop.
+Next: §3.8, which needs a real hold of the key.
 
 Goal: **hold the key, speak, release → a transcript**, with live partials
 while you talk. Transcripts are *shown*, not acted on. Wiring them into
@@ -125,9 +127,9 @@ an expected 1.00 s to 2.37 s. Findings §2.)*
       key press (a user-initiated window, mask off for at most 10 s, as
       cosmic-voice does). The default must be a key with no common binding
       on this hardware. Chosen with the user, not hardcoded silently.
-- [ ] **`cosmo toggle` naming conflict.** Phase 1 made `toggle` mean
+- [x] **`cosmo toggle` naming conflict.** Phase 1 made `toggle` mean
       pause/resume. The press-only listening fallback becomes `cosmo listen`
-      (start/stop), bindable as a COSMIC `Spawn` shortcut.
+      (start/stop), bindable as a COSMIC `Spawn` shortcut. *(§3.7.)*
 
 ### 3.5 STT (`cosmo-stt`)
 
@@ -166,14 +168,19 @@ an expected 1.00 s to 2.37 s. Findings §2.)*
 
 ### 3.7 Daemon wiring
 
-- [ ] `Listening` becomes real: key down → `Listening` (partials stream as
+- [x] `Listening` becomes real: key down → `Listening` (partials stream as
       `Event::Transcript { text, final: false }`); release →
       `Thinking`-free `Idle` with a final `Event::Transcript { final: true }`.
       The CLI's `cosmo listen` / `cosmo transcripts` prints them.
-- [ ] The trigger during `Speaking` interrupts playback (it's a new
-      utterance). The mic opens after the settle window.
-- [ ] Latency spans: `transcript` (release → commit), the phase-1 agreed
-      name.
+      *(Holds under 300 ms discarded; a tail of up to 300 ms after release,
+      cut short when the VAD hears silence. Findings §7.)*
+- [x] The trigger during `Speaking` interrupts playback (it's a new
+      utterance). The mic opens after the settle window. *(Interrupt is
+      tested through the controller; the settle window is capture's gate,
+      §2.)*
+- [x] Latency spans: `transcript` (release → commit), the phase-1 agreed
+      name. *(Plus `latency_ms` on the final event, measured from the
+      release edge, so it includes the tail.)*
 
 ### 3.8 DoD and `doctor`
 

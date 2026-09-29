@@ -40,6 +40,13 @@ enum Cmd {
     Cancel { token: String },
     /// Pause/resume new turns.
     Toggle,
+    /// Start listening, as if the trigger key were held; run it again to
+    /// stop. The one that started prints the transcript. Bind it to a
+    /// COSMIC shortcut (`Spawn`) when holding a key isn't an option.
+    Listen,
+    /// Print every transcript as it happens (partials update in place on a
+    /// terminal; only finals when piped). Ctrl+C stops.
+    Transcripts,
     /// Open the OpenAI key page, read the key from stdin (echo disabled),
     /// store it in the Secret Service.
     AuthLogin,
@@ -97,7 +104,7 @@ async fn run(cmd: Cmd) -> i32 {
         _ => {}
     }
     let path = socket_path();
-    let stream = match UnixStream::connect(&path).await {
+    let mut stream = match UnixStream::connect(&path).await {
         Ok(s) => s,
         Err(e) => {
             eprintln!(
@@ -107,7 +114,12 @@ async fn run(cmd: Cmd) -> i32 {
             return 3;
         }
     };
-    match exchange(stream, cmd).await {
+    let result = match cmd {
+        Cmd::Listen => listen(stream).await,
+        Cmd::Transcripts => watch_transcripts(&mut stream).await,
+        cmd => exchange(stream, cmd).await,
+    };
+    match result {
         Ok(code) => code,
         Err(e) => {
             eprintln!("protocol error: {e}");
@@ -131,6 +143,7 @@ async fn exchange(
             Cmd::Confirm { token } => Command::Confirm { token },
             Cmd::Cancel { token } => Command::Cancel { token },
             Cmd::Toggle => Command::Toggle,
+            Cmd::Listen | Cmd::Transcripts => unreachable!("handled by their own loops"),
             Cmd::Voice { cmd } => match cmd {
                 VoiceCmd::List { provider } => Command::VoiceList { provider },
                 VoiceCmd::Preview { voice, provider } => Command::VoicePreview { provider, voice },
@@ -199,7 +212,125 @@ fn print_event(event: &Event) {
             "[voice] {voice} {}: {detail}",
             if *ok { "ready" } else { "FAILED" }
         ),
-        Event::Usage { .. } | Event::Log { .. } => {}
+        Event::Transcript {
+            text,
+            r#final: true,
+            ..
+        } => println!("[heard] {text}"),
+        Event::Usage { .. } | Event::Log { .. } | Event::Transcript { .. } => {}
+    }
+}
+
+/// Transcripts on a terminal: the partial rewrites one line, the final
+/// replaces it. Piped, only finals are printed, one per line.
+struct TranscriptPrinter {
+    tty: bool,
+}
+
+impl TranscriptPrinter {
+    fn new() -> Self {
+        use std::io::IsTerminal;
+        Self {
+            tty: std::io::stdout().is_terminal(),
+        }
+    }
+
+    /// Print a transcript event; true if it was a final.
+    fn print(&self, event: &Event) -> bool {
+        use std::io::Write;
+        match event {
+            Event::Transcript {
+                text,
+                r#final: false,
+                ..
+            } => {
+                if self.tty {
+                    print!("\r\x1b[2K\x1b[2m{text}\x1b[0m");
+                    let _ = std::io::stdout().flush();
+                }
+                false
+            }
+            Event::Transcript {
+                text, latency_ms, ..
+            } => {
+                if self.tty {
+                    print!("\r\x1b[2K");
+                    let latency = latency_ms.map(|ms| format!("  \x1b[2m({ms} ms)\x1b[0m"));
+                    println!("{text}{}", latency.unwrap_or_default());
+                } else {
+                    println!("{text}");
+                }
+                true
+            }
+            Event::Log { line } if line.starts_with("not listening") => {
+                eprintln!("{line}");
+                false
+            }
+            _ => false,
+        }
+    }
+}
+
+/// `cosmo listen`: toggle, then (if this call started the recording) show
+/// it until its transcript arrives.
+async fn listen(mut stream: UnixStream) -> Result<i32, Box<dyn std::error::Error + Send + Sync>> {
+    let mut line = serde_json::to_string(&Request {
+        id: 1,
+        cmd: Command::Listen,
+    })?;
+    line.push('\n');
+    stream.write_all(line.as_bytes()).await?;
+    let printer = TranscriptPrinter::new();
+    let mut started = false;
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        // A recording is capped at 60 s; this is only a stuck-daemon guard.
+        let n = tokio::time::timeout(Duration::from_secs(120), read_line(&mut stream, &mut buf))
+            .await
+            .map_err(|_| "timed out waiting for the transcript")??;
+        if n == 0 {
+            return Err("daemon closed the connection".into());
+        }
+        match serde_json::from_slice::<DaemonMessage>(&buf)? {
+            DaemonMessage::Response {
+                response: Response::Listening { active: true },
+                ..
+            } => started = true,
+            DaemonMessage::Response {
+                response: Response::Listening { active: false },
+                ..
+            } => {
+                eprintln!("stopped (the `cosmo listen` that started it prints the transcript)");
+                return Ok(0);
+            }
+            DaemonMessage::Response { response, .. } => return Ok(render(response)),
+            // Before our response arrives, a transcript is someone else's.
+            DaemonMessage::Event { event } if started => {
+                if printer.print(&event) {
+                    return Ok(0);
+                }
+            }
+            DaemonMessage::Event { .. } => {}
+        }
+    }
+}
+
+/// `cosmo transcripts`: print transcripts until the daemon goes away.
+async fn watch_transcripts(
+    stream: &mut UnixStream,
+) -> Result<i32, Box<dyn std::error::Error + Send + Sync>> {
+    let printer = TranscriptPrinter::new();
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        if read_line(stream, &mut buf).await? == 0 {
+            eprintln!("daemon stopped");
+            return Ok(3);
+        }
+        if let DaemonMessage::Event { event } = serde_json::from_slice::<DaemonMessage>(&buf)? {
+            printer.print(&event);
+        }
     }
 }
 
@@ -276,6 +407,10 @@ fn render(response: Response) -> i32 {
                 eprintln!("{}", reason.unwrap_or_else(|| "unknown".into()));
                 1
             }
+        }
+        Response::Listening { active } => {
+            println!("{}", if active { "listening" } else { "stopped" });
+            0
         }
         Response::Toggled { paused } => {
             println!("{}", if paused { "paused" } else { "running" });

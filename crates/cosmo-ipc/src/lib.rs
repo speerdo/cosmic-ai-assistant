@@ -102,6 +102,10 @@ pub enum Command {
     Cancel { token: String },
     /// Pause/resume accepting new turns.
     Toggle,
+    /// Start listening, or stop and commit if already listening: the
+    /// press-only fallback to holding the trigger key (phase 3), bindable
+    /// as a COSMIC `Spawn` shortcut (`cosmo listen`).
+    Listen,
     /// Voices a provider can speak (`None` = the active provider).
     VoiceList { provider: Option<String> },
     /// Speak a fixed sample line in `voice` (synthesized once, cached).
@@ -157,6 +161,10 @@ pub enum Response {
     },
     Toggled {
         paused: bool,
+    },
+    /// Whether a recording is now running after `Listen`.
+    Listening {
+        active: bool,
     },
     Voices {
         provider: String,
@@ -303,8 +311,19 @@ pub enum Event {
         #[serde(skip_serializing_if = "Option::is_none")]
         remaining_tokens: Option<u64>,
     },
-    /// Free-form progress line (phase 1 stand-in for transcript partials).
+    /// Free-form progress line.
     Log { line: String },
+    /// Speech recognition (phase 3). Partials (`final: false`) are the
+    /// streaming model's text so far and replace the previous partial; one
+    /// final (`final: true`) ends each recording with the committed text.
+    /// Transcripts are shown, not acted on, until phase 4/5.
+    Transcript {
+        text: String,
+        r#final: bool,
+        /// Release → commit, on the final only.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        latency_ms: Option<u64>,
+    },
     /// A voice's phrase cache is rendering (spec §2.6): `done` of `total`
     /// phrases are current. Fires for reused phrases too, so a consumer
     /// always sees every step.

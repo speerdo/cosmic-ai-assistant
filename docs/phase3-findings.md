@@ -651,3 +651,115 @@ exactly blueprint §16's hunch.
 - Both streaming models dropped "I" from "I love you" when speech began
   at the very first sample (§5). The pre-roll should make that moot on
   real clips; the bench will show it.
+
+## §7. Daemon wiring (spec part 3.7, 2026-09-29)
+
+**Done, and live through the real daemon** by acoustic loop: `cosmo
+listen`, a spoken command played from the speaker into the laptop mic,
+`cosmo listen` again, and the transcript printed. What only a person can
+check (a real hold of Right Ctrl, the saturated-machine run with a real
+utterance) is §3.8.
+
+### 7a. Shape (`cosmo-daemon/src/ears.rs`, feature `ears`)
+
+- **`ears::start`** wires the devices: the capture stream (gated by
+  playback's `SpeechGate`, so cosmo never hears itself), the hotkey
+  watcher on `trigger_key`, and the models, loading on their own thread
+  (~1.8 s). None of it is fatal. If something fails, `doctor` says what,
+  and `cosmo listen` answers "not ready".
+- **`ears::run`** is the controller. It reads a `Ring` and a channel of
+  `Trigger`s (press, release, toggle) and talks to the engine through a
+  small `Host` trait (state, events, interrupt, paused, hotwords). It never
+  touches a device, which is what makes §7c possible. One recording at a
+  time:
+  - **Press** (or `cosmo listen`): interrupt any reply being spoken, mark
+    the ring 750 ms before the *press edge* (not before "now"), open a
+    `Session` with the hotwords, go `Listening`. Every 30 ms, the new ring
+    audio goes into the session, and partials go out as
+    `Event::Transcript { final: false }`.
+  - **Release**: holds under **300 ms are discarded** (`Session::cancel`,
+    no decode), because Right Ctrl is also a shortcut modifier (§3a).
+    Otherwise, wait a **tail of at most 300 ms, cut short as soon as the
+    VAD hears silence**, finish, and emit `Event::Transcript { final:
+    true, latency_ms }`, then `Idle`.
+  - **Silence backstop (6 s) or a 60 s cap** ends a recording whose
+    release never arrives.
+  - Paused (`cosmo toggle`): presses are ignored.
+- **The engine** implements `Host`, holds `Ears` (a `OnceLock`, set after
+  the engine is shared, since the controller holds the engine), and gains
+  `Command::Listen` and an **`ears` doctor line**: mic streaming and its
+  worst callback gap, the trigger key and how many keyboards carry it,
+  and both models with load times and whether hotwords are on.
+- **Hotwords** in the daemon are the installed app names. The focused
+  `app_id` is looked up (one Wayland round trip through `cosmo-focus`)
+  only when a per-app set exists; none does until phase 4.
+- The `ears` feature now implies `speech`: capture is the same PipeWire
+  backend, and half-duplex needs the player's gate.
+
+### 7b. Protocol and CLI
+
+- `Command::Listen` → `Response::Listening { active }`.
+- `Event::Transcript { text, final, latency_ms }`. On the wire the field
+  is `final`, as the spec writes it; in Rust it's `r#final`. A test pins
+  the wire name.
+- **`cosmo listen`** toggles. The invocation that *started* the recording
+  stays connected, shows the partial on one updating line, and prints
+  the final with its latency. A second `cosmo listen` stops it and exits.
+  Bound to a COSMIC shortcut, press once to start and once to stop.
+- **`cosmo transcripts`** prints every transcript until Ctrl+C. When
+  piped it prints finals only, one per line.
+
+### 7c. Verified
+
+**Controller, end to end without hardware** (`cosmo-daemon/tests/ears.rs`,
+heavy, 5 tests). A thread writes a ring at real-time pace (room noise,
+then a real speech clip), trigger edges are sent on the clock, and the
+real models run:
+
+| Test | Result |
+|---|---|
+| hold across "I love you." | "I love you.", **63 ms** release → commit (tail skipped: speech had ended), states `Listening → Idle`, reply interrupted |
+| press 400 ms *into* the speech | still "I love you.": the pre-roll covers it |
+| 150 ms tap | discarded, no final |
+| `cosmo listen` toggle around the 7.4 s sentence | 11 partials; commit **0 ms** after the stop (every segment was cut and decoded during the pauses) |
+| paused | nothing happens |
+
+**The real daemon** (`cosmod` built with `--features ears`):
+
+    ✓ ears   mic streaming (longest callback gap 21 ms, 0 reconnects); trigger
+             key 97 on 5 keyboards; streaming …nemotron…560ms… (1.7s); offline
+             …parakeet-tdt-0.6b-v2… (1.4s, hotwords)
+
+Acoustic loop through `cosmo listen`, three Kokoro clips played with
+`pw-play` (cosmo's own voice would be gated out, correctly):
+
+| Played | `cosmo listen` printed | Release → commit | of which tail / decode |
+|---|---|---|---|
+| "Restart PipeWire, then play something on Spotify" | "Restart Pipe Wire, then play something on Spotify." | 410 ms | — / 157 ms |
+| "Open Firefox" | "Open Firefox." | 378 ms | 283 / 94 ms |
+| "Move this window to workspace three" | "Move this window to Workspace 3." | 439 ms | 300 / 137 ms |
+
+### 7d. Open: the release tail is most of the latency here
+
+In these runs the tail ran almost to its 300 ms limit: the VAD still
+heard speech at the stop. The stop came 200 ms after `pw-play` returned,
+but playback latency and room echo put the audio's real end at the mic
+later than that. A person releasing a key after finishing a word is a
+different case. The 63 ms test result is what the design does when
+speech has already stopped.
+
+**Re-measure with real presses (§3.8) before tuning.** If real releases
+also pay the full tail, options are a shorter cap (150 ms), or relying
+on the pre-roll-style margin already inside the session trim.
+
+### 7e. What changed in the tree
+
+- `cosmo-daemon`: `ears.rs`; engine `Host` impl, `Command::Listen`, the
+  `ears` doctor check; `lib.rs` wires ears after speech (sharing the
+  gate). New dependencies are `cosmo-hotkey` and `cosmo-focus` (both core
+  tier); `ears` implies `speech`; the `ears` test.
+- `cosmo-stt`: `Session::cancel`, `Session::hearing_speech`,
+  `Hotwords::has_app_sets`.
+- `cosmo-ipc`: `Command::Listen`, `Response::Listening`,
+  `Event::Transcript`, with round-trip tests.
+- `cosmo-cli`: `cosmo listen`, `cosmo transcripts`.

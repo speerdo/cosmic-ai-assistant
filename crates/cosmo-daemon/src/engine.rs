@@ -17,7 +17,7 @@
 //!   spoken reply's hops (`speech.rs`, `cosmo-audio`)
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use tokio::sync::broadcast;
 use tracing::Instrument;
@@ -182,6 +182,16 @@ pub struct Engine {
     speech: Option<Arc<Speech>>,
     /// Why `speech` is `None`, for `doctor`.
     speech_absent: String,
+    /// Hotword biasing for transcripts: installed app names today; phase 4
+    /// adds the reflex phrases and per-app sets.
+    #[cfg(feature = "ears")]
+    hotwords: cosmo_stt::hotwords::Hotwords,
+    /// Microphone, trigger key and speech models (phase 3). Set once, after
+    /// the engine is shared, since the controller holds the engine.
+    #[cfg(feature = "ears")]
+    ears: OnceLock<crate::ears::Ears>,
+    /// Why there are no ears, for `doctor` and `cosmo listen`.
+    ears_absent: OnceLock<String>,
 }
 
 impl Engine {
@@ -204,6 +214,91 @@ impl Engine {
             history: Mutex::new(Vec::new()),
             speech: None,
             speech_absent: "built without the `speech` feature".into(),
+            #[cfg(feature = "ears")]
+            hotwords: {
+                let mut h = cosmo_stt::hotwords::Hotwords::new();
+                h.add(
+                    cosmo_stt::hotwords::desktop_apps()
+                        .iter()
+                        .map(|a| a.name.as_str()),
+                );
+                h
+            },
+            #[cfg(feature = "ears")]
+            ears: OnceLock::new(),
+            ears_absent: OnceLock::new(),
+        }
+    }
+
+    /// Give the engine its ears (`crate::ears::start`).
+    #[cfg(feature = "ears")]
+    pub fn attach_ears(&self, ears: crate::ears::Ears) {
+        let _ = self.ears.set(ears);
+    }
+
+    /// Record why there are no ears.
+    pub fn ears_unavailable(&self, reason: String) {
+        let _ = self.ears_absent.set(reason);
+    }
+
+    fn ears_absent(&self) -> String {
+        self.ears_absent
+            .get()
+            .cloned()
+            .unwrap_or_else(|| "built without the `ears` feature".into())
+    }
+
+    fn listen(&self) -> Response {
+        #[cfg(feature = "ears")]
+        if let Some(ears) = self.ears.get() {
+            if self.paused.load(Ordering::SeqCst) {
+                return Response::Error {
+                    message: "daemon is paused (cosmo toggle to resume)".into(),
+                };
+            }
+            if let Err(message) = ears.models().doctor().0.then_some(()).ok_or_else(|| {
+                format!("speech recognition not ready: {}", ears.models().doctor().1)
+            }) {
+                return Response::Error { message };
+            }
+            return Response::Listening {
+                active: ears.toggle(),
+            };
+        }
+        Response::Error {
+            message: format!("not listening — {}", self.ears_absent()),
+        }
+    }
+
+    fn ears_check(&self) -> DoctorCheck {
+        #[cfg(feature = "ears")]
+        if let Some(ears) = self.ears.get() {
+            let (models_ok, models) = ears.models().doctor();
+            let (capture, keyboards) = ears.devices();
+            let capture_ok = capture.as_ref().is_some_and(|c| c.streaming);
+            let capture = match capture {
+                Some(c) if c.streaming => format!(
+                    "mic streaming (longest callback gap {} ms, {} reconnects)",
+                    c.max_gap.as_millis(),
+                    c.reconnects
+                ),
+                _ => "mic not streaming — is a PipeWire source available?".into(),
+            };
+            let key = format!(
+                "trigger key {} on {keyboards} keyboard{}",
+                self.cfg.trigger_key,
+                if keyboards == 1 { "" } else { "s" }
+            );
+            return DoctorCheck {
+                name: "ears".into(),
+                ok: models_ok && capture_ok && keyboards > 0,
+                detail: format!("{capture}; {key}; {models}"),
+            };
+        }
+        DoctorCheck {
+            name: "ears".into(),
+            ok: false,
+            detail: format!("not listening — {}", self.ears_absent()),
         }
     }
 
@@ -379,6 +474,7 @@ impl Engine {
                     Err(message) => Response::Error { message },
                 }
             }
+            Command::Listen => self.listen(),
             Command::Toggle => {
                 let paused = !self.paused.load(Ordering::SeqCst);
                 self.paused.store(paused, Ordering::SeqCst);
@@ -501,6 +597,7 @@ impl Engine {
                     ok: speech_ok,
                     detail: speech_detail,
                 },
+                self.ears_check(),
             ],
         }
     }
@@ -721,6 +818,36 @@ impl Engine {
             .execute(tool, args.clone())
             .instrument(tracing::info_span!("tool", tool = %tool, confirmed = true))
             .await
+    }
+}
+
+#[cfg(feature = "ears")]
+impl crate::ears::Host for Engine {
+    fn set_state(&self, state: State) {
+        self.state.set(state);
+    }
+
+    fn emit(&self, event: Event) {
+        let _ = self.events.send(event);
+    }
+
+    fn interrupt_speech(&self) {
+        Engine::interrupt_speech(self);
+    }
+
+    fn paused(&self) -> bool {
+        self.paused.load(Ordering::SeqCst)
+    }
+
+    fn hotwords(&self) -> String {
+        // The focus lookup is a Wayland round trip: only paid for when a
+        // per-app set exists (none until phase 4).
+        let app = self
+            .hotwords
+            .has_app_sets()
+            .then(|| cosmo_focus::FocusMirror::connect().ok()?.focused_app_id())
+            .flatten();
+        self.hotwords.for_app(app.as_deref())
     }
 }
 

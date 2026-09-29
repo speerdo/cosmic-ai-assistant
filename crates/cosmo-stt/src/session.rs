@@ -59,6 +59,8 @@ pub struct Session {
     partials: mpsc::UnboundedReceiver<String>,
     last_partial: String,
     backstopped: bool,
+    /// The VAD's latest decision.
+    hearing: bool,
 }
 
 impl Stt {
@@ -80,6 +82,7 @@ impl Stt {
             partials,
             last_partial: String::new(),
             backstopped: false,
+            hearing: false,
         })
     }
 }
@@ -100,6 +103,7 @@ impl Session {
 
         let mut events = Vec::new();
         for (at, speech, event) in decisions {
+            self.hearing = speech;
             if speech {
                 let end = at + WINDOW as u64;
                 self.speech = Some(self.speech.map_or((at, end), |(first, _)| (first, end)));
@@ -130,6 +134,18 @@ impl Session {
             events.push(Event::Partial(text));
         }
         events
+    }
+
+    /// Whether the last VAD window held speech. At a key release, `false`
+    /// means the speaker had already finished: no tail needs waiting for.
+    pub fn hearing_speech(&self) -> bool {
+        self.hearing
+    }
+
+    /// Abandon the recording (a tap, not an utterance). Nothing more is
+    /// decoded for it, and the streaming model drops it without a flush.
+    pub fn cancel(self) {
+        self.stt.end_stream(false);
     }
 
     fn queue(&mut self, segment: Vec<f32>) {

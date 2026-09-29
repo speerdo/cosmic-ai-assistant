@@ -92,6 +92,7 @@ fn every_response_variant_round_trips() {
             reason: Some("no pending hold with that token".into()),
         },
         Response::Toggled { paused: true },
+        Response::Listening { active: true },
         Response::Voices {
             provider: "kokoro".into(),
             active: Some("af_heart".into()),
@@ -142,6 +143,7 @@ fn every_command_round_trips() {
             token: "38e1b3fb".into(),
         },
         Command::Toggle,
+        Command::Listen,
         Command::VoiceList { provider: None },
         Command::VoiceList {
             provider: Some("openai".into()),
@@ -209,6 +211,20 @@ fn daemon_messages_round_trip() {
                 detail: "phrase render failed: boom".into(),
             },
         },
+        DaemonMessage::Event {
+            event: Event::Transcript {
+                text: "Open Fire".into(),
+                r#final: false,
+                latency_ms: None,
+            },
+        },
+        DaemonMessage::Event {
+            event: Event::Transcript {
+                text: "Open Firefox.".into(),
+                r#final: true,
+                latency_ms: Some(62),
+            },
+        },
     ];
     for msg in messages {
         let json = serde_json::to_string(&msg).expect("serialize");
@@ -244,4 +260,16 @@ fn messages_are_single_line() {
         !json.contains('\n'),
         "a raw newline would break NDJSON framing: {json}"
     );
+}
+
+/// The wire name is `final`, as the spec writes it, not `r#final`.
+#[test]
+fn transcript_uses_the_plain_field_name() {
+    let json = serde_json::to_string(&Event::Transcript {
+        text: "hi".into(),
+        r#final: true,
+        latency_ms: None,
+    })
+    .unwrap();
+    assert_eq!(json, r#"{"type":"transcript","text":"hi","final":true}"#);
 }

@@ -31,6 +31,8 @@ cosmo-audio.workspace = true
 cosmo-stt.workspace = true
 # Core tier: evdev through ioctls, inotify for hotplug; no native library.
 cosmo-hotkey.workspace = true
+# Focused app_id for per-app hotwords (Wayland only, no native library).
+cosmo-focus.workspace = true
 zbus.workspace = true
 
 [dev-dependencies]
@@ -44,7 +46,13 @@ hound.workspace = true
 #   cargo build --release -p cosmo-daemon --features speech
 speech = ["cosmo-audio/pipewire-backend", "cosmo-tts/kokoro"]
 # Speech recognition (phase 3): sherpa-onnx and its native ONNX Runtime.
-ears = ["cosmo-stt/sherpa"]
+# Needs `speech`: capture is the same PipeWire backend, and half-duplex
+# reads playback's gate.
+ears = ["speech", "cosmo-stt/sherpa"]
+
+[[test]]
+name = "ears"
+required-features = ["ears"]
 
 [[example]]
 name = "bench_asr"
