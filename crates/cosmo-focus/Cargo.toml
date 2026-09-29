@@ -20,5 +20,7 @@ wayland-protocols-wlr = { workspace = true, features = ["client"] }
 wayland-scanner = "0.31"
 wayland-backend = "0.3"
 anyhow.workspace = true
+# poll() for the window service's event loop (Wayland fd + a wake pipe).
+rustix = { workspace = true, features = ["event"] }
 thiserror.workspace = true
 tracing.workspace = true

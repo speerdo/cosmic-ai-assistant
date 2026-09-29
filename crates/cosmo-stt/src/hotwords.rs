@@ -112,6 +112,15 @@ pub struct DesktopApp {
     pub id: String,
     /// The untranslated `Name=`.
     pub name: String,
+    /// `Exec=`, unparsed (the launcher parses it; phase-4 spec §4.4).
+    pub exec: Option<String>,
+    /// `Path=`: the working directory to start it in.
+    pub path: Option<String>,
+    /// `Terminal=true`: needs a terminal to run in.
+    pub terminal: bool,
+    /// `StartupWMClass=`: what its windows call themselves when that isn't
+    /// the file's id (`com.spotify.Client` → `spotify`).
+    pub wm_class: Option<String>,
 }
 
 /// Every visible application in the XDG data dirs, deduplicated by id with
@@ -136,14 +145,11 @@ pub fn desktop_apps() -> Vec<DesktopApp> {
             if !seen.insert(id.to_owned()) {
                 continue;
             }
-            if let Some(name) = std::fs::read_to_string(&path)
+            if let Some(app) = std::fs::read_to_string(&path)
                 .ok()
-                .and_then(|text| visible_name(&text))
+                .and_then(|text| parse_entry(id, &text))
             {
-                apps.push(DesktopApp {
-                    id: id.to_owned(),
-                    name,
-                });
+                apps.push(app);
             }
         }
     }
@@ -163,11 +169,26 @@ fn application_dirs() -> Vec<PathBuf> {
         .collect()
 }
 
-/// The `Name=` of a `[Desktop Entry]` that is a shown application, or
-/// `None` for hidden entries, links and anything malformed.
+/// One installed application by `.desktop` id, if visible (the user's own
+/// entry winning, as in [`desktop_apps`]).
+pub fn desktop_app(id: &str) -> Option<DesktopApp> {
+    application_dirs().into_iter().find_map(|dir| {
+        let text = std::fs::read_to_string(dir.join(format!("{id}.desktop"))).ok()?;
+        parse_entry(id, &text)
+    })
+}
+
+#[cfg(test)]
 fn visible_name(text: &str) -> Option<String> {
+    parse_entry("test", text).map(|a| a.name)
+}
+
+/// A `[Desktop Entry]` that is a shown application, or `None` for hidden
+/// entries, links and anything malformed.
+fn parse_entry(id: &str, text: &str) -> Option<DesktopApp> {
     let mut in_entry = false;
     let (mut name, mut app, mut hidden) = (None, false, false);
+    let (mut exec, mut path, mut terminal, mut wm_class) = (None, None, false, None);
     for line in text.lines().map(str::trim) {
         if line.starts_with('[') {
             // Only the main group counts; actions come after it.
@@ -187,10 +208,21 @@ fn visible_name(text: &str) -> Option<String> {
             ("Name", v) => name = Some(v.to_owned()),
             ("Type", v) => app = v == "Application",
             ("NoDisplay" | "Hidden", "true") => hidden = true,
+            ("Exec", v) => exec = Some(v.to_owned()),
+            ("Path", v) if !v.is_empty() => path = Some(v.to_owned()),
+            ("Terminal", v) => terminal = v == "true",
+            ("StartupWMClass", v) if !v.is_empty() => wm_class = Some(v.to_owned()),
             _ => {}
         }
     }
-    name.filter(|_| app && !hidden)
+    name.filter(|_| app && !hidden).map(|name| DesktopApp {
+        id: id.to_owned(),
+        name,
+        exec,
+        path,
+        terminal,
+        wm_class,
+    })
 }
 
 #[cfg(test)]

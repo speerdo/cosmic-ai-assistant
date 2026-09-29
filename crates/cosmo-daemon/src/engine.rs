@@ -192,6 +192,11 @@ pub struct Engine {
     ears: OnceLock<crate::ears::Ears>,
     /// Why there are no ears, for `doctor` and `cosmo listen`.
     ears_absent: OnceLock<String>,
+    /// The reflex path (phase 4): safe verbs, matched and carried out
+    /// locally. Set once, after start-up; until then turns go to reasoning.
+    reflex: OnceLock<crate::reflex::Reflex>,
+    /// Numbers reflex tool calls for their events.
+    reflex_calls: std::sync::atomic::AtomicU64,
 }
 
 impl Engine {
@@ -227,6 +232,8 @@ impl Engine {
             #[cfg(feature = "ears")]
             ears: OnceLock::new(),
             ears_absent: OnceLock::new(),
+            reflex: OnceLock::new(),
+            reflex_calls: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -234,6 +241,77 @@ impl Engine {
     #[cfg(feature = "ears")]
     pub fn attach_ears(&self, ears: crate::ears::Ears) {
         let _ = self.ears.set(ears);
+    }
+
+    /// Give the engine its reflex path.
+    pub fn attach_reflex(&self, reflex: crate::reflex::Reflex) {
+        let _ = self.reflex.set(reflex);
+    }
+
+    /// The reflex path for one turn: `Some` if it handled the turn, `None`
+    /// to escalate to reasoning, which happens when nothing matched well
+    /// enough, or a match's action failed (blueprint §2's escalation rule:
+    /// escalate rather than report the failure).
+    async fn try_reflex(&self, text: &str) -> Option<TurnResult> {
+        let reflex = self.reflex.get()?;
+        let matched = reflex.matcher.match_text(text)?;
+        if matched.confidence < cosmo_reflex::THRESHOLD {
+            tracing::debug!(confidence = matched.confidence, intent = ?matched.intent, "reflex: below threshold, escalating");
+            return None;
+        }
+        let intent = matched.intent;
+        let (tool, args) = intent.tool_call();
+        // Defence in depth: reflex verbs are Allow by construction (the
+        // gate test in cosmo-reflex), and are checked again here anyway.
+        let annotations = cosmo_gate::Annotations {
+            read_only: cosmo_reflex::Intent::READ_ONLY,
+            destructive: cosmo_reflex::Intent::DESTRUCTIVE,
+        };
+        if self.gate.verdict_for_call(tool, &args, &annotations) != cosmo_gate::Verdict::Allow {
+            tracing::error!(tool, "reflex: gate did not allow a reflex verb; escalating");
+            return None;
+        }
+        let action = intent.describe();
+        let call_id = format!(
+            "reflex-{}",
+            self.reflex_calls.fetch_add(1, Ordering::Relaxed) + 1
+        );
+        let _ = self.events.send(Event::ToolStarted {
+            call_id: call_id.clone(),
+            tool: tool.to_owned(),
+            args: args.to_string(),
+        });
+        self.set_state(State::Acting);
+        let started = std::time::Instant::now();
+        let outcome = reflex
+            .actuator
+            .act(&intent)
+            .instrument(tracing::info_span!("ack", tool))
+            .await;
+        let latency_ms = started.elapsed().as_millis() as u64;
+        let _ = self.events.send(Event::ToolFinished {
+            call_id,
+            tool: tool.to_owned(),
+            ok: outcome.is_ok(),
+            latency_ms,
+            summary: match &outcome {
+                Ok(s) | Err(s) => s.clone(),
+            },
+        });
+        match outcome {
+            Ok(summary) => {
+                if let (Some(speech), Some(ack)) = (&self.speech, intent.ack()) {
+                    speech.play_phrase(ack);
+                }
+                tracing::info!(%action, latency_ms, "reflex");
+                self.set_state(State::Idle);
+                Some(TurnResult::Reflexed { action, summary })
+            }
+            Err(why) => {
+                tracing::info!(%action, %why, "reflex action failed; escalating");
+                None
+            }
+        }
     }
 
     /// Record why there are no ears.
@@ -661,6 +739,11 @@ impl Engine {
             };
         }
 
+        // Reflex path: a safe verb, done locally, no model.
+        if let Some(result) = self.try_reflex(&text).await {
+            return result;
+        }
+
         // Reasoning path.
         let Some(tools) = self.tools.lock().unwrap().clone() else {
             return cosmo_ipc::TurnResult::Failed {
@@ -856,6 +939,13 @@ impl crate::ears::Host for Engine {
             .then(|| cosmo_focus::FocusMirror::connect().ok()?.focused_app_id())
             .flatten();
         self.hotwords.for_app(app.as_deref())
+    }
+
+    fn turn(self: Arc<Self>, text: String, source: UtteranceSource) {
+        tokio::spawn(async move {
+            let result = self.utterance(text, source).await;
+            tracing::info!(?source, ?result, "spoken turn");
+        });
     }
 }
 

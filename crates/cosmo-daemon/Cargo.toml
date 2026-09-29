@@ -33,6 +33,7 @@ cosmo-stt.workspace = true
 cosmo-hotkey.workspace = true
 # Focused app_id for per-app hotwords (Wayland only, no native library).
 cosmo-focus.workspace = true
+cosmo-reflex.workspace = true
 zbus.workspace = true
 
 [dev-dependencies]

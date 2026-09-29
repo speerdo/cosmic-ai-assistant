@@ -678,6 +678,7 @@ dependencies = [
  "cosmo-ipc",
  "cosmo-mcp",
  "cosmo-reason",
+ "cosmo-reflex",
  "cosmo-stt",
  "cosmo-tools",
  "cosmo-tts",
@@ -697,6 +698,7 @@ name = "cosmo-focus"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "rustix",
  "thiserror",
  "tracing",
  "wayland-backend",
@@ -799,12 +801,14 @@ dependencies = [
  "anyhow",
  "cosmo-config",
  "cosmo-gate",
+ "cosmo-stt",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
  "tracing",
  "wl-clipboard-rs",
+ "zbus",
 ]
 
 [[package]]

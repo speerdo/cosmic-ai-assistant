@@ -19,6 +19,7 @@
 use std::sync::Mutex;
 
 use anyhow::Context as _;
+pub mod control;
 mod protocols;
 
 use protocols::toplevel_info_v1::client::{zcosmic_toplevel_handle_v1, zcosmic_toplevel_info_v1};

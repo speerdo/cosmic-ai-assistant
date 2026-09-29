@@ -19,6 +19,10 @@ tracing.workspace = true
 cosmo-config.workspace = true
 cosmo-gate.workspace = true
 wl-clipboard-rs.workspace = true
+# MPRIS media control (media.rs).
+zbus.workspace = true
+# Core tier (no `sherpa`): the `.desktop` reader `launch_app` resolves ids with.
+cosmo-stt.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }

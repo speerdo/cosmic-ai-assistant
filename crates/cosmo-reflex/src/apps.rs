@@ -114,7 +114,8 @@ impl AppIndex {
     }
 }
 
-/// How well spoken words fit an app's key, 0–1.
+/// How well spoken words fit an app's key, 0–1: the best of the rules
+/// that apply.
 fn similarity(query: &[String], key: &[String]) -> f32 {
     if query == key {
         return 1.0;
@@ -124,25 +125,28 @@ fn similarity(query: &[String], key: &[String]) -> f32 {
         // Same letters, split differently: "thunder bird".
         return 0.95;
     }
+    let (qn, kn) = (q.chars().count(), k.chars().count());
+    let mut best: f32 = 0.0;
     // Every spoken word is in the name ("terminal" → "COSMIC Terminal"):
     // good, but less so the more of the name went unsaid.
     if query.iter().all(|w| key.contains(w)) {
-        return 0.7 + 0.2 * query.len() as f32 / key.len() as f32;
+        best = best.max(0.7 + 0.2 * query.len() as f32 / key.len() as f32);
     }
     // The name's start, however it was split ("D Beaver" → "DBeaver CE"):
-    // scored the same way, by how much of it was said.
-    let (qn, kn) = (q.chars().count(), k.chars().count());
+    // scored by how much of it was said.
     if qn >= 4 && k.starts_with(&q) {
-        return 0.7 + 0.2 * qn as f32 / kn as f32;
+        best = best.max(0.7 + 0.2 * qn as f32 / kn as f32);
     }
     // A letter or two off ("libra wolf"): only for names long enough that
     // one letter isn't most of the word.
-    let longest = q.chars().count().max(k.chars().count());
-    if longest < 6 {
-        return 0.0;
+    let longest = qn.max(kn);
+    if longest >= 6 {
+        let ratio = 1.0 - edit_distance(&q, &k) as f32 / longest as f32;
+        if ratio >= 0.8 {
+            best = best.max(ratio);
+        }
     }
-    let ratio = 1.0 - edit_distance(&q, &k) as f32 / longest as f32;
-    if ratio >= 0.8 { ratio } else { 0.0 }
+    best
 }
 
 fn edit_distance(a: &str, b: &str) -> usize {

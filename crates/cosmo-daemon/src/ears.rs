@@ -61,6 +61,11 @@ pub trait Host: Send + Sync {
     /// Hotwords for this recording, one per line (see
     /// `cosmo_stt::hotwords::Hotwords::for_app`).
     fn hotwords(&self) -> String;
+    /// A committed transcript becomes a turn (phase-4 spec §4.2). Runs in
+    /// the background: the controller goes straight back to listening.
+    /// `source` says whether the key was held, which decides whether the
+    /// words may confirm a held action (gate invariant #5).
+    fn turn(self: Arc<Self>, text: String, source: cosmo_gate::UtteranceSource);
 }
 
 /// The speech models, which take a couple of seconds to load after start.
@@ -250,10 +255,20 @@ pub async fn run(
         host.set_state(State::Idle);
         if let Some((text, latency)) = committed {
             host.emit(Event::Transcript {
-                text,
+                text: text.clone(),
                 r#final: true,
                 latency_ms: Some(latency.as_millis() as u64),
             });
+            if !text.trim().is_empty() {
+                // Only a physical key hold may confirm; `cosmo listen` is
+                // an open mic (anything could have run it).
+                let source = if by_key {
+                    cosmo_gate::UtteranceSource::KeyHeld
+                } else {
+                    cosmo_gate::UtteranceSource::OpenMic
+                };
+                Arc::clone(&host).turn(text, source);
+            }
         }
     }
 }

@@ -4,8 +4,9 @@
 §2 (latency budgets, escalation rule), §4 (phrase cache), §6–7 (tools, gate)
 **Drafted:** 2026-09-29
 **Status:** §4.1 done 2026-09-29 (the spoken-confirm path is closed and
-tested). §4.3's matcher and §4.4's gate test done 2026-09-29. Next: §4.4's
-executors, then §4.2's wiring.
+tested). §4.2–§4.4 done 2026-09-29: transcripts are turns, and reflex
+verbs run live (window verbs in under 1 ms over a persistent connection).
+Next: §4.5's no-key message, §4.6 timing, §4.7 hotwords.
 
 Goal: **a spoken command runs locally, with a cached spoken ack, in under
 150 ms**, and anything reflex can't do safely goes to reasoning. Transcripts
@@ -62,11 +63,14 @@ stop being display-only: they become turns.
 
 ### 4.2 Transcripts become turns
 
-- [ ] Ears' final transcript carries its source (key hold vs `cosmo
+- [x] Ears' final transcript carries its source (key hold vs `cosmo
       listen`) into one engine entry point, `utterance(text, source)`:
       confirm check → reflex match → escalate. `cosmo say` goes through the
       same entry point as `Typed` (wake-independent: testable without audio).
-- [ ] Holds, the busy state, pause: the same rules as typed turns.
+      *(`Host::turn`; empty transcripts are not turns. Tested in `ears.rs`
+      (source per trigger) and `reflex.rs` (engine, recording actuator).)*
+- [x] Holds, the busy state, pause: the same rules as typed turns. *(One
+      entry point, so one set of rules.)*
 
 ### 4.3 `cosmo-reflex`: the matcher (core tier, pure)
 
@@ -91,13 +95,21 @@ stop being display-only: they become turns.
 
 ### 4.4 Safe verbs (the only things reflex can do)
 
-- [ ] Media: MPRIS over `zbus` (fills in `cosmo-tools::media`).
-- [ ] Launch: the `.desktop` entry's `Exec`, split per the Desktop Entry
+- [x] Media: MPRIS over `zbus` (fills in `cosmo-tools::media`). *(Pause
+      and stop silence all playing players; play resumes a paused one.
+      Tested on a fake bus player; live against Spotify read-only.)*
+- [x] Launch: the `.desktop` entry's `Exec`, split per the Desktop Entry
       spec and spawned **without a shell**, field codes removed. Only
-      installed, visible applications.
-- [ ] Focus, maximize/minimize, move to workspace, switch workspace:
+      installed, visible applications. *(98 of 102 installed apps parse;
+      the 4 refused are terminal apps. Detached, reaped, no shell.)*
+- [x] Focus, maximize/minimize, move to workspace, switch workspace:
       COSMIC toplevel-management plus workspace protocols (vendored XML,
-      generated bindings, as `cosmo-focus` does).
+      generated bindings, as `cosmo-focus` does). *(`WindowService`: one
+      persistent connection; windows from `ext_foreign_toplevel_list`,
+      state from `zcosmic_toplevel_info` v3, actions through
+      `zcosmic_toplevel_manager` v4, workspaces through `ext_workspace`.
+      Commands in 0.6–0.9 ms. Windows are matched by `.desktop` id or
+      `StartupWMClass`.)*
 - [ ] **Not reflex:** closing windows, volume, anything touching files,
       terminals or settings. Those escalate to reasoning, where the gate
       applies.
@@ -111,9 +123,9 @@ stop being display-only: they become turns.
 
 ### 4.5 Escalation
 
-- [ ] Below the confidence threshold → the reasoning path with the
+- [x] Below the confidence threshold → the reasoning path with the
       transcript. A reflex match whose action **fails** → also escalate,
-      rather than report the failure.
+      rather than report the failure. *(Tested through the engine.)*
 - [ ] Without an API key, the escalation says so once, spoken, and logs.
 
 ### 4.6 Acks and latency

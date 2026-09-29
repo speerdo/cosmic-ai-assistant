@@ -14,6 +14,7 @@
 
 pub mod announce;
 pub mod clipboard;
+pub mod launch;
 pub mod media;
 pub mod memory;
 pub mod system;

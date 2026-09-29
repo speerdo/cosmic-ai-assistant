@@ -1,4 +1,4 @@
-//! Client bindings for the two COSMIC protocols the mirror binds,
+//! Client bindings for the COSMIC protocols cosmo binds,
 //! generated here from the protocol XML with `wayland-scanner` (MIT).
 //!
 //! These replace the `cosmic-protocols` crate, whose Rust code is
@@ -49,5 +49,30 @@ pub mod toplevel_info_v1 {
         use self::__interfaces::*;
 
         wayland_scanner::generate_client_code!("protocols/cosmic-toplevel-info-unstable-v1.xml");
+    }
+}
+
+pub mod toplevel_management_v1 {
+    pub mod client {
+        use super::super::toplevel_info_v1::client::*;
+        use super::super::workspace_v1::client::*;
+        use wayland_client;
+        use wayland_client::protocol::*;
+        use wayland_protocols::ext::workspace::v1::client::*;
+
+        pub mod __interfaces {
+            use super::super::super::toplevel_info_v1::client::__interfaces::*;
+            use super::super::super::workspace_v1::client::__interfaces::*;
+            use wayland_client::protocol::__interfaces::*;
+            use wayland_protocols::ext::workspace::v1::client::__interfaces::*;
+            wayland_scanner::generate_interfaces!(
+                "protocols/cosmic-toplevel-management-unstable-v1.xml"
+            );
+        }
+        use self::__interfaces::*;
+
+        wayland_scanner::generate_client_code!(
+            "protocols/cosmic-toplevel-management-unstable-v1.xml"
+        );
     }
 }

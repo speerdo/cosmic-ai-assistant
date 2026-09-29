@@ -56,6 +56,19 @@ impl Intent {
         }
     }
 
+    /// In plain words, for results and logs ("launch Firefox").
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Media(c) => format!("{} media", c.as_str()),
+            Self::Launch(app) => format!("launch {}", app.name),
+            Self::Focus(app) => format!("focus {}", app.name),
+            Self::SwitchWorkspace(n) => format!("switch to workspace {n}"),
+            Self::MoveToWorkspace(n) => format!("move this window to workspace {n}"),
+            Self::Maximize => "maximize this window".into(),
+            Self::Minimize => "minimize this window".into(),
+        }
+    }
+
     /// How the gate should see every reflex tool: a UI-state mutator that
     /// destroys nothing (MCP `destructiveHint: false`). Passed explicitly,
     /// because the gate treats an unannotated tool as destructive.

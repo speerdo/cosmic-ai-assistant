@@ -238,6 +238,13 @@ pub enum TurnResult {
     },
     /// The turn was a whole-utterance confirm but no hold matched.
     ConfirmIgnored,
+    /// The reflex path handled it locally: a safe verb, no model.
+    Reflexed {
+        /// What was done, in words ("launch Firefox").
+        action: String,
+        /// What the action reported.
+        summary: String,
+    },
     /// A spoken confirm arrived with no trigger key held (open mic): it
     /// resolved nothing and went nowhere else (gate invariant #5).
     ConfirmNeedsKey,

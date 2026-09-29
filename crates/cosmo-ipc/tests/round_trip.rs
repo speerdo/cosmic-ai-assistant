@@ -64,6 +64,12 @@ fn every_response_variant_round_trips() {
             result: TurnResult::ConfirmIgnored,
         },
         Response::Said {
+            result: TurnResult::Reflexed {
+                action: "launch Firefox".into(),
+                summary: "started Firefox".into(),
+            },
+        },
+        Response::Said {
             result: TurnResult::ConfirmNeedsKey,
         },
         Response::Said {

@@ -54,7 +54,7 @@ its link line, and they contain no code.
 
 | File | Terms |
 |---|---|
-| `crates/cosmo-focus/protocols/cosmic-toplevel-info-unstable-v1.xml`, `cosmic-workspace-unstable-v1.xml` | The HPND-style permission notice in each file (copyright Ilia Bozhinov, Isaac Freund, Christopher Billington, Victoria Brekenfeld), reproduced unchanged. Only these XML files are used; the bindings are generated from them with `wayland-scanner` (MIT). |
+| `crates/cosmo-focus/protocols/cosmic-toplevel-info-unstable-v1.xml`, `cosmic-workspace-unstable-v1.xml`, `cosmic-toplevel-management-unstable-v1.xml` | The HPND-style permission notice in each file (copyright Ilia Bozhinov, Isaac Freund, Christopher Billington, wb9688, Victoria Brekenfeld), reproduced unchanged. Only these XML files are used; the bindings are generated from them with `wayland-scanner` (MIT). |
 
 ## Loaded at run time, not linked
 

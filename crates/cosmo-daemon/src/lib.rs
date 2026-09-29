@@ -23,6 +23,7 @@
 #[cfg(feature = "ears")]
 pub mod ears;
 pub mod engine;
+pub mod reflex;
 pub mod speech;
 pub mod toolhost;
 
@@ -48,6 +49,12 @@ pub async fn run() -> anyhow::Result<()> {
     let gate = attach_speech(&mut engine);
     let engine = Arc::new(engine);
     attach_ears(&engine, gate, &cfg);
+    // The reflex path: app index and a persistent window connection
+    // (~150 ms). Blocking work, off the runtime's threads.
+    match tokio::task::spawn_blocking(reflex::Reflex::desktop).await {
+        Ok(reflex) => engine.attach_reflex(reflex),
+        Err(e) => tracing::warn!(error = %e, "reflex unavailable; turns go to reasoning"),
+    }
     engine.warm_speech();
     engine.refresh_lock();
     // Agent connection: failure is not fatal (graceful absence; doctor

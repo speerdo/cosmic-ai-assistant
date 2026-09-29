@@ -25,6 +25,7 @@ struct TestHost {
     states: Mutex<Vec<State>>,
     interrupted: AtomicBool,
     paused: AtomicBool,
+    turns: Mutex<Vec<(String, cosmo_gate::UtteranceSource)>>,
 }
 
 impl Host for TestHost {
@@ -55,6 +56,9 @@ impl Host for TestHost {
     }
     fn hotwords(&self) -> String {
         String::new()
+    }
+    fn turn(self: Arc<Self>, text: String, source: cosmo_gate::UtteranceSource) {
+        self.turns.lock().unwrap().push((text, source));
     }
 }
 
@@ -219,6 +223,11 @@ async fn hold_speak_release_commits_a_transcript() {
     };
     assert!(text.to_lowercase().contains("i love you"), "{text:?}");
     assert!(*latency < 1_000, "release → commit {latency} ms");
+    // The transcript became a turn, marked as spoken during a key hold.
+    assert_eq!(
+        *host.turns.lock().unwrap(),
+        [(text.clone(), cosmo_gate::UtteranceSource::KeyHeld)]
+    );
     assert_eq!(
         *host.states.lock().unwrap(),
         [State::Listening, State::Idle]
@@ -262,6 +271,10 @@ async fn a_tap_is_discarded() {
         host.finals.lock().unwrap().is_empty(),
         "a tap never commits"
     );
+    assert!(
+        host.turns.lock().unwrap().is_empty(),
+        "a tap is never a turn"
+    );
     assert_eq!(
         *host.states.lock().unwrap(),
         [State::Listening, State::Idle]
@@ -290,6 +303,10 @@ async fn listen_toggles_a_recording_with_partials() {
         finals[0].0.to_lowercase().contains("old portrait"),
         "{finals:?}"
     );
+    // `cosmo listen` is an open mic: its turns can never confirm.
+    let turns = host.turns.lock().unwrap();
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0].1, cosmo_gate::UtteranceSource::OpenMic);
 }
 
 #[tokio::test(flavor = "multi_thread")]
