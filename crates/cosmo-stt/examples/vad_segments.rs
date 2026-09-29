@@ -22,7 +22,11 @@ fn main() {
         let mut seg = Segmenter::new(SegmentConfig::default(), 0);
         let mut timeline = String::new();
         let mut events = Vec::new();
+        let mut last_speech = None;
         vad.feed(&samples, |speech| {
+            if speech {
+                last_speech = Some(seg.position() + WINDOW as u64);
+            }
             // One character per 4 windows (128 ms) keeps a line readable.
             if (seg.position() / WINDOW as u64).is_multiple_of(4) {
                 timeline.push(if speech { '#' } else { '.' });
@@ -32,6 +36,14 @@ fn main() {
             }
         });
         println!("{path} ({:.2}s)\n  {timeline}", secs(samples.len() as u64));
+        if let Some(end) = last_speech {
+            // bench-asr clips end 300 ms after the key release.
+            println!(
+                "  speech heard until {:.2}s, {:.0} ms before the clip ends",
+                secs(end),
+                (samples.len() as f64 - end as f64) / 16.0
+            );
+        }
         for e in events {
             match e {
                 SegmentEvent::Cut(p) => println!("  cut at {:.2}s", secs(p)),

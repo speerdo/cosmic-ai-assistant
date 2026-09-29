@@ -36,9 +36,9 @@ ASR_DEST="$MODELS/asr"
 # set     archive name (without .tar.bz2)                                   sha256
 ASR_MODELS="
     asr     sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25  78e2b79fcf7271553a74402a76b771b09ea40117a39566a79f52235b23db6358
-    asr     sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8                            157c157bc51155e03e37d2466522a3a737dd9c72bb25f36eb18912964161e1ad
+    asr     sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming          99f63605b3a85a54c250c0869670a687b7d6598a47bf2421515e1f839a76e150
     bench   sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8           f628312e9fdf8686374cb01a69425c41732529d540860311f16f37cbc32cfe9b
-    bench   sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming          99f63605b3a85a54c250c0869670a687b7d6598a47bf2421515e1f839a76e150
+    bench   sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8                            157c157bc51155e03e37d2466522a3a737dd9c72bb25f36eb18912964161e1ad
     bench   sherpa-onnx-nemo-streaming-fast-conformer-transducer-en-480ms-int8    da93061cbf7b708b6b65976f70b29f519be29df750d8cdcabf98c65645930f13
 "
 

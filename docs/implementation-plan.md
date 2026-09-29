@@ -188,28 +188,28 @@ Goal: hold the key, see a transcript. Steal from cosmic-voice directly (`hotkey.
 
 - [x] `cosmo-audio`: **native** PipeWire client (not `pw-record`); callback on the RT data-loop. *(phase-3 findings §2: no samples lost under 48 CPU hogs on 24 cores; worst callback gap 27.7 ms)*
 - [x] Continuous capture into a pre-roll ring buffer (~750ms+) so the first syllable survives key-press latency. *(lock-free `Ring`; half-duplex zeroing at the ring verified live)*
-- [ ] VAD at the ring buffer: half-duplex gating (mic shut while speaking + 350ms settle), and pause-based **segment cuts** for long utterances (offline cost is super-linear in duration: RTF ~0.052 on a 30s clip vs ~0.093 on 120s — both faster than realtime, but efficiency drops as the buffer grows).
+- [x] VAD at the ring buffer: *(phase-3 findings §4: Silero via sherpa; cuts only inside pauses ≥400 ms, a 6 s silence backstop; half-duplex zeroing is capture's, §2.)* half-duplex gating (mic shut while speaking + 350ms settle), and pause-based **segment cuts** for long utterances (offline cost is super-linear in duration: RTF ~0.052 on a 30s clip vs ~0.093 on 120s — both faster than realtime, but efficiency drops as the buffer grows).
 
 ### 3.2 Hotkey
 
 - [x] *(done 2026-09-26: Right Ctrl, **no grab** since a grab swallows a modifier's release; inotify hotplug; attaches to every keyboard with the key. Phase-3 findings §3.)* `cosmo-hotkey`: evdev + `EVIOCGRAB` grab of the keyboard and `EVIOCSMASK` restricting this process to the trigger keycode (filtering `MSC_SCAN` for the daemon's fd). udev hotplug re-attach on replug. No root, no `input` group.
-- [ ] Hold-to-talk on key press/release; `cosmo toggle` (COSMIC `Spawn` shortcut) as the press-only fallback.
+- [x] Hold-to-talk on key press/release; *(findings §7: holds under 300 ms discarded; the press-only fallback is `cosmo listen`, since `toggle` already meant pause.)* `cosmo toggle` (COSMIC `Spawn` shortcut) as the press-only fallback.
 
 ### 3.3 STT
 
-- [ ] `cosmo-stt` on `sherpa-onnx`, two resident int8 models:
+- [x] `cosmo-stt` on `sherpa-onnx`, two resident int8 models: *(findings §5–6: nemotron-0.6b streaming + **parakeet-unified-0.6b** offline, chosen on the user's voice.)*
   - **Streaming** (`nemotron-speech-streaming-en-0.6b` class) on `asr_threads`, ~560ms chunks → live partials (via IPC events).
   - **Offline** (`parakeet-tdt-0.6b-v2` or sibling English `parakeet-*` class, picked on `bench-asr` data) on `offline_threads` (cap at 4) → the committing transcript, with **hotword biasing** (this is the reflex unlock).
-- [ ] **Segmented decoding**: decode each finished pause-delimited segment while the next is still being spoken.
-- [ ] Hotword set = ~30 reflex phrases + installed app names, keyed by focused `app_id`.
-- [ ] `scripts/bench-asr`: run your own command set against candidate models (open question §16 — command recognition may want a smaller streaming model and no offline pass; decide on data).
-- [ ] Model fetch script into `~/.cache/cosmo/models/`.
+- [x] **Segmented decoding** *(findings §5: a 7.4 s sentence commits 116 ms after release.)*: decode each finished pause-delimited segment while the next is still being spoken.
+- [x] Hotword set =  *(mechanism done: installed app names + per-`app_id` sets; phase 4 adds and curates the reflex phrases, findings §6e.)*~30 reflex phrases + installed app names, keyed by focused `app_id`.
+- [x] `scripts/bench-asr`: *(findings §6e: 1.8% WER on the user's commands for the chosen pair.)* run your own command set against candidate models (open question §16 — command recognition may want a smaller streaming model and no offline pass; decide on data).
+- [x] Model fetch script *(`scripts/fetch-models --vad --asr`, SHA-256 pinned.)* into `~/.cache/cosmo/models/`.
 
 ### 3.4 Definition of done
 
-- [ ] Hold key, speak, release → final transcript; partials visible meanwhile (notification or stdout until the overlay exists).
-- [ ] Latency measured and logged; **the saturated-machine test**: compile something big while talking — no dropped or clipped audio.
-- [ ] `doctor` verifies: uaccess ACL on the evdev node, PipeWire stream up, both models resident.
+- [x] Hold key, speak, release *(findings §7–8; the user's hold test 2026-09-29.)* → final transcript; partials visible meanwhile (notification or stdout until the overlay exists).
+- [x] Latency measured and logged; *(findings §8a: all six commands heard during a clean 276-crate release build; worst capture gap 28 ms.)* **the saturated-machine test**: compile something big while talking — no dropped or clipped audio.
+- [x] `doctor` verifies: *(one `ears` line, findings §8b.)* uaccess ACL on the evdev node, PipeWire stream up, both models resident.
 
 ---
 
@@ -276,7 +276,7 @@ Goal: hold the key, see a transcript. Steal from cosmic-voice directly (`hotkey.
 | Security | Invariants section above; API key in the Secret Service with a redacting newtype (**decided — §1.4**); clipboard gated; lock-screen detection **fails closed** when lock state is undetermined (**phase-1 gate item — §1.2**) |
 | Upstream | ~~Cached-probe PR to `computer-use-linux`~~ — **closed, not needed** (findings §2: the COSMIC backend is selected directly, cold ≤45 ms). Two *new* upstream candidates phase 0 surfaced: `focused_window` silently returning `null` on COSMIC, and the absence of any workspace-move tool. Consider extracting `cosmo-hotkey` as a shared crate (open question §16). |
 | CI | `--locked` so the lockfile is load-bearing. Native-dep crates (`ort`, `sherpa-onnx`, `pipewire`, `libcosmic`) will not build on a bare `ubuntu-latest` runner once live — plan a two-tier job (always-build core crates; feature-gated or separately-installed heavy tier) at the phase-2 link spike rather than when CI first goes red. |
-| Open questions | Track §16 items as issues at repo creation; close each with a measurement, not an opinion. **Closed by phase 0:** workspace moves on COSMIC (no tool exists → virtual-keyboard chord), cached-probe PR (not needed). **Still open:** ASR model choice (phase 3 `bench-asr`), en-AU quality (phase 2 MeloTTS spike), lock-screen detection (**promoted to a phase-1 gate item**, §1.2), wake-word false accepts (phase 7), voice blending (parked), hotkey crate extraction. |
+| Open questions | Track §16 items as issues at repo creation; close each with a measurement, not an opinion. **Closed by phase 0:** workspace moves on COSMIC (no tool exists → virtual-keyboard chord), cached-probe PR (not needed). **Closed by phase 3:** ASR model choice (`bench-asr`, phase-3 findings §6e). **Still open:** en-AU quality (phase 2 MeloTTS spike), lock-screen detection (**promoted to a phase-1 gate item**, §1.2), wake-word false accepts (phase 7), voice blending (parked), hotkey crate extraction. |
 
 ## Dependency chain (what blocks what)
 

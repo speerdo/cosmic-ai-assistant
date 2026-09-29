@@ -13,8 +13,10 @@ and the grab was removed as unsound. §3.3 VAD done 2026-09-28 (findings §4). �
 decision waits on the user's recordings. §3.7 daemon wiring done
 2026-09-29 (findings §7): live through the real daemon by acoustic loop.
 §3.8: saturated-machine test and `doctor` done
-2026-09-29 (findings §8). **Open, needing the user: a real hold of Right
-Ctrl (§3.8's first box), and the recordings for §3.6.**
+2026-09-29 (findings §8). The user's hold test and recordings, 2026-09-29, closed
+the last boxes. The models are now **nemotron-0.6b + parakeet-unified-0.6b**,
+chosen on the user's voice (findings §6e). **Phase 3 is done**, except for
+the one open decision carried to phase 8: licensing (findings §1e).
 
 Goal: **hold the key, speak, release → a transcript**, with live partials
 while you talk. Transcripts are *shown*, not acted on. Wiring them into
@@ -156,17 +158,18 @@ an expected 1.00 s to 2.37 s. Findings §2.)*
 
 ### 3.6 `scripts/bench-asr`: the model choice, on data
 
-- [ ] Record your own command set, then run each candidate on it: WER on
+- [x] Record your own command set, then run each candidate on it: WER on
       commands, latency from release to commit, and resident memory.
       Candidates: `parakeet-unified-en-0.6b` (cosmic-voice's commit model),
       `parakeet-tdt-0.6b-v2`, and the **110M** transducer (blueprint §16:
       commands may want a smaller model and no offline pass).
       *(Tool done: `scripts/bench-asr record` / `run`, eight pairings
       including a 106 MB streaming model. Checked end to end on synthetic
-      speech; it already found and fixed a hotword hallucination. **Waiting
-      on the user's recordings.** Findings §6.)*
-- [ ] The decision and the numbers go in the findings. `doctor` names the
-      models in use.
+      speech; it already found and fixed a hotword hallucination. Findings
+      §6.)*
+- [x] The decision and the numbers go in the findings. `doctor` names the
+      models in use. *(B: nemotron + unified-0.6b, 1.8% WER on the
+      user's commands, 21/22 exact, p50 107 ms. Findings §6e.)*
 
 ### 3.7 Daemon wiring
 
@@ -186,8 +189,8 @@ an expected 1.00 s to 2.37 s. Findings §2.)*
 
 ### 3.8 DoD and `doctor`
 
-- [ ] Hold the key, speak, release → a final transcript, with partials
-      visible meanwhile.
+- [x] Hold the key, speak, release → a final transcript, with partials
+      visible meanwhile. *(By the user, 2026-09-29; findings §8c.)*
 - [x] **The saturated-machine test:** `cargo build --release` of the
       workspace from clean while talking, with no dropped or clipped audio.
       Measured by capture-loop underrun counters, not by ear alone.

@@ -28,8 +28,10 @@ pub fn default_asr_dir() -> Option<PathBuf> {
 /// The default streaming (partials) model, by directory name.
 pub const DEFAULT_STREAMING: &str =
     "sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25";
-/// The default offline (commit) model, by directory name.
-pub const DEFAULT_OFFLINE: &str = "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8";
+/// The default offline (commit) model, by directory name: chosen on the
+/// user's own recorded commands (phase-3 findings §6e), where it made one
+/// real error in 22 commands and the tdt-0.6b-v2 hallucinated hotwords.
+pub const DEFAULT_OFFLINE: &str = "sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming";
 
 /// A transducer's files.
 #[derive(Debug, Clone)]

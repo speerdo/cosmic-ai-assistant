@@ -577,9 +577,9 @@ the margins.
 `scripts/bench-asr` wraps the `bench_asr` example (`cosmo-daemon`,
 features `speech,ears`).
 
-- **`record`** prompts each line of `scripts/bench-commands.txt` (31
-  lines: 22 reflex-style commands with real installed app names, two
-  one-word confirmations, 7 longer requests with pauses). Hold Right Ctrl,
+- **`record`** prompts each line of `scripts/bench-commands.txt` (30
+  lines: 20 reflex-style commands with real installed app names, two
+  one-word confirmations, 8 longer requests with pauses). Hold Right Ctrl,
   say it, release. Clips are cut **as the daemon will cut them**: 750 ms
   pre-roll before the press, 300 ms tail after the release, holds under
   300 ms ignored. It warns if a clip peaks under 0.03. Sessions resume;
@@ -642,15 +642,82 @@ and more regular than a person at a desk mic. They prove the pipeline,
 and they suggest the 110M-alone pairing deserves a hard look. That is
 exactly blueprint §16's hunch.
 
-### 6d. Open
+### 6d. (Superseded by §6e.)
 
-- **The recordings, then the choice.** `scripts/bench-asr record`
-  (about 5 minutes), then `scripts/bench-asr run` (about 15 minutes, no
-  attention needed). The winner becomes the default pairing, and
-  `doctor` will name it (§3.8).
-- Both streaming models dropped "I" from "I love you" when speech began
-  at the very first sample (§5). The pre-roll should make that moot on
-  real clips; the bench will show it.
+The recordings were made on 2026-09-29, and §6e is the decision.
+
+### 6e. The decision, on the user's voice (2026-09-29)
+
+30 clips recorded with Right Ctrl (all 30 lines), then all eight
+pairings, with app-name hotwords at score 1.5, real-time pace:
+
+| | Pairing | WER commands | exact commands | WER long | WER plain (all) | release → commit p50 / p95 / max | RSS loaded / peak |
+|---|---|---|---|---|---|---|---|
+| A | nemotron + tdt-0.6b-v2 (old default) | 14.0% | 17/22 | 1.3% | 10.6% | 84 / 155 / 179 ms | 1,723 / 1,849 MB |
+| **B** | **nemotron + unified-0.6b** | **1.8%** | **21/22** | **1.3%** | 6.8% | 107 / 189 / 207 ms | 1,735 / 1,879 MB |
+| C | nemotron + tdt-110m | 12.3% | 17/22 | 8.0% | 16.7% | 39 / 63 / 74 ms | 1,074 / 1,168 MB |
+| D | nemotron alone | 21.1% | 15/22 | 6.7% | 12.9% | 75 / 146 / 150 ms | 889 / 921 MB |
+| E | fastconformer + tdt-110m | 12.3% | 17/22 | 8.0% | 16.7% | 37 / 58 / 67 ms | 419 / 496 MB |
+| F | fastconformer alone | 24.6% | 15/22 | 10.7% | 16.7% | 23 / 48 / 48 ms | 228 / 244 MB |
+| G | tdt-110m alone | 12.3% | 17/22 | 8.0% | 16.7% | 39 / 61 / 69 ms | 208 / 273 MB |
+| H | tdt-0.6b-v2 alone | 14.0% | 17/22 | 1.3% | 10.6% | 82 / 144 / 165 ms | 812 / 909 MB |
+
+(The 22 "commands" are the clips of six words or fewer.)
+
+**Decision: B, nemotron-0.6b streaming + parakeet-unified-0.6b offline.**
+It is the default from now on (`scripts/fetch-models --asr` fetches it;
+tdt-0.6b-v2 moved to `--asr-bench`). It's cosmic-voice's commit model,
+which the blueprint started from.
+
+- **B's two misses aren't really misses.** "Turn it up" → "Turned it up"
+  and "…GitHub *in* Thunderbird" → "…GitHub *and* Thunderbird" came out
+  the same from **all eight pairings**, so that's how the recordings
+  sound. On what's actually in the audio, B made no errors.
+- **The old default hallucinates hotwords on short commands.** Both
+  tdt-0.6b-v2 pairings turned "Mute" into **"Zoom Zoom."**, even with
+  the §6a trim, and "Yes" into "Mm.". Its plain pass (10.6%) beat its
+  hotwords pass on commands (14.0%): hotwords made it *worse*. B went the
+  other way: 6.8% plain → 1.8% with hotwords.
+- **The small models are cheaper but not good enough.** The 110M model
+  also inserts app names ("Launch LibreWolf" → "**Claude** LibreWolf")
+  and mishears ("four" → "for", "build" → "bill"). The streaming models
+  alone split names ("key pass XC", "Libra Wolf", "D Beaver"). E
+  (420 MB) is the fallback if memory ever matters more than accuracy.
+  It's a config change (`asr_offline_model`, `asr_streaming_model`),
+  not a code change.
+- **Cost of B:** about 1.7 GB resident, and release → commit p50
+  **107 ms** (max 207 ms), which is well inside budget.
+- The streaming models' dropped first word (§5) didn't recur: the
+  pre-roll covers it, as expected.
+
+**For phase 4: the hotword list needs curating.** Every hallucination
+above is an installed app whose name is a common word or a short one
+("Zoom", "Claude"), inserted into short or quiet audio. Before the reflex
+phrases join the list, app names that are ordinary English words should
+be dropped or down-weighted.
+
+The `session` test's hotword check was flipped to match. B writes the
+test sentence's "Phoebe" correctly unbiased, so the test now biases
+toward the misspelling "Phebe" and asserts it appears. That proves the
+hotwords reach the offline pass, whatever the model gets right on its
+own.
+
+### 6f. The release tail, measured on real releases (closes §7d)
+
+Each bench clip ends exactly 300 ms after the key release, so the VAD's
+last speech window says whether speech was still going at the release:
+
+    speech after the release (VAD, incl. its ~100 ms debounce), n = 30:
+      min −354, p25 −23, median 51, p75 179, max 201 ms
+      18 of 30 clips still had speech after the release
+
+**The tail stays as designed.** Cutting at the release would have lost
+the end of more than half the commands. Because it stops as soon as the
+VAD hears silence, it costs about 50 ms typically, and on these 30 real
+releases it never reached its 300 ms cap. The capped tails in §7c and §8a
+were artefacts of stopping 200 ms after `pw-play` returned. (Readout:
+the `vad_segments` example now prints where speech ends in each clip.)
+
 
 ## §7. Daemon wiring (spec part 3.7, 2026-09-29)
 
@@ -808,7 +875,14 @@ keyboard**, it names the likely cause (the logind uaccess ACL on
 `/dev/input/event*`, which only a local seat session gets) and points to
 `cosmo listen`.
 
-### 8c. Open: the one box that needs a person
+### 8c. The hold test: done by the user (2026-09-29)
+
+The user held Right Ctrl and spoke to the live daemon, and reported it
+working. The daemon's output was on their terminal, not in a file this
+session could read. Independent evidence of the hotkey path: all 30
+bench clips were recorded with real Right Ctrl holds, through the same
+watcher, edges and 300 ms minimum hold the daemon uses. The instructions
+as given:
 
 **Hold Right Ctrl, speak, release → partials, then a transcript.** Every
 piece is verified: the hotkey attaches to five keyboards (§3c), the

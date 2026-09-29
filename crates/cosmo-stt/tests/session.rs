@@ -75,7 +75,7 @@ fn speech_pause_speech() -> Vec<f32> {
 fn segments_decode_during_the_recording_and_join_into_the_commit() {
     let _turn = exclusive();
     let audio = speech_pause_speech();
-    let mut session = stt().session("Phoebe").unwrap();
+    let mut session = stt().session("Phebe").unwrap();
     let mut cut_while_recording = 0;
     for chunk in audio.chunks(1024) {
         for e in session.push(chunk) {
@@ -99,9 +99,11 @@ fn segments_decode_during_the_recording_and_join_into_the_commit() {
     let text = t.text.to_lowercase();
     assert!(text.starts_with("i love you"), "{:?}", t.text);
     assert!(text.contains("old portrait"), "{:?}", t.text);
-    // Unbiased, this model writes "Phebe" (findings §5); the hotword fixes it.
+    // Unbiased, the default model writes "Phoebe", correctly. Biasing it
+    // toward a *misspelling* proves the hotwords reach the offline pass
+    // whatever the model gets right on its own (findings §6e).
     assert!(
-        t.text.contains("Phoebe"),
+        t.text.contains("Phebe"),
         "hotword not applied: {:?}",
         t.text
     );
