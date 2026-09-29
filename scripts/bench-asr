@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Choose the speech-recognition models on your own voice (phase-3 spec §3.6).
+#
+#   scripts/bench-asr record               # say each line of scripts/bench-commands.txt
+#   scripts/bench-asr record --redo 3,7    # re-record clips 3 and 7
+#   scripts/bench-asr run                  # score every model pairing (~15 min)
+#   scripts/bench-asr run --only A,D       # just some pairings
+#   scripts/bench-asr run --fast           # accuracy only, no real-time pacing
+#
+# Needs scripts/fetch-native once, then scripts/fetch-models --vad --asr-bench.
+# Recordings and results stay in ~/.local/share/cosmo/bench/commands/.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+exec cargo run --quiet --release -p cosmo-daemon --example bench_asr \
+    --features speech,ears -- "$@"

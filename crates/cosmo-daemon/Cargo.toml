@@ -29,7 +29,12 @@ cosmo-tts.workspace = true
 # Only the `speech` feature pulls in PipeWire.
 cosmo-audio.workspace = true
 cosmo-stt.workspace = true
+# Core tier: evdev through ioctls, inotify for hotplug; no native library.
+cosmo-hotkey.workspace = true
 zbus.workspace = true
+
+[dev-dependencies]
+hound.workspace = true
 
 [features]
 # The voice layer: the native PipeWire player and the local Kokoro provider
@@ -40,6 +45,10 @@ zbus.workspace = true
 speech = ["cosmo-audio/pipewire-backend", "cosmo-tts/kokoro"]
 # Speech recognition (phase 3): sherpa-onnx and its native ONNX Runtime.
 ears = ["cosmo-stt/sherpa"]
+
+[[example]]
+name = "bench_asr"
+required-features = ["speech", "ears"]
 
 [[example]]
 name = "link_asr_tts"

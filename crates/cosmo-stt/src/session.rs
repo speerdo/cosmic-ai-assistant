@@ -52,6 +52,9 @@ pub struct Session {
     /// Audio since the last cut; `buf_start` is its first sample's position.
     buf: Vec<f32>,
     buf_start: u64,
+    /// First and last speech heard since the last cut: `[start, end)` of the
+    /// VAD windows that held it.
+    speech: Option<(u64, u64)>,
     pending: Vec<oneshot::Receiver<Decoded>>,
     partials: mpsc::UnboundedReceiver<String>,
     last_partial: String,
@@ -72,6 +75,7 @@ impl Stt {
             hotwords: hotwords.into(),
             buf: Vec::new(),
             buf_start: 0,
+            speech: None,
             pending: Vec::new(),
             partials,
             last_partial: String::new(),
@@ -86,32 +90,39 @@ impl Session {
         self.stt.stream_audio(samples);
         self.buf.extend_from_slice(samples);
 
-        let mut cuts = Vec::new();
+        // (window start, speech?, what the segmenter made of it), in order.
+        let mut decisions = Vec::new();
         let seg = &mut self.seg;
         self.vad.feed(samples, |speech| {
-            if let Some(e) = seg.push(WINDOW, speech) {
-                cuts.push(e);
-            }
+            let at = seg.position();
+            decisions.push((at, speech, seg.push(WINDOW, speech)));
         });
 
         let mut events = Vec::new();
-        for e in cuts {
-            match e {
-                SegmentEvent::Cut(at) => {
-                    let split = (at - self.buf_start) as usize;
+        for (at, speech, event) in decisions {
+            if speech {
+                let end = at + WINDOW as u64;
+                self.speech = Some(self.speech.map_or((at, end), |(first, _)| (first, end)));
+            }
+            match event {
+                None => {}
+                Some(SegmentEvent::Cut(cut)) => {
+                    let split = (cut - self.buf_start) as usize;
                     let rest = self.buf.split_off(split);
                     let segment = std::mem::replace(&mut self.buf, rest);
-                    self.buf_start = at;
+                    let start = std::mem::replace(&mut self.buf_start, cut);
+                    let speech = self.speech.take();
+                    let segment = trim(segment, start, speech);
                     events.push(Event::Segment {
                         audio: seconds(segment.len()),
                     });
                     self.queue(segment);
                 }
-                SegmentEvent::Backstop if !self.backstopped => {
+                Some(SegmentEvent::Backstop) if !self.backstopped => {
                     self.backstopped = true;
                     events.push(Event::Backstop);
                 }
-                SegmentEvent::Backstop => {}
+                Some(SegmentEvent::Backstop) => {}
             }
         }
         while let Ok(text) = self.partials.try_recv() {
@@ -135,6 +146,7 @@ impl Session {
         // last cut; trailing silence alone decodes to nothing, slowly.
         if self.seg.speech_pending() && !self.buf.is_empty() {
             let tail = std::mem::take(&mut self.buf);
+            let tail = trim(tail, self.buf_start, self.speech.take());
             self.queue(tail);
         }
         // Nobody waits on a partial: with an offline model committing, the
@@ -167,6 +179,60 @@ impl Session {
     }
 }
 
+/// Silence kept either side of the speech in a segment: room for an onset
+/// the VAD flagged late (its debounce is 100 ms) and a soft word ending.
+const MARGIN: u64 = crate::engine::RATE as u64 * 3 / 10;
+
+/// Cut a segment (first sample at `start`) down to its speech plus
+/// [`MARGIN`]. The offline model is handed words, not the pre-roll's empty
+/// lead-in or a long silent tail: with hotwords active, the beam search
+/// fills unconstrained silence with them ("Zoom Zoom Zoom Firefox…",
+/// findings §6a). Without a known span the segment is left whole.
+fn trim(mut segment: Vec<f32>, start: u64, speech: Option<(u64, u64)>) -> Vec<f32> {
+    let Some((first, last)) = speech else {
+        return segment;
+    };
+    let end = start + segment.len() as u64;
+    let lo = first.saturating_sub(MARGIN).max(start);
+    let hi = (last + MARGIN).min(end).max(lo);
+    segment.truncate((hi - start) as usize);
+    segment.drain(..(lo - start) as usize);
+    segment
+}
+
 fn seconds(samples: usize) -> Duration {
     Duration::from_secs_f64(samples as f64 / f64::from(crate::engine::RATE))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const M: u64 = MARGIN;
+
+    fn numbered(start: u64, len: u64) -> Vec<f32> {
+        (start..start + len).map(|i| i as f32).collect()
+    }
+
+    #[test]
+    fn trim_keeps_speech_plus_a_margin_each_side() {
+        let start = 1_000;
+        let seg = numbered(start, 20_000);
+        let out = trim(seg, start, Some((start + 8_000, start + 10_000)));
+        assert_eq!(out.first().copied(), Some((start + 8_000 - M) as f32));
+        assert_eq!(out.last().copied(), Some((start + 10_000 + M - 1) as f32));
+    }
+
+    #[test]
+    fn trim_never_reaches_outside_the_segment() {
+        let seg = numbered(0, 6_000);
+        let out = trim(seg.clone(), 0, Some((100, 5_900)));
+        assert_eq!(out, seg);
+    }
+
+    #[test]
+    fn no_known_speech_means_no_trim() {
+        let seg = numbered(0, 100);
+        assert_eq!(trim(seg.clone(), 0, None), seg);
+    }
 }

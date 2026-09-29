@@ -20,6 +20,7 @@
 
 mod bpe;
 pub mod hotwords;
+pub mod score;
 
 #[cfg(feature = "sherpa")]
 mod engine;

@@ -9,8 +9,8 @@ ONNX Runtimes don't link, so both crates now share sherpa's via
 §3.2 capture done 2026-09-26 (findings §2), with the saturated-machine
 test already passing on capture. §3.4 hotkey done 2026-09-26 (findings §3): the trigger is Right Ctrl,
 and the grab was removed as unsound. §3.3 VAD done 2026-09-28 (findings §4). §3.5 STT done
-2026-09-28 (findings §5). Next: §3.6 bench-asr, which needs the user's
-recorded commands.
+2026-09-28 (findings §5). §3.6's tool is built (findings §6); the
+decision waits on the user's recordings. Next: §3.7.
 
 Goal: **hold the key, speak, release → a transcript**, with live partials
 while you talk. Transcripts are *shown*, not acted on. Wiring them into
@@ -157,6 +157,10 @@ an expected 1.00 s to 2.37 s. Findings §2.)*
       Candidates: `parakeet-unified-en-0.6b` (cosmic-voice's commit model),
       `parakeet-tdt-0.6b-v2`, and the **110M** transducer (blueprint §16:
       commands may want a smaller model and no offline pass).
+      *(Tool done: `scripts/bench-asr record` / `run`, eight pairings
+      including a 106 MB streaming model. Checked end to end on synthetic
+      speech; it already found and fixed a hotword hallucination. **Waiting
+      on the user's recordings.** Findings §6.)*
 - [ ] The decision and the numbers go in the findings. `doctor` names the
       models in use.
 

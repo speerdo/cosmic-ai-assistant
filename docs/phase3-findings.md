@@ -548,3 +548,106 @@ further runs were clean. The daemon gets this for free when it drops its
 - `cosmo-daemon`: `link_asr_tts` now runs through `cosmo_stt`'s API with
   the default pair (no `BPE_VOCAB` needed).
 - `scripts/fetch-models`: components, `--asr`, `--asr-bench`.
+
+## §6. bench-asr (spec part 3.6, tool built 2026-09-29; decision open)
+
+**The tool is ready; the decision needs the user's voice.** Built and run
+end to end on synthetic speech, where it found and fixed one real bug
+(§6a). No model choice is made from synthetic data.
+
+### 6a. Found on the first run: hotwords hallucinating into silence
+
+The first check used six Kokoro-voiced commands, padded the way real
+clips are (750 ms of pre-roll, 300 ms of tail, at room noise level), with
+all 98 installed app names as hotwords:
+
+    said "Open Firefox" → "Zoom Zoom Zoom Firefox Firefox Firefox Zoom Zoom Zoom Zoom- Open Firefox."
+
+Unbiased, the same clip was right. With many hotwords, the 0.6B offline
+model's beam search fills near-silent audio with them. Every real
+utterance starts with 750 ms of exactly that: the pre-roll. **Fix, in
+`Session`:** the offline model now gets each segment trimmed to its
+speech plus 300 ms either side (the VAD's speech windows mark the span).
+The pre-roll still protects a first syllable the VAD flags late, which
+is what it's for. The hallucination is gone, and a trim unit test covers
+the margins.
+
+### 6b. The tool
+
+`scripts/bench-asr` wraps the `bench_asr` example (`cosmo-daemon`,
+features `speech,ears`).
+
+- **`record`** prompts each line of `scripts/bench-commands.txt` (31
+  lines: 22 reflex-style commands with real installed app names, two
+  one-word confirmations, 7 longer requests with pauses). Hold Right Ctrl,
+  say it, release. Clips are cut **as the daemon will cut them**: 750 ms
+  pre-roll before the press, 300 ms tail after the release, holds under
+  300 ms ignored. It warns if a clip peaks under 0.03. Sessions resume;
+  `--redo 3,7` re-records. Clips and `manifest.tsv` stay in
+  `~/.local/share/cosmo/bench/commands/`. This is also the first live use
+  of the hotkey (§3c's open check).
+- **`run`** replays every clip through eight pairings, **each in its own
+  child process**, so its memory figures (`VmRSS` after load, `VmHWM` at
+  the end) are that pairing's alone:
+
+  | | Streaming (partials) | Offline (commit) |
+  |---|---|---|
+  | A | nemotron-0.6b | tdt-0.6b-v2 (current default) |
+  | B | nemotron-0.6b | unified-0.6b |
+  | C | nemotron-0.6b | tdt-110m |
+  | D | nemotron-0.6b | — |
+  | E | fastconformer-480ms (106 MB) | tdt-110m |
+  | F | fastconformer-480ms | — |
+  | G | — | tdt-110m |
+  | H | — | tdt-0.6b-v2 |
+
+  The fastconformer streaming model is new to `--asr-bench`: it's the
+  "smaller streaming model" of blueprint §16 (0.66 s load, ~230 MB).
+  Each clip runs twice: plain and fast (accuracy), then with app-name
+  hotwords **at real-time pace**, where release → commit is timed. The
+  report gives WER on commands (≤ 6 words) and on long requests
+  separately, exact matches on commands, latency p50/p95/max, load time
+  and memory, then every misrecognition. `--only`, `--fast` and
+  `--score` (hotword strength) narrow a run.
+- **Scoring** (`cosmo_stt::score`, core tier, tested) normalizes both
+  sides before counting word errors: case, punctuation, number words to
+  digits, `%`, "per cent", spelled letters ("p d f" is "pdf", but a
+  trailing "i" stays the pronoun). Otherwise the lowercase, unpunctuated
+  streaming models would score as wrong on formatting alone.
+
+### 6c. What the synthetic check says (and doesn't)
+
+Six Kokoro clips (bm_george), `--fast`, app hotwords at score 1.5, after
+the §6a fix:
+
+| | Pairing | WER commands | WER long | RSS loaded / peak |
+|---|---|---|---|---|
+| A | nemotron + tdt-0.6b-v2 | 6.7% | 10.0% | 1,734 / 1,845 MB |
+| F | fastconformer alone | 13.3% | 10.0% | 228 / 244 MB |
+| G | tdt-110m alone | **0.0%** | **0.0%** | 208 / 298 MB |
+
+- A's command error is **"Yes" → "Spotify."** A score sweep showed it
+  isn't hotword strength: at 0.5 it's "Yes, sir.", at 1.0 "I". The 0.6B
+  model struggles with a bare synthetic "Yes".
+- The 110M model was perfect up to score 1.5 and slipped at 2.0 ("Work
+  Space Three"), so **1.5 stays the default**.
+- "PipeWire" isn't an app name, so the app list doesn't bias toward it,
+  and both big models wrote "pipe wire". Phase 4's phrase list is where
+  that gets fixed.
+- **The memory gap is large**: ~1.8 GB for the default pair, against
+  ~0.2–0.3 GB for either small model.
+
+Six synthetic clips from one voice decide nothing: TTS audio is cleaner
+and more regular than a person at a desk mic. They prove the pipeline,
+and they suggest the 110M-alone pairing deserves a hard look. That is
+exactly blueprint §16's hunch.
+
+### 6d. Open
+
+- **The recordings, then the choice.** `scripts/bench-asr record`
+  (about 5 minutes), then `scripts/bench-asr run` (about 15 minutes, no
+  attention needed). The winner becomes the default pairing, and
+  `doctor` will name it (§3.8).
+- Both streaming models dropped "I" from "I love you" when speech began
+  at the very first sample (§5). The pre-roll should make that moot on
+  real clips; the bench will show it.
