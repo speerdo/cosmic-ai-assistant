@@ -284,11 +284,20 @@ impl Engine {
                 ),
                 _ => "mic not streaming — is a PipeWire source available?".into(),
             };
-            let key = format!(
-                "trigger key {} on {keyboards} keyboard{}",
-                self.cfg.trigger_key,
-                if keyboards == 1 { "" } else { "s" }
-            );
+            let key = if keyboards == 0 {
+                format!(
+                    "trigger key {}: no readable keyboard has it — the \
+                     /dev/input/event* nodes need the logind uaccess ACL \
+                     (a local seat session); `cosmo listen` still works",
+                    self.cfg.trigger_key
+                )
+            } else {
+                format!(
+                    "trigger key {} on {keyboards} keyboard{}",
+                    self.cfg.trigger_key,
+                    if keyboards == 1 { "" } else { "s" }
+                )
+            };
             return DoctorCheck {
                 name: "ears".into(),
                 ok: models_ok && capture_ok && keyboards > 0,

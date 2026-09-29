@@ -763,3 +763,60 @@ on the pre-roll-style margin already inside the session trim.
 - `cosmo-ipc`: `Command::Listen`, `Response::Listening`,
   `Event::Transcript`, with round-trip tests.
 - `cosmo-cli`: `cosmo listen`, `cosmo transcripts`.
+
+## §8. DoD (spec part 3.8, 2026-09-29): two of three boxes
+
+### 8a. The saturated-machine test, end to end
+
+§2b ran it on capture alone. This run is the whole path. The daemon was
+running (`--features ears`, default models). A **clean `cargo build
+--release --workspace`** went into a scratch target directory: 276
+crates, 69 s, load 11 → 15 on 24 threads, with some unrelated load
+already running (4 before the build). Meanwhile six commands went through
+`cosmo listen` by acoustic loop (`pw-play` → speaker → laptop mic):
+
+| Load | Played | `cosmo listen` printed | Release → commit | tail / decode |
+|---|---|---|---|---|
+| 13.2 | "Open Firefox" | "Open Firefox." | 810 ms | 300 / 508 ms |
+| 13.6 | "Set the volume to thirty percent" | "Set the volume to thirty per cent." | 303 ms | 125 / 177 ms |
+| 13.8 | "Move this window to workspace three" | "Move this window to Workspace 3." | 430 ms | 301 / 128 ms |
+| 14.2 | "Yes" | "Yes." | 184 ms | 63 / 120 ms |
+| 14.8 | "Restart PipeWire, then play something on Spotify" | "Restart Pipe Wire, then play something on Spotify." | 418 ms | 188 / 229 ms |
+| 14.7 | "Find the PDF I downloaded yesterday and open it in the document viewer" | "Find the PDF I downloaded yesterday and open it in the Document Viewer." | 523 ms | 300 / 222 ms |
+
+- **No audio lost.** Capture's worst callback gap was **28 ms** (21 ms
+  idle, one PipeWire quantum), with **0 reconnects**, and no "recording
+  fell behind the ring" warning. That's the RT data loop holding, as in
+  §2b.
+- **Every command was heard right.** "per cent" and "Workspace 3" are
+  formatting that the bench normalizes. "Pipe Wire" is a missing hotword:
+  it isn't an app name (phase 4).
+- **Decoding slows under load**, as it must: 120–230 ms against 94–157 ms
+  idle, and one **508 ms** outlier on the first clip, which was also the
+  first decode after the build started. Capture is protected by the RT
+  loop; recognition shares the CPU with the compiler. If that matters,
+  the fix is scheduling (nice levels, pinning the offline threads to
+  P-cores), not something to do before a real person has used it.
+- The **tail** is again a large share (§7d).
+
+### 8b. `doctor`
+
+One `ears` line covers the list: mic streaming (worst callback gap,
+reconnects), the trigger key and how many keyboards carry it, and both
+models with names, load times and hotword state. With **no readable
+keyboard**, it names the likely cause (the logind uaccess ACL on
+`/dev/input/event*`, which only a local seat session gets) and points to
+`cosmo listen`.
+
+### 8c. Open: the one box that needs a person
+
+**Hold Right Ctrl, speak, release → partials, then a transcript.** Every
+piece is verified: the hotkey attaches to five keyboards (§3c), the
+controller is tested with synthetic edges (§7c), and the live daemon has
+transcribed through the mic (§7c, §8a). A real finger on a real key is
+what's left. It's also the first real measurement of the release tail
+(§7d):
+
+    cargo build --release -p cosmo-daemon -p cosmo-cli --features cosmo-daemon/ears
+    ./target/release/cosmod &          # or RUST_LOG=cosmo_daemon=debug for tail timings
+    ./target/release/cosmo transcripts # then hold Right Ctrl and talk

@@ -12,7 +12,9 @@ and the grab was removed as unsound. §3.3 VAD done 2026-09-28 (findings §4). �
 2026-09-28 (findings §5). §3.6's tool is built (findings §6); the
 decision waits on the user's recordings. §3.7 daemon wiring done
 2026-09-29 (findings §7): live through the real daemon by acoustic loop.
-Next: §3.8, which needs a real hold of the key.
+§3.8: saturated-machine test and `doctor` done
+2026-09-29 (findings §8). **Open, needing the user: a real hold of Right
+Ctrl (§3.8's first box), and the recordings for §3.6.**
 
 Goal: **hold the key, speak, release → a transcript**, with live partials
 while you talk. Transcripts are *shown*, not acted on. Wiring them into
@@ -186,11 +188,16 @@ an expected 1.00 s to 2.37 s. Findings §2.)*
 
 - [ ] Hold the key, speak, release → a final transcript, with partials
       visible meanwhile.
-- [ ] **The saturated-machine test:** `cargo build --release` of the
+- [x] **The saturated-machine test:** `cargo build --release` of the
       workspace from clean while talking, with no dropped or clipped audio.
       Measured by capture-loop underrun counters, not by ear alone.
-- [ ] `doctor`: evdev node + uaccess ACL, trigger key attached, capture
+      *(Six commands by acoustic loop during a clean 276-crate build at load
+      11–15: all transcribed; worst callback gap 28 ms against 21 ms idle,
+      no reconnects. Findings §8.)*
+- [x] `doctor`: evdev node + uaccess ACL, trigger key attached, capture
       stream up, both models resident (plus their names and load times).
+      *(One `ears` line; with no readable keyboard it names the uaccess
+      ACL.)*
 
 ## Not in phase 3 (so nobody scope-creeps it)
 
