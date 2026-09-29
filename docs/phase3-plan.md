@@ -15,8 +15,10 @@ decision waits on the user's recordings. §3.7 daemon wiring done
 §3.8: saturated-machine test and `doctor` done
 2026-09-29 (findings §8). The user's hold test and recordings, 2026-09-29, closed
 the last boxes. The models are now **nemotron-0.6b + parakeet-unified-0.6b**,
-chosen on the user's voice (findings §6e). **Phase 3 is done**, except for
-the one open decision carried to phase 8: licensing (findings §1e).
+chosen on the user's voice (findings §6e). **Phase 3 is done.** The licensing
+question (findings §1e) was settled 2026-09-29 by a full audit: sherpa-onnx
+is built from source without eSpeak NG, the GPL `cosmic-protocols` crate is
+replaced, and the model terms are recorded (findings §9, `THIRD_PARTY.md`).
 
 Goal: **hold the key, speak, release → a transcript**, with live partials
 while you talk. Transcripts are *shown*, not acted on. Wiring them into

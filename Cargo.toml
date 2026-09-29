@@ -76,7 +76,6 @@ wayland-protocols-wlr = { version = "0.3", default-features = false }
 # interactivity, blocking_dispatch loop). Re-enable per-crate when needed.
 smithay-client-toolkit = { version = "0.21", default-features = false }
 wayland-protocols-misc = "0.3"
-cosmic-protocols = "0.2"
 cosmic-text = "0.19"
 tiny-skia = "0.12"
 # libcosmic is not published to crates.io; tracked from git.

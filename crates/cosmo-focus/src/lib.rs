@@ -7,7 +7,7 @@
 //! everywhere (findings §3 item 1). Invariant #9: compositor is the source
 //! of truth, the agent's answer is advisory only.
 //!
-//! GNOME degradation: cosmic-protocols is absent there, so
+//! GNOME degradation: the COSMIC protocols are absent there, so
 //! [`FocusMirror::connect`] errors and the daemon runs with no mirror; the
 //! phase-1 portability claim holds because nothing in phase 1 requires
 //! focus info.
@@ -19,10 +19,10 @@
 use std::sync::Mutex;
 
 use anyhow::Context as _;
-use cosmic_protocols::toplevel_info::v1::client::{
-    zcosmic_toplevel_handle_v1, zcosmic_toplevel_info_v1,
-};
-use cosmic_protocols::workspace::v1::client::{
+mod protocols;
+
+use protocols::toplevel_info_v1::client::{zcosmic_toplevel_handle_v1, zcosmic_toplevel_info_v1};
+use protocols::workspace_v1::client::{
     zcosmic_workspace_group_handle_v1, zcosmic_workspace_handle_v1, zcosmic_workspace_manager_v1,
 };
 use wayland_client::globals::GlobalListContents;
@@ -178,7 +178,7 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
             match &*interface {
                 "zcosmic_toplevel_info_v1" => {
                     // Bind v1: the deprecated `toplevel` event fires at v1
-                    // (the flow the cosmic-protocols example documents).
+                    // (the flow the COSMIC protocol docs describe).
                     // v2+ requires pairing with ext_foreign_toplevel_list
                     // and explicit get_cosmic_toplevel per handle — revisit
                     // if v1 support disappears upstream.

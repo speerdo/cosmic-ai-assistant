@@ -29,18 +29,52 @@ VAD_SHA="9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6"
 VAD_DEST="$MODELS/vad"
 
 # Speech recognition (phase-3 §3.5): sherpa-onnx's int8 exports of NVIDIA's
-# NeMo models (CC-BY-4.0), as release archives unpacked under asr/<name>/.
-# Also pinned by SHA-256 (the digests GitHub publishes for these assets).
+# NeMo models, as release archives unpacked under asr/<name>/. Also pinned
+# by SHA-256 (the digests GitHub publishes for these assets).
+#
+# Licenses (upstream model cards; THIRD_PARTY.md has the detail):
+#   oml   NVIDIA Open Model License (nemotron streaming, parakeet-unified):
+#         use is unrestricted; redistribution needs a notice + the agreement,
+#         so one is written beside the files (see write_notice).
+#   ccby  CC-BY-4.0 (the other three): attribution when redistributed.
 ASR_BASE="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models"
 ASR_DEST="$MODELS/asr"
-# set     archive name (without .tar.bz2)                                   sha256
+# set     license  archive name (without .tar.bz2)                                   sha256
 ASR_MODELS="
-    asr     sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25  78e2b79fcf7271553a74402a76b771b09ea40117a39566a79f52235b23db6358
-    asr     sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming          99f63605b3a85a54c250c0869670a687b7d6598a47bf2421515e1f839a76e150
-    bench   sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8           f628312e9fdf8686374cb01a69425c41732529d540860311f16f37cbc32cfe9b
-    bench   sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8                            157c157bc51155e03e37d2466522a3a737dd9c72bb25f36eb18912964161e1ad
-    bench   sherpa-onnx-nemo-streaming-fast-conformer-transducer-en-480ms-int8    da93061cbf7b708b6b65976f70b29f519be29df750d8cdcabf98c65645930f13
+    asr     oml      sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25  78e2b79fcf7271553a74402a76b771b09ea40117a39566a79f52235b23db6358
+    asr     oml      sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming          99f63605b3a85a54c250c0869670a687b7d6598a47bf2421515e1f839a76e150
+    bench   ccby     sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8           f628312e9fdf8686374cb01a69425c41732529d540860311f16f37cbc32cfe9b
+    bench   ccby     sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8                            157c157bc51155e03e37d2466522a3a737dd9c72bb25f36eb18912964161e1ad
+    bench   ccby     sherpa-onnx-nemo-streaming-fast-conformer-transducer-en-480ms-int8    da93061cbf7b708b6b65976f70b29f519be29df750d8cdcabf98c65645930f13
 "
+
+OML_URL="https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/"
+CCBY_URL="https://creativecommons.org/licenses/by/4.0/"
+
+# write_notice <dir> <license>: the terms beside the model files, so they
+# travel with any copy. For the OML models this is the notice the license
+# requires of anyone who passes the model on.
+write_notice() {
+    local dir="$1" license="$2"
+    case "$license" in
+        oml) cat >"$dir/NOTICE.txt" <<NOTICE
+Licensed by NVIDIA Corporation under the NVIDIA Open Model License.
+
+These files are an int8 ONNX export (by the sherpa-onnx project) of an NVIDIA
+NeMo model. Use is governed by the NVIDIA Open Model License Agreement:
+  $OML_URL
+Anyone passing these files on must include this notice and a copy of that
+agreement.
+NOTICE
+            ;;
+        ccby) cat >"$dir/NOTICE.txt" <<NOTICE
+Model by NVIDIA Corporation (NeMo), licensed under CC-BY-4.0:
+  $CCBY_URL
+These files are an int8 ONNX export by the sherpa-onnx project.
+NOTICE
+            ;;
+    esac
+}
 
 REPO="onnx-community/Kokoro-82M-v1.0-ONNX"
 REV="1939ad2a8e416c0acfeecc08a694d14ef25f2231"
@@ -132,8 +166,9 @@ fetch() {
 # re-run skips a model without re-downloading it, and a half-unpacked one
 # (no marker) is fetched again.
 fetch_archive() {
-    local name="$1" want="$2" out="$ASR_DEST/$1"
+    local name="$1" want="$2" license="$3" out="$ASR_DEST/$1"
     if [[ -f "$out/.sha256" && "$(cat "$out/.sha256")" == "$want" ]]; then
+        [[ -f "$out/NOTICE.txt" ]] || write_notice "$out" "$license"
         skipped=$((skipped + 1))
         return
     fi
@@ -146,6 +181,7 @@ fetch_archive() {
     tar -xjf "$tmp/archive.tar.bz2" -C "$tmp"
     [[ -d "$tmp/$name" ]] || { echo "$name: archive has no $name/ directory" >&2; exit 1; }
     echo "$want" >"$tmp/$name/.sha256"
+    write_notice "$tmp/$name" "$license"
     rm -rf "$out"
     mv "$tmp/$name" "$out"
     rm -rf "$tmp"
@@ -160,11 +196,13 @@ if (( vad )); then
 fi
 
 if (( asr )); then
-    while read -r set name sha; do
+    while read -r set license name sha; do
         [[ -n "$set" ]] || continue
         [[ "$set" == asr ]] || (( bench )) || continue
-        fetch_archive "$name" "$sha"
+        fetch_archive "$name" "$sha" "$license"
     done <<<"$ASR_MODELS"
+    echo "asr models: NVIDIA NeMo; the default pair is under the NVIDIA Open"
+    echo "Model License ($OML_URL). Terms are in each model's NOTICE.txt."
     echo "asr: $fetched fetched, $skipped already verified → $ASR_DEST"
     fetched=0 skipped=0
 fi

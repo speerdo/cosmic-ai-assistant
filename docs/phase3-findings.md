@@ -130,6 +130,9 @@ second runtime. Development continues on the prebuilt bundle meanwhile,
 which is fine for building and running from source. This is flagged, not
 decided.
 
+**Resolved 2026-09-29 (§9):** the user asked for the conservative choice
+throughout, and option 2 is done.
+
 ### 1f. Hotwords on NeMo models: they need a BPE vocab, and they work
 
 The first hotword attempt logged `Cannot find ID for token FIREFOX`:
@@ -894,3 +897,94 @@ what's left. It's also the first real measurement of the release tail
     cargo build --release -p cosmo-daemon -p cosmo-cli --features cosmo-daemon/ears
     ./target/release/cosmod &          # or RUST_LOG=cosmo_daemon=debug for tail timings
     ./target/release/cosmo transcripts # then hold Right Ctrl and talk
+
+## §9. Licensing audit (2026-09-29)
+
+The user's instruction: *"For any code going into the repo, I don't want
+to cause any issues so use your best judgement on what we are allowed to
+use legally."* Everything linked, vendored, loaded or downloaded was
+audited. The result is `THIRD_PARTY.md` at the repo root. Two GPL
+components were in the binaries; both are gone.
+
+### 9a. `cosmic-protocols` (GPL-3.0-only) → our own bindings
+
+A license scan of the dependency graph (`cargo metadata`, `--features
+ears`) found one GPL crate: **`cosmic-protocols`**, which `cosmo-focus`
+used for the COSMIC toplevel-info and workspace protocols. Since §3.7 put
+`cosmo-focus` into the daemon, that made `cosmod` a GPL work.
+
+Only the crate's Rust code is GPL. The **protocol XML files carry their
+own permissive HPND-style notice**. So `cosmo-focus` now vendors just the
+two XML files it binds (`protocols/`, notices intact) and generates the
+bindings with `wayland-scanner` (MIT) in `src/protocols.rs`, written
+fresh from wayland-rs's documented pattern. `cosmic-protocols` is gone
+from the entire workspace, applet included. Verified live: a new `focus`
+example lists this session's windows, and "focused: codium" is correct.
+
+Everything else is permissive: MIT, Apache-2.0, BSD, ISC, Zlib, Unicode,
+CC0. Also noted: `libcosmic` (applet) is MPL-2.0, which is fine unmodified;
+the certificate roots are CDLA-Permissive-2.0; `r-efi` is used under MIT.
+
+### 9b. sherpa-onnx built from source, TTS off (closes §1e)
+
+`scripts/fetch-native` now builds sherpa-onnx 1.13.8 from source (SHA-256
+pinned; sherpa's cmake pins each dependency by hash or commit) with TTS,
+PortAudio, websocket and binaries off. It takes about 70 s on this
+machine. `.cargo/config.toml` points at the result, and the old prebuilt
+bundle is deleted.
+
+- **eSpeak NG is out of the binary.** Defined eSpeak NG / `ucd` C
+  functions in `cosmod`: **66 before, 0 after**. Other matches for
+  "espeak" in the symbol table turned out to be "Offlin*eSpeak*er
+  Diarization".
+- `sherpa-onnx-sys` names `espeak-ng`, `piper_phonemize` and `ucd` on its
+  link line regardless, so the script installs **empty placeholder
+  archives** under those names and refuses to finish if one isn't empty.
+- **It crashed at first.** The first build died in the first model load
+  with `free(): invalid pointer`, VAD alone included. The cause: upstream
+  builds on manylinux2014, whose toolchain uses libstdc++'s **pre-C++11
+  string ABI**, and the precompiled static ONNX Runtime sherpa downloads
+  was built the same way. Compiled with this system's g++ 13 (new ABI),
+  the two disagreed. `-D_GLIBCXX_USE_CXX11_ABI=0` fixed it, confirmed
+  because the same code with only that flag changed went from crashing
+  to passing.
+- **A trap on the way:** Cargo relinks when a library's *path* changes,
+  not when the archive at that path does, so a rebuilt `.native/` was
+  silently ignored by already-built test binaries. The script now clears
+  `sherpa-onnx-sys` and `ort-sys` after each build.
+- Every heavy test passes on it: `cosmo-stt` (17), `cosmo-daemon` with
+  `ears` (26), `cosmo-tts` with Kokoro (57). `link_asr_tts` runs Kokoro
+  and recognition in one process.
+- The dependencies' license files were read, not assumed: Apache-2.0
+  (sherpa, Kaldi, OpenFst, sentencepiece), MIT (ONNX Runtime, json),
+  BSD-3 (kissfft), BSD-2 (hclust-cpp), MPL-2.0 (Eigen headers). Eigen's
+  one file of LGPL-derived code was relicensed to MPL-2.0 by its author,
+  and sherpa includes only `Eigen/Dense`.
+- eSpeak NG is still **used**: Kokoro loads the *system* library with
+  `dlopen` (phase-2 §5a). It isn't linked and isn't shipped.
+
+### 9c. Models: the chosen pair is under the NVIDIA Open Model License
+
+My fetch script had called all the NeMo models CC-BY-4.0. That was wrong
+for the two §6e chose. Hugging Face's model cards and the license text
+(version of 2025-10-24) say:
+
+| Model | License |
+|---|---|
+| nemotron-speech-streaming-en-0.6b, parakeet-unified-en-0.6b (**defaults**) | NVIDIA Open Model License |
+| parakeet-tdt-0.6b-v2, tdt 110M, fastconformer streaming | CC-BY-4.0 |
+| Kokoro-82M | Apache-2.0 |
+| Silero VAD | MIT |
+
+The NVIDIA license **permits use, including commercial use**, and puts no
+obligations on software that downloads and runs the model. NVIDIA claims
+no rights in outputs. Its conditions bite on **redistribution** (a notice
+plus a copy of the agreement), on bypassing safety guardrails, and on
+suing over the model; it also references NVIDIA's Trustworthy AI terms.
+cosmo redistributes no model (the user's machine downloads them), and a
+speech recognizer has no guardrails for cosmo to bypass. **Judgement:
+the defaults are fine to use and stay.** To keep copies compliant,
+`fetch-models` now writes a `NOTICE.txt` into every model directory (the
+NVIDIA attribution line and agreement link, or the CC-BY attribution),
+and prints the license when fetching. Phase 8 owes more if a package ever
+bundles the models; `THIRD_PARTY.md` lists it.

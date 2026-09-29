@@ -2,10 +2,11 @@
 #
 # sherpa-onnx (speech recognition) and `ort` (Kokoro) each link a static
 # ONNX Runtime by default, and two in one binary fail to link on duplicate
-# symbols. Both are pointed at the bundle `scripts/fetch-native` unpacks,
-# so they share sherpa's runtime (1.28.2; ort expects 1.28) and neither
-# build script downloads anything. Only the heavy tier (features `kokoro`,
+# symbols. Both are pointed at the sherpa-onnx build `scripts/fetch-native`
+# makes from source (TTS off, so no GPL eSpeak NG is linked; findings §9),
+# so they share its runtime (1.28.2; ort expects 1.28) and neither build
+# script downloads anything. Only the heavy tier (features `kokoro`,
 # `sherpa`, `speech`, `ears`) reads these; the core tier never links either.
 [env]
-SHERPA_ONNX_LIB_DIR = { value = ".native/sherpa-onnx-v1.13.8-linux-x64-static-lib/lib", relative = true }
-ORT_LIB_PATH = { value = ".native/sherpa-onnx-v1.13.8-linux-x64-static-lib/lib", relative = true }
+SHERPA_ONNX_LIB_DIR = { value = ".native/sherpa-onnx-v1.13.8-asr-static/lib", relative = true }
+ORT_LIB_PATH = { value = ".native/sherpa-onnx-v1.13.8-asr-static/lib", relative = true }

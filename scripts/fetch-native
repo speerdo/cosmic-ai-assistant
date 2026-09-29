@@ -1,51 +1,109 @@
 #!/usr/bin/env bash
-# Fetch the native libraries the heavy build tier links: sherpa-onnx's
-# static bundle, whose ONNX Runtime (1.28.2) is also the one `ort` links for
-# Kokoro. One runtime serves both, because two static ONNX Runtimes in one
-# binary do not link (duplicate re2/protobuf symbols; phase-3 findings §1).
+# Build the native libraries the heavy tier links: sherpa-onnx (speech
+# recognition) with its static ONNX Runtime, which is also the runtime
+# `ort` links for Kokoro. One runtime serves both, because two static ONNX
+# Runtimes in one binary do not link (duplicate re2/protobuf symbols;
+# phase-3 findings §1).
 #
-#   scripts/fetch-native
+#   scripts/fetch-native            # once; about a minute on 16 threads
 #
-# Unpacks into .native/ (gitignored). `.cargo/config.toml` points both
-# SHERPA_ONNX_LIB_DIR and ORT_LIB_PATH there, so neither crate's build
-# script downloads anything: builds are offline and deterministic after
-# this runs once. The archive is SHA-256 checked before unpacking.
+# Needs cmake, make and a C++ compiler. Installs into .native/ (gitignored).
+# `.cargo/config.toml` points SHERPA_ONNX_LIB_DIR and ORT_LIB_PATH there, so
+# neither crate's build script downloads anything.
 #
-# Licensing note (phase-3 findings §1): this prebuilt bundle includes
-# eSpeak NG and piper-phonemize (GPL-3.0), which sherpa's C API pulls into
-# the binary. Fine for building and running from source; a from-source
-# sherpa-onnx build with TTS disabled removes them before packaging (phase 8).
+# **Built from source with TTS off, on purpose** (phase-3 findings §9).
+# sherpa's prebuilt bundle statically links eSpeak NG, which is GPL-3.0, into
+# every binary using its C API, including a speech-recognition-only one.
+# This build contains none of it: only sherpa-onnx (Apache-2.0), ONNX Runtime
+# (MIT), Kaldi / OpenFst / sentencepiece (Apache-2.0), kissfft (BSD-3),
+# Eigen (MPL-2.0, headers) and nlohmann/json (MIT). Kokoro's phonemes come
+# from the *system* libespeak-ng, loaded at run time, never linked.
+#
+# The source archive is SHA-256 checked; sherpa's cmake pins each dependency
+# it downloads by hash (or, for kissfft, by commit).
 set -euo pipefail
 
 VERSION="1.13.8"
-NAME="sherpa-onnx-v${VERSION}-linux-x64-static-lib"
-URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/v${VERSION}/${NAME}.tar.bz2"
-SHA256="e1fdc5b67530e15741ef897fa5ffff297056f3bf0c6d829a27af9225a4c4b5a6"
+SRC_URL="https://github.com/k2-fsa/sherpa-onnx/archive/refs/tags/v${VERSION}.tar.gz"
+SRC_SHA256="b0374cc56dbc186d442ae73d5de743bb092470b640c4c50ce7b029044c0c4fa8"
+NAME="sherpa-onnx-v${VERSION}-asr-static"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="$ROOT/.native"
-mkdir -p "$DEST"
+OUT="$DEST/$NAME"
+# Anything that changes what gets built changes this, so a stale build is
+# never reused.
+CMAKE_FLAGS=(
+    -DCMAKE_BUILD_TYPE=Release
+    -DBUILD_SHARED_LIBS=OFF
+    -DSHERPA_ONNX_ENABLE_TTS=OFF
+    -DSHERPA_ONNX_ENABLE_PORTAUDIO=OFF
+    -DSHERPA_ONNX_ENABLE_WEBSOCKET=OFF
+    -DSHERPA_ONNX_ENABLE_BINARY=OFF
+    -DSHERPA_ONNX_BUILD_C_API_EXAMPLES=OFF
+    -DSHERPA_ONNX_ENABLE_PYTHON=OFF
+    -DSHERPA_ONNX_ENABLE_TESTS=OFF
+    -DSHERPA_ONNX_ENABLE_C_API=ON
+    # The precompiled static ONNX Runtime sherpa downloads was built on
+    # manylinux2014, whose toolchain uses libstdc++'s pre-C++11 string ABI.
+    # Upstream builds sherpa there too. Built here with the new ABI, the
+    # two disagree and the first model load dies in free() (findings §9b).
+    -DCMAKE_CXX_FLAGS=-D_GLIBCXX_USE_CXX11_ABI=0
+)
+STAMP="$SRC_SHA256 ${CMAKE_FLAGS[*]}"
 
 if [[ "$(uname -m)" != "x86_64" ]]; then
     echo "only linux x86_64 is wired up so far ($(uname -m))" >&2
     exit 1
 fi
+for tool in curl sha256sum cmake make c++ ar; do
+    command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 1; }
+done
 
-if [[ -f "$DEST/$NAME/lib/libonnxruntime.a" && -f "$DEST/$NAME/.verified" ]]; then
-    echo "$NAME already present → $DEST/$NAME"
+if [[ -f "$OUT/.built" && "$(cat "$OUT/.built")" == "$STAMP" ]]; then
+    echo "$NAME already built → $OUT"
     exit 0
 fi
 
-tmp="$DEST/$NAME.tar.bz2.part"
-echo "fetching $NAME (23 MB)"
-curl --fail --location --retry 3 --progress-bar -o "$tmp" "$URL"
-if ! echo "$SHA256  $tmp" | sha256sum --check --status; then
-    rm -f "$tmp"
-    echo "checksum mismatch for $NAME — refusing to unpack it" >&2
+mkdir -p "$DEST"
+work="$DEST/.build-$NAME"
+rm -rf "$work" && mkdir -p "$work"
+echo "fetching sherpa-onnx $VERSION source"
+curl --fail --location --retry 3 --progress-bar -o "$work/src.tar.gz" "$SRC_URL"
+if ! echo "$SRC_SHA256  $work/src.tar.gz" | sha256sum --check --status; then
+    echo "checksum mismatch for the sherpa-onnx source — refusing to build it" >&2
     exit 1
 fi
-rm -rf "${DEST:?}/$NAME"
-tar -xjf "$tmp" -C "$DEST"
-rm -f "$tmp"
-touch "$DEST/$NAME/.verified"
-echo "$NAME → $DEST/$NAME"
+tar -xzf "$work/src.tar.gz" -C "$work"
+
+echo "building (TTS off: no eSpeak NG in the result)"
+cmake -S "$work/sherpa-onnx-$VERSION" -B "$work/build" \
+    "${CMAKE_FLAGS[@]}" -DCMAKE_INSTALL_PREFIX="$work/install" >"$work/cmake.log" 2>&1
+cmake --build "$work/build" -j "$(nproc)" >"$work/build.log" \
+    || { echo "build failed; see $work/build.log" >&2; exit 1; }
+cmake --install "$work/build" >/dev/null
+
+# sherpa-onnx-sys (the Rust crate) links a fixed list of static libraries,
+# TTS's among them. Empty archives stand in for those: nothing is taken from
+# them, since TTS code is not compiled, and the check below proves it.
+for lib in espeak-ng piper_phonemize ucd; do
+    rm -f "$work/install/lib/lib$lib.a"
+    ar rc "$work/install/lib/lib$lib.a"
+done
+for lib in espeak-ng piper_phonemize ucd; do
+    [[ -z "$(ar t "$work/install/lib/lib$lib.a")" ]] \
+        || { echo "lib$lib.a is not empty — refusing to install" >&2; exit 1; }
+done
+
+rm -rf "$OUT"
+mkdir -p "$OUT"
+mv "$work/install/lib" "$work/install/include" "$OUT/"
+echo "$STAMP" >"$OUT/.built"
+rm -rf "$work"
+# Cargo relinks when a library *path* changes, not when the archive at the
+# same path does: without this, binaries keep the previous build's code.
+if command -v cargo >/dev/null; then
+    (cd "$ROOT" && cargo clean -q -p sherpa-onnx-sys -p ort-sys &&
+        cargo clean -q --release -p sherpa-onnx-sys -p ort-sys) || true
+fi
+echo "$NAME → $OUT"

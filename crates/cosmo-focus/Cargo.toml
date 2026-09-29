@@ -11,9 +11,14 @@ workspace = true
 
 [dependencies]
 wayland-client = { workspace = true, features = ["log"] }
-wayland-protocols = { workspace = true, features = ["client"] }
+# `staging`: ext_foreign_toplevel_list and ext_workspace, which the COSMIC
+# toplevel-info protocol references.
+wayland-protocols = { workspace = true, features = ["client", "staging"] }
 wayland-protocols-wlr = { workspace = true, features = ["client"] }
-cosmic-protocols.workspace = true
+# Bindings for the vendored COSMIC protocol XML (src/protocols.rs), in
+# place of the GPL-3.0-only `cosmic-protocols` crate.
+wayland-scanner = "0.31"
+wayland-backend = "0.3"
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
