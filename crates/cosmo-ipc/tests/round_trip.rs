@@ -64,6 +64,9 @@ fn every_response_variant_round_trips() {
             result: TurnResult::ConfirmIgnored,
         },
         Response::Said {
+            result: TurnResult::ConfirmNeedsKey,
+        },
+        Response::Said {
             result: TurnResult::Failed {
                 reason: "no key stored".into(),
             },

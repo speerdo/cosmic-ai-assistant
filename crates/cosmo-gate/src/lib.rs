@@ -20,6 +20,11 @@
 //!    [`Gate`] stores the fully-formed call; resolution hands it back for direct
 //!    execution. There is no model handle anywhere in this crate. See
 //!    `tests/invariants::local_confirm_is_model_free`.
+//! 5. **Spoken confirmation needs the trigger key held** (phase 4, the
+//!    user's decision). Every utterance carries its [`UtteranceSource`];
+//!    speech from an open mic never resolves a hold, because anything that
+//!    reaches the mic can say "confirm". See
+//!    `tests/invariants::open_mic_speech_never_confirms`.
 //!
 //! Nothing on the deny or hold lists is reachable from any path that doesn't
 //! consult this crate first — the reflex path (phase 4) is allowlist-only and
@@ -233,12 +238,16 @@ impl Gate {
 
     /// Verdict for a whole-utterance confirm attempt against pending holds.
     ///
-    /// Invariants #2 and #4 live here: a confirm bearing the *current* turn
-    /// cannot resolve a hold parked in that same turn, and resolution never
-    /// involves a model — the parked call is returned verbatim.
-    pub fn confirm_utterance(&self, utterance: &str) -> ConfirmResult {
+    /// Invariants #2, #4 and #5 live here: a confirm bearing the *current*
+    /// turn cannot resolve a hold parked in that same turn, resolution never
+    /// involves a model (the parked call is returned verbatim), and speech
+    /// from an open mic never confirms at all.
+    pub fn confirm_utterance(&self, utterance: &str, source: UtteranceSource) -> ConfirmResult {
         if !is_confirm_utterance(utterance) {
             return ConfirmResult::NotAConfirm;
+        }
+        if !source.may_confirm() {
+            return ConfirmResult::NeedsKey;
         }
         let turn = self.turn.load(std::sync::atomic::Ordering::SeqCst);
         self.resolve_oldest(turn)
@@ -410,6 +419,31 @@ impl Gate {
     }
 }
 
+/// Where an utterance came from: what decides whether it may confirm
+/// (invariant #5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UtteranceSource {
+    /// Typed (`cosmo say`) over the owner-only control socket: the same
+    /// trust as `cosmo confirm`.
+    Typed,
+    /// Spoken while the trigger key was physically held. The hold is what
+    /// proves a person at the keyboard.
+    KeyHeld,
+    /// Spoken with no key held: `cosmo listen` (which a script can run),
+    /// or a wake word. Heard by a microphone anything can reach.
+    OpenMic,
+}
+
+impl UtteranceSource {
+    /// Whether a confirm phrase from this source may resolve a hold.
+    pub fn may_confirm(self) -> bool {
+        match self {
+            Self::Typed | Self::KeyHeld => true,
+            Self::OpenMic => false,
+        }
+    }
+}
+
 /// Result of a local confirm attempt (utterance or token).
 #[derive(Debug)]
 pub enum ConfirmResult {
@@ -419,6 +453,10 @@ pub enum ConfirmResult {
     NonePending,
     /// Not a whole-utterance confirm; the text goes on to the model.
     NotAConfirm,
+    /// A confirm phrase from a source that may not confirm (open mic).
+    /// Nothing resolved; the text must not go on to the model as if the
+    /// user had approved something either.
+    NeedsKey,
     /// A confirm was recognized but matched no hold.
     Unknown,
 }

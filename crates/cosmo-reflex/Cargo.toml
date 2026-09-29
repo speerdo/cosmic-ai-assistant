@@ -8,3 +8,11 @@ repository.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+# Core tier only (no `sherpa`): the bench's normalizer and the app list.
+cosmo-stt.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+cosmo-gate.workspace = true

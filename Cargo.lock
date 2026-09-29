@@ -773,6 +773,11 @@ dependencies = [
 [[package]]
 name = "cosmo-reflex"
 version = "0.1.0"
+dependencies = [
+ "cosmo-gate",
+ "cosmo-stt",
+ "serde_json",
+]
 
 [[package]]
 name = "cosmo-stt"

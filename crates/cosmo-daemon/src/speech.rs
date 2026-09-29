@@ -628,6 +628,13 @@ fn unknown_voice(key: &VoiceKey) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// How many phrases the cache renders: the tests follow the phrase list
+    /// rather than hardcoding its length, so adding a phrase doesn't leave
+    /// the fake synthesizer waiting on permits nobody grants.
+    fn n_phrases() -> usize {
+        default_phrases().len()
+    }
+
     use super::*;
     use cosmo_tts::{Accent, LatencyClass, Pcm, Voice};
     use futures::future::ready;
@@ -932,12 +939,13 @@ mod tests {
     async fn startup_renders_the_cache_and_acks_become_instant() {
         let mut r = rig("startup", "v1");
         assert!(!r.speech.play_phrase(ACK), "nothing cached before warm");
-        r.permits.add_permits(5);
+        r.permits.add_permits(n_phrases());
         r.speech.warm();
-        for step in 1..=5u32 {
+        let n = n_phrases() as u32;
+        for step in 1..=n {
             match next_voice_event(&mut r.rx).await {
                 Event::VoiceCacheProgress { done, total, .. } => {
-                    assert_eq!((done, total), (step, 5))
+                    assert_eq!((done, total), (step, n))
                 }
                 other => panic!("{other:?}"),
             }
@@ -948,7 +956,13 @@ mod tests {
         ));
         assert!(r.speech.play_phrase(ACK));
         assert_eq!(played_last(&r.sink).await, ACK_LEN);
-        assert!(r.speech.doctor().1.contains("5/5 phrases cached"));
+        let n = n_phrases();
+        assert!(
+            r.speech
+                .doctor()
+                .1
+                .contains(&format!("{n}/{n} phrases cached"))
+        );
         let _ = std::fs::remove_dir_all(&r.root);
     }
 
@@ -958,7 +972,7 @@ mod tests {
     #[tokio::test]
     async fn a_switch_serves_the_old_voice_until_the_new_one_is_ready() {
         let mut r = rig("switch", "v1");
-        r.permits.add_permits(5);
+        r.permits.add_permits(n_phrases());
         r.speech.switch_to(key("v1")).await.unwrap();
         while r.rx.try_recv().is_ok() {} // the first render's own events
 
@@ -976,12 +990,15 @@ mod tests {
         assert!(r.speech.play_phrase(ACK));
         assert_eq!(played_last(&r.sink).await, ACK_LEN);
         assert!(
-            r.speech.doctor().1.contains("rendering 2/5"),
+            r.speech
+                .doctor()
+                .1
+                .contains(&format!("rendering 2/{}", n_phrases())),
             "{}",
             r.speech.doctor().1
         );
 
-        r.permits.add_permits(3);
+        r.permits.add_permits(n_phrases() - 2);
         switching.await.unwrap().unwrap();
         assert_eq!(r.speech.voice().voice, "v2");
         assert!(r.speech.play_phrase(ACK));
@@ -992,7 +1009,7 @@ mod tests {
     #[tokio::test]
     async fn a_failed_render_keeps_the_old_voice() {
         let mut r = rig("failed", "v1");
-        r.permits.add_permits(5);
+        r.permits.add_permits(n_phrases());
         r.speech.switch_to(key("v1")).await.unwrap();
 
         r.permits.add_permits(1);
@@ -1021,7 +1038,8 @@ mod tests {
         let first = tokio::spawn(async move { a.switch_to(key("v2")).await });
         tokio::task::yield_now().await;
         let second = tokio::spawn(async move { b.switch_to(key("v3")).await });
-        r.permits.add_permits(10);
+        // Enough for both renders in full, however they interleave.
+        r.permits.add_permits(2 * n_phrases());
         second.await.unwrap().unwrap();
         first.await.unwrap().unwrap();
         assert_eq!(r.speech.voice().voice, "v3");
@@ -1049,10 +1067,11 @@ mod tests {
             .render(provider.as_ref(), &key("v1"), &vocab[..2], |_| {})
             .await
             .unwrap();
-        assert_eq!(cache.missing(&key("v1"), &vocab).len(), 3);
+        let rest = vocab.len() - 2;
+        assert_eq!(cache.missing(&key("v1"), &vocab).len(), rest);
 
-        // Exactly three permits: a re-render of all five would hang here.
-        r.permits.add_permits(3);
+        // Exactly the missing phrases' permits: a full re-render would hang.
+        r.permits.add_permits(rest);
         tokio::time::timeout(Duration::from_secs(2), r.speech.switch_to(key("v1")))
             .await
             .expect("only the missing phrases are rendered")
@@ -1075,7 +1094,7 @@ mod tests {
     async fn set_switches_first_and_persists_only_on_success() {
         let r = rig("set", "v1");
         let config = config_in(&r.root);
-        r.permits.add_permits(5);
+        r.permits.add_permits(n_phrases());
         let key = r.speech.set_voice(None, "v2", &config).await.unwrap();
         assert_eq!(key.voice, "v2");
         assert_eq!(r.speech.voice().voice, "v2");
@@ -1127,7 +1146,7 @@ mod tests {
         // Render v3's vocabulary (sweeps v3's directory), then preview
         // again with no permit left for a re-synthesis: it must come from
         // the cache.
-        r.permits.add_permits(5);
+        r.permits.add_permits(n_phrases());
         r.speech.switch_to(key("v3")).await.unwrap();
         r.sink.release.notify_one();
         tokio::time::timeout(Duration::from_secs(2), r.speech.preview(None, "v3"))

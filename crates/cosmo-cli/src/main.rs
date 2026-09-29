@@ -376,6 +376,10 @@ fn render(response: Response) -> i32 {
                 println!("confirmed {token}: {summary}");
                 0
             }
+            TurnResult::ConfirmNeedsKey => {
+                eprintln!("not confirmed: hold the trigger key while you say it");
+                1
+            }
             TurnResult::ConfirmIgnored => {
                 println!("nothing pending to confirm");
                 0

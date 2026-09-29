@@ -51,6 +51,8 @@ pub fn default_phrases() -> Vec<Phrase> {
         ("ack-launching", "Opening it."),
         ("err-notfound", "I couldn't find that."),
         ("confirm-hold", "That one needs your confirmation."),
+        // Phase 4: a spoken confirm heard without the trigger key held.
+        ("confirm-needs-key", "Hold the key while you confirm."),
     ]
     .into_iter()
     .map(|(k, t)| Phrase::new(k, t))
@@ -323,14 +325,15 @@ mod tests {
         let mut steps = Vec::new();
         let report = block_on(cache.render(&p, &voice("a"), &phrases, |s| steps.push(s))).unwrap();
         assert_eq!(report.rendered, phrases.len());
-        assert_eq!(steps.last(), Some(&Progress { done: 5, total: 5 }));
+        let n = phrases.len();
+        assert_eq!(steps.last(), Some(&Progress { done: n, total: n }));
         assert!(cache.missing(&voice("a"), &phrases).is_empty());
         let loaded = cache.load(&voice("a"), &phrases[0]).unwrap();
         assert_eq!(loaded.data.len(), phrases[0].text.len());
 
         let again = block_on(cache.render(&p, &voice("a"), &phrases, |_| {})).unwrap();
-        assert_eq!((again.rendered, again.reused, again.swept), (0, 5, 0));
-        assert_eq!(p.calls.load(Ordering::SeqCst), 5);
+        assert_eq!((again.rendered, again.reused, again.swept), (0, n, 0));
+        assert_eq!(p.calls.load(Ordering::SeqCst), n);
     }
 
     #[test]
@@ -343,7 +346,10 @@ mod tests {
         phrases[1].text = "Focused.".into();
         assert_eq!(cache.missing(&voice("a"), &phrases).len(), 1);
         let report = block_on(cache.render(&p, &voice("a"), &phrases, |_| {})).unwrap();
-        assert_eq!((report.rendered, report.reused, report.swept), (1, 4, 1));
+        assert_eq!(
+            (report.rendered, report.reused, report.swept),
+            (1, phrases.len() - 1, 1)
+        );
         assert_eq!(p.seen.lock().unwrap().last().unwrap(), "Focused.");
         let files = std::fs::read_dir(cache.dir(&voice("a"))).unwrap().count();
         assert_eq!(files, phrases.len());
@@ -382,7 +388,10 @@ mod tests {
         let report = block_on(cache.render(&p, &voice("a"), &phrases, |_| {})).unwrap();
         // The half-written file is rewritten through the same tmp name and
         // renamed into place; the orphan is swept.
-        assert_eq!((report.rendered, report.reused, report.swept), (3, 2, 1));
+        assert_eq!(
+            (report.rendered, report.reused, report.swept),
+            (phrases.len() - 2, 2, 1)
+        );
         assert!(!debris.exists() && !orphan.exists());
         assert!(cache.load(&voice("a"), &phrases[2]).is_some());
         assert!(cache.missing(&voice("a"), &phrases).is_empty());

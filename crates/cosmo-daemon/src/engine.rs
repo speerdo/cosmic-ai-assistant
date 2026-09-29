@@ -23,7 +23,7 @@ use tokio::sync::broadcast;
 use tracing::Instrument;
 
 use cosmo_config::Config;
-use cosmo_gate::{ConfirmResult, Gate, LockSource, LockState};
+use cosmo_gate::{ConfirmResult, Gate, LockSource, LockState, UtteranceSource};
 use cosmo_mcp::McpHost;
 use cosmo_reason::secret::DefaultKeySource;
 use cosmo_reason::tools::ToolHost;
@@ -156,7 +156,7 @@ impl LockSource for LogindLock {
 }
 use cosmo_ipc::{
     Command, ConfirmOutcome as IpcConfirmOutcome, DoctorCheck, DoctorReport, Event, PendingHold,
-    Response, State, StatusInfo,
+    Response, State, StatusInfo, TurnResult,
 };
 
 pub struct Engine {
@@ -611,14 +611,21 @@ impl Engine {
         }
     }
 
-    /// A user turn: whole-utterance confirms resolve locally; everything
-    /// else runs the reasoning tool loop.
+    /// A typed turn (`cosmo say`).
     async fn say(&self, text: String) -> Response {
+        Response::Said {
+            result: self.utterance(text, UtteranceSource::Typed).await,
+        }
+    }
+
+    /// One user turn, typed or spoken; `source` is where it came from.
+    /// Whole-utterance confirms resolve locally (and only from a source
+    /// that may confirm: gate invariant #5); everything else runs the
+    /// reasoning tool loop.
+    pub async fn utterance(&self, text: String, source: UtteranceSource) -> TurnResult {
         if self.paused.load(Ordering::SeqCst) {
-            return Response::Said {
-                result: cosmo_ipc::TurnResult::Failed {
-                    reason: "daemon is paused (cosmo toggle to resume)".into(),
-                },
+            return cosmo_ipc::TurnResult::Failed {
+                reason: "daemon is paused (cosmo toggle to resume)".into(),
             };
         }
 
@@ -630,7 +637,16 @@ impl Engine {
         self.refresh_lock();
 
         // Whole-utterance confirm: resolve locally, no model round trip.
-        if let ConfirmResult::Executed(parked) = self.gate.confirm_utterance(&text) {
+        let confirm = self.gate.confirm_utterance(&text, source);
+        if let ConfirmResult::NeedsKey = confirm {
+            // Heard on an open mic: it confirms nothing, and it must not
+            // reach the model dressed as the user's approval either.
+            if let Some(speech) = &self.speech {
+                speech.play_phrase("confirm-needs-key");
+            }
+            return cosmo_ipc::TurnResult::ConfirmNeedsKey;
+        }
+        if let ConfirmResult::Executed(parked) = confirm {
             self.set_state(State::Acting);
             let summary = self.execute_parked(&parked.tool, &parked.args).await;
             let _ = self.events.send(Event::HoldResolved {
@@ -639,20 +655,16 @@ impl Engine {
                 summary: summary.clone(),
             });
             self.set_state(State::Idle);
-            return Response::Said {
-                result: cosmo_ipc::TurnResult::ConfirmedLocally {
-                    token: parked.token,
-                    summary,
-                },
+            return cosmo_ipc::TurnResult::ConfirmedLocally {
+                token: parked.token,
+                summary,
             };
         }
 
         // Reasoning path.
         let Some(tools) = self.tools.lock().unwrap().clone() else {
-            return Response::Said {
-                result: cosmo_ipc::TurnResult::Failed {
-                    reason: "agent not connected — check `cosmo doctor`".into(),
-                },
+            return cosmo_ipc::TurnResult::Failed {
+                reason: "agent not connected — check `cosmo doctor`".into(),
             };
         };
 
@@ -663,15 +675,11 @@ impl Engine {
             match cosmo_reason::Reasoner::new(Arc::new(self.cfg.clone()), &key_source) {
                 Ok(r) => r,
                 Err(cosmo_reason::ReasonError::NoKey(msg)) => {
-                    return Response::Said {
-                        result: cosmo_ipc::TurnResult::Failed { reason: msg },
-                    };
+                    return cosmo_ipc::TurnResult::Failed { reason: msg };
                 }
                 Err(e) => {
-                    return Response::Said {
-                        result: cosmo_ipc::TurnResult::Failed {
-                            reason: e.to_string(),
-                        },
+                    return cosmo_ipc::TurnResult::Failed {
+                        reason: e.to_string(),
                     };
                 }
             };
@@ -701,11 +709,9 @@ impl Engine {
                     Some(speech) if !reply.trim().is_empty() => speech.speak(reply.clone()),
                     _ => self.set_state(State::Idle),
                 }
-                Response::Said {
-                    result: cosmo_ipc::TurnResult::Completed {
-                        reply,
-                        held: self.pending_ipc_holds(),
-                    },
+                cosmo_ipc::TurnResult::Completed {
+                    reply,
+                    held: self.pending_ipc_holds(),
                 }
             }
             Ok(cosmo_reason::ToolOutcome::Held { token, tool }) => {
@@ -724,34 +730,26 @@ impl Engine {
                     token: token.clone(),
                     action: tool.clone(),
                 });
-                Response::Said {
-                    result: cosmo_ipc::TurnResult::Completed {
-                        reply: action,
-                        held: self.pending_ipc_holds(),
-                    },
+                cosmo_ipc::TurnResult::Completed {
+                    reply: action,
+                    held: self.pending_ipc_holds(),
                 }
             }
             Ok(cosmo_reason::ToolOutcome::ToolRan { .. }) => {
                 self.set_state(State::Idle);
-                Response::Said {
-                    result: cosmo_ipc::TurnResult::Completed {
-                        reply: "tool ran".into(),
-                        held: self.pending_ipc_holds(),
-                    },
+                cosmo_ipc::TurnResult::Completed {
+                    reply: "tool ran".into(),
+                    held: self.pending_ipc_holds(),
                 }
             }
             Err(cosmo_reason::ReasonError::NoKey(msg)) => {
                 self.set_state(State::Idle);
-                Response::Said {
-                    result: cosmo_ipc::TurnResult::Failed { reason: msg },
-                }
+                cosmo_ipc::TurnResult::Failed { reason: msg }
             }
             Err(e) => {
                 self.set_state(State::Idle);
-                Response::Said {
-                    result: cosmo_ipc::TurnResult::Failed {
-                        reason: e.to_string(),
-                    },
+                cosmo_ipc::TurnResult::Failed {
+                    reason: e.to_string(),
                 }
             }
         }
@@ -810,7 +808,8 @@ impl Engine {
             ConfirmResult::Unknown | ConfirmResult::NonePending => Response::Confirm {
                 outcome: IpcConfirmOutcome::Unknown,
             },
-            ConfirmResult::NotAConfirm => Response::Confirm {
+            // Neither comes from a token confirm; answered as unknown.
+            ConfirmResult::NotAConfirm | ConfirmResult::NeedsKey => Response::Confirm {
                 outcome: IpcConfirmOutcome::Unknown,
             },
         }

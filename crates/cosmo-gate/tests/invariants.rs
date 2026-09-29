@@ -1,7 +1,7 @@
 //! One test per blueprint §7 gate invariant. These are the contract; any
 //! change to the gate that breaks one of these is wrong, not the test.
 
-use cosmo_gate::{ConfirmResult, Gate, Verdict, is_confirm_utterance};
+use cosmo_gate::{ConfirmResult, Gate, UtteranceSource, Verdict, is_confirm_utterance};
 use serde_json::json;
 
 /// **Invariant #1:** a gated tool call and a confirmation in the **same model
@@ -127,7 +127,7 @@ fn local_confirm_is_model_free() {
         "suspend".into(),
     );
     gate.begin_turn();
-    match gate.confirm_utterance("confirm that") {
+    match gate.confirm_utterance("confirm that", UtteranceSource::Typed) {
         ConfirmResult::Executed(p) => assert_eq!(p.args["command"], "systemctl suspend"),
         other => panic!("expected Executed, got {other:?}"),
     }
@@ -140,7 +140,7 @@ fn local_confirm_is_model_free() {
     // Non-confirm utterance is passed through (the daemon routes it to the
     // model — the gate itself never runs one).
     assert!(matches!(
-        gate.confirm_utterance("what time is it"),
+        gate.confirm_utterance("what time is it", UtteranceSource::Typed),
         ConfirmResult::NotAConfirm
     ));
     // Reject discards without executing.
@@ -153,4 +153,76 @@ fn local_confirm_is_model_free() {
     gate.begin_turn();
     assert!(gate.reject(&tok));
     assert!(matches!(gate.confirm_token(&tok), ConfirmResult::Unknown));
+}
+
+/// **Invariant #5 (phase 4, the user's decision of 2026-09-29):** a spoken
+/// confirmation resolves a hold **only if it was said during a physical hold
+/// of the trigger key**. Anything that reaches the microphone can say
+/// "confirm": a video, a call, someone in the room. An open-mic utterance
+/// (`cosmo listen`, later the wake word) never confirms, whatever it says
+/// and however many turns pass.
+#[test]
+fn open_mic_speech_never_confirms() {
+    let phrases = [
+        "confirm",
+        "Confirm.",
+        "confirm that",
+        "yes",
+        "Yes!",
+        "yeah",
+        "ok",
+        "do it",
+        "go ahead",
+        "proceed",
+        "make it so",
+        "affirmative",
+    ];
+    let gate = Gate::new();
+    gate.begin_turn();
+    let token = gate.park(
+        "run_in_terminal",
+        json!({"command": "systemctl reboot"}),
+        "reboot".into(),
+    );
+
+    for phrase in phrases {
+        gate.begin_turn(); // a genuinely new turn, so only the source decides
+        match gate.confirm_utterance(phrase, UtteranceSource::OpenMic) {
+            ConfirmResult::NeedsKey => {}
+            other => panic!("open-mic `{phrase}` must not confirm, got {other:?}"),
+        }
+        assert_eq!(gate.pending().len(), 1, "`{phrase}` released the hold");
+    }
+
+    // Not confirm-shaped: open-mic text flows on like any other.
+    assert!(matches!(
+        gate.confirm_utterance("what time is it", UtteranceSource::OpenMic),
+        ConfirmResult::NotAConfirm
+    ));
+
+    // The same words said while the key is held do confirm.
+    gate.begin_turn();
+    match gate.confirm_utterance("confirm", UtteranceSource::KeyHeld) {
+        ConfirmResult::Executed(p) => assert_eq!(p.token, token),
+        other => panic!("key-held confirm must execute, got {other:?}"),
+    }
+    assert!(gate.pending().is_empty());
+}
+
+/// A key-held confirm is still bound by invariant #2: it cannot release a
+/// hold parked in its own turn.
+#[test]
+fn key_held_confirm_still_needs_a_new_turn() {
+    let gate = Gate::new();
+    gate.begin_turn();
+    gate.park(
+        "run_in_terminal",
+        json!({"command": "reboot"}),
+        "reboot".into(),
+    );
+    assert!(matches!(
+        gate.confirm_utterance("yes", UtteranceSource::KeyHeld),
+        ConfirmResult::NonePending
+    ));
+    assert_eq!(gate.pending().len(), 1);
 }

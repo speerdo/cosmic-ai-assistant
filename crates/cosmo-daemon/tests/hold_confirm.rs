@@ -158,3 +158,70 @@ async fn cancelling_the_last_hold_leaves_waiting() {
         other => panic!("{other:?}"),
     }
 }
+
+/// Gate invariant #5 through the engine (phase 4, the user's decision): a
+/// spoken "confirm" with no trigger key held resolves nothing and is not
+/// handed on to the reasoning path; the same words said during a key hold
+/// execute the hold locally.
+#[tokio::test]
+async fn open_mic_confirm_is_refused_and_key_held_confirm_executes() {
+    use cosmo_gate::UtteranceSource;
+    use cosmo_ipc::TurnResult;
+
+    let engine = engine().await;
+    let gate = engine.gate();
+    gate.begin_turn();
+    let token = gate.park(
+        "run_in_terminal",
+        json!({"command": "echo held"}),
+        "a held command".to_owned(),
+    );
+
+    for phrase in ["confirm", "Yes.", "go ahead"] {
+        match engine
+            .utterance(phrase.into(), UtteranceSource::OpenMic)
+            .await
+        {
+            TurnResult::ConfirmNeedsKey => {}
+            // `Failed` here would mean it reached the reasoning path (no
+            // agent is connected in this test), which it must not.
+            other => panic!("open-mic `{phrase}` must be refused, got {other:?}"),
+        }
+        assert_eq!(gate.pending().len(), 1, "`{phrase}` released the hold");
+    }
+
+    match engine
+        .utterance("confirm".into(), UtteranceSource::KeyHeld)
+        .await
+    {
+        TurnResult::ConfirmedLocally { token: t, .. } => assert_eq!(t, token),
+        other => panic!("key-held confirm must execute the hold, got {other:?}"),
+    }
+    assert!(gate.pending().is_empty());
+}
+
+/// Typed `cosmo say "confirm"` keeps its phase-1 behaviour: the control
+/// socket is owner-only, the same trust as `cosmo confirm`.
+#[tokio::test]
+async fn typed_confirm_still_resolves_a_hold() {
+    let engine = engine().await;
+    let gate = engine.gate();
+    gate.begin_turn();
+    gate.park(
+        "run_in_terminal",
+        json!({"command": "echo held"}),
+        "a held command".to_owned(),
+    );
+    match engine
+        .handle(Command::Say {
+            text: "confirm".into(),
+        })
+        .await
+    {
+        Response::Said {
+            result: cosmo_ipc::TurnResult::ConfirmedLocally { .. },
+        } => {}
+        other => panic!("typed confirm must execute, got {other:?}"),
+    }
+    assert!(gate.pending().is_empty());
+}

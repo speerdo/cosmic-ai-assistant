@@ -238,6 +238,9 @@ pub enum TurnResult {
     },
     /// The turn was a whole-utterance confirm but no hold matched.
     ConfirmIgnored,
+    /// A spoken confirm arrived with no trigger key held (open mic): it
+    /// resolved nothing and went nowhere else (gate invariant #5).
+    ConfirmNeedsKey,
     /// The turn could not run (paused daemon, model error, …).
     Failed { reason: String },
 }
