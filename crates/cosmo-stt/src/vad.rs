@@ -54,8 +54,11 @@ impl Vad {
                 threshold: 0.5,
                 // Short on purpose: these only debounce single-window
                 // flicker. What counts as a *pause* is the segmenter's
-                // `min_pause`, so it's one rule in one place.
-                min_silence_duration: 0.1,
+                // `min_pause`, so it's one rule in one place. The silence
+                // side is what a key release waits on (the release tail):
+                // 100 ms made it the bulk of release → ack on the user's
+                // recordings (phase-4 findings §1d), so it's 50.
+                min_silence_duration: 0.05,
                 min_speech_duration: 0.1,
                 window_size: WINDOW as i32,
                 // sherpa raises its threshold past this to force a segment

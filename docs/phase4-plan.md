@@ -6,7 +6,8 @@
 **Status:** §4.1 done 2026-09-29 (the spoken-confirm path is closed and
 tested). §4.2–§4.4 done 2026-09-29: transcripts are turns, and reflex
 verbs run live (window verbs in under 1 ms over a persistent connection).
-Next: §4.5's no-key message, §4.6 timing, §4.7 hotwords.
+§4.6 measured 2026-09-29 (findings §1d). Next: §4.5's no-key message,
+§4.7 hotwords.
 
 Goal: **a spoken command runs locally, with a cached spoken ack, in under
 150 ms**, and anything reflex can't do safely goes to reasoning. Transcripts
@@ -130,10 +131,13 @@ stop being display-only: they become turns.
 
 ### 4.6 Acks and latency
 
-- [ ] Cached phrase acks: the phrase cache's buffer pushed straight to
+- [x] Cached phrase acks: the phrase cache's buffer pushed straight to
       playback. Targets: **< 150 ms** release → ack audio for cached acks;
-      **< 400 ms** with an uncached Kokoro reply.
-- [ ] `scripts/bench-reflex`: the user's recorded commands → transcript →
+      **< 400 ms** with an uncached Kokoro reply. *(Median 98 ms, 12 of 15
+      of the user's reflex commands within 150 ms; p95 207 ms, max 246 ms,
+      all speech still going at the release. Findings §1d, which also
+      records the next step, a speculative decode.)*
+- [x] `scripts/bench-reflex`: the user's recorded commands → transcript →
       match → action (dry-run executor) → ack started, timed per span.
 
 ### 4.7 Hotwords, curated

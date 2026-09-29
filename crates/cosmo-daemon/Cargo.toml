@@ -56,6 +56,10 @@ name = "ears"
 required-features = ["ears"]
 
 [[example]]
+name = "bench_reflex"
+required-features = ["speech", "ears"]
+
+[[example]]
 name = "bench_asr"
 required-features = ["speech", "ears"]
 

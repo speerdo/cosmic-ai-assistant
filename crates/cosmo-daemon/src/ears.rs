@@ -29,8 +29,11 @@ use tracing::Instrument;
 pub const PREROLL_MS: u32 = 750;
 /// Longest wait after a release for a word still being finished. Cut short
 /// the moment the VAD hears silence, so a speaker who stopped before
-/// letting go waits for nothing.
-pub const MAX_TAIL: Duration = Duration::from_millis(300);
+/// letting go waits for nothing. On the user's recordings real speech ran
+/// at most ~100 ms past the release (phase-3 findings §6f, less the VAD's
+/// debounce); 300 ms cost the slowest commands most of their budget
+/// (phase-4 findings §1d).
+pub const MAX_TAIL: Duration = Duration::from_millis(200);
 /// Holds shorter than this are taps or Right Ctrl shortcuts, not
 /// utterances (findings §3a): discarded, never transcribed.
 pub const MIN_HOLD: Duration = Duration::from_millis(300);

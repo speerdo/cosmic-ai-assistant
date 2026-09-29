@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Release → ack on your own recorded commands (phase-4 spec §4.6). Replays
+# the scripts/bench-asr recordings through the daemon's ears controller and
+# the reflex matcher; nothing on the desktop is touched. About two minutes.
+#
+#   scripts/bench-reflex [--dir DIR]
+set -euo pipefail
+cd "$(dirname "$0")/.."
+exec cargo run --quiet --release -p cosmo-daemon --example bench_reflex \
+    --features speech,ears -- "$@"
