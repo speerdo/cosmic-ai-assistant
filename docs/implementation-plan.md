@@ -226,8 +226,8 @@ Goal: hold the key, see a transcript. Steal from cosmic-voice directly (`hotkey.
 
 ## Phase 5 — reasoning voice
 
-- [ ] `cosmo-reason` v2: **Realtime API** over `tokio-tungstenite`, **text-out** (no model audio — voice catalogue has no en-GB/en-AU, and marin/cedar ignore session instructions anyway). Reasoning + tool calls only; cosmo speaks.
-- [ ] **Sentence-streamed TTS**: synthesize each sentence as it streams in; first audio in a few hundred ms.
+- [x] ~~`cosmo-reason` v2: **Realtime API** over `tokio-tungstenite`~~ *(Superseded 2026-09-30 by the user: the **streaming chat API** instead. Text-in/text-out Realtime costs 4–40× per token for no advantage once STT is local and cosmo speaks. Phase-5 findings §1–§2.)* **text-out** (no model audio — voice catalogue has no en-GB/en-AU, and marin/cedar ignore session instructions anyway). Reasoning + tool calls only; cosmo speaks.
+- [x] *(phase-5 findings §4: first audio ~550 ms after the first token, 4× sooner than the whole reply)* **Sentence-streamed TTS**: synthesize each sentence as it streams in; first audio in a few hundred ms.
 - [ ] Half-duplex enforcement on the live path; barge-in behind config with `doctor` warning when mic+speakers coexist.
 - [ ] Confirmation flow end to end: Hold → overlay/CLI confirm (local, no model) → execute. Forgeable-spoken-confirmation **rejected** (a spoken "confirm that" alone never completes a hold).
 - [ ] Token discipline verified live: log per-turn token usage + server rate limits; confirm reflex-path commands consume zero tokens.
