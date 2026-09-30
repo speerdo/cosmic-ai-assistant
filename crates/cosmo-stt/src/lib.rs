@@ -21,6 +21,7 @@
 mod bpe;
 pub mod hotwords;
 pub mod score;
+pub mod wake;
 
 #[cfg(feature = "sherpa")]
 mod engine;

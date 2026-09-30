@@ -249,10 +249,10 @@ Goal: hold the key, see a transcript. Steal from cosmic-voice directly (`hotkey.
 
 ## Phase 7 — wake word
 
-- [ ] `openWakeWord` via `ort` on the existing ring buffer (nothing leaves the machine until the phrase fires).
-- [ ] Wake → **reflex first** ("Cosmo, pause the music" = zero network calls), reasoning only on escalation.
+- [x] ~~`openWakeWord` via `ort`~~ *(superseded 2026-09-30: openWakeWord's models are non-commercial (CC BY-NC-SA) and sherpa's keyword spotter is trained on non-commercial-access data. Instead: a VAD-gated check of each stretch of speech's first 1.5 s with the resident offline model, unbiased. No new model. Phase-7 findings §1.)* On the existing ring buffer (nothing leaves the machine until the phrase fires).
+- [x] Wake → **reflex first** ("Cosmo, pause the music" = zero network calls), reasoning only on escalation.
 - [ ] False-accept hygiene (open question §16): threshold tuning on real days of audio; reflex stays allowlist-only so a false accept can't reach a gated action; `doctor` reports wake stats.
-- [ ] evdev trigger remains the deterministic fallback, always.
+- [x] evdev trigger remains the deterministic fallback, always. *(And it preempts: a press mid-wake drops the open-mic recording and starts a key one.)*
 
 ---
 

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# The wake detector over recordings (phase-7 spec §7.4): false accepts on
+# speech that shouldn't wake it, detections on speech that should.
+#
+#   scripts/bench-wake                        # negatives: your bench-asr commands
+#   scripts/bench-asr record --list scripts/bench-wake-phrases.txt \
+#       --dir ~/.local/share/cosmo/bench/wake # record positives once
+#   scripts/bench-wake --positives ~/.local/share/cosmo/bench/wake
+#   scripts/bench-wake --negatives DIR        # any folder of 16 kHz WAVs
+#
+# Everything stays on this machine.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+exec cargo run --quiet --release -p cosmo-stt --example bench_wake --features sherpa -- "$@"

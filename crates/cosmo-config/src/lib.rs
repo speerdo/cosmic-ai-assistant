@@ -67,6 +67,12 @@ pub struct Config {
     /// default: on speakers cosmo hears its own voice (blueprint §8). Only
     /// for headsets; `doctor` warns while it's on.
     pub barge_in: bool,
+    /// The wake word (phase 7): listen for `wake_phrase` while idle. Off by
+    /// default: it's the user's choice to have a listening room. Local
+    /// only; nothing leaves the machine unless a command needs the model.
+    pub wake_word: bool,
+    /// What wakes it ("cosmo", also after "hey"/"ok").
+    pub wake_phrase: String,
     /// Log filter string, e.g. `cosmo=debug`. Overridden by `RUST_LOG`.
     pub log_filter: String,
 }
@@ -94,6 +100,8 @@ impl Default for Config {
             asr_threads: 2,
             offline_threads: 4,
             barge_in: false,
+            wake_word: false,
+            wake_phrase: "cosmo".into(),
             log_filter: "info".into(),
         }
     }
@@ -189,6 +197,17 @@ impl Config {
             return Err(ConfigError::Parse(
                 "asr_streaming_model and asr_offline_model are both \"none\" — nothing would transcribe".into(),
             ));
+        }
+        if self.wake_phrase.trim().is_empty()
+            || !self
+                .wake_phrase
+                .chars()
+                .all(|c| c.is_alphabetic() || c == ' ' || c == '\'' || c == '-')
+        {
+            return Err(ConfigError::Parse(format!(
+                "wake_phrase {:?} must be one or more plain words (letters only)",
+                self.wake_phrase
+            )));
         }
         if self.announce_spacing_secs < 8 {
             return Err(ConfigError::Parse(
@@ -337,6 +356,11 @@ pub fn commented_default() -> String {
     // speakers cosmo would hear, and transcribe, its own voice.
     // barge_in: {barge_in},
 
+    // Wake word: say "cosmo" (or "hey cosmo") to start a command, no key.
+    // Recognised on this machine only. Off until you turn it on.
+    // wake_word: {wake_word},
+    // wake_phrase: "{wake_phrase}",
+
     // Log filter, e.g. "cosmo=debug". RUST_LOG wins when set.
     // log_filter: "{log_filter}",
 )
@@ -363,6 +387,8 @@ pub fn commented_default() -> String {
         asr_threads = d.asr_threads,
         offline_threads = d.offline_threads,
         barge_in = d.barge_in,
+        wake_word = d.wake_word,
+        wake_phrase = d.wake_phrase,
         log_filter = d.log_filter,
     )
 }

@@ -256,6 +256,19 @@ impl Stt {
         Some(rx)
     }
 
+    /// A fresh Silero instance (its own recurrent state) on this `Stt`'s
+    /// VAD model: the wake watcher's (phase 7).
+    pub fn vad(&self) -> Result<crate::vad::Vad, crate::vad::VadError> {
+        crate::vad::Vad::new(&self.vad)
+    }
+
+    /// Decode `samples` once on the offline model, **without hotwords**
+    /// (the wake check, phase 7: biasing toward "Cosmo" would make it heard
+    /// in noise). `None` without an offline model.
+    pub fn decode_once(&self, samples: Vec<f32>) -> Option<oneshot::Receiver<Decoded>> {
+        self.decode(samples, Arc::from(""))
+    }
+
     pub(crate) fn decode(
         &self,
         samples: Vec<f32>,

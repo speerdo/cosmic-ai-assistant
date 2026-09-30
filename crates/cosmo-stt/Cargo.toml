@@ -27,6 +27,10 @@ name = "vad_cuts"
 required-features = ["sherpa"]
 
 [[example]]
+name = "bench_wake"
+required-features = ["sherpa"]
+
+[[example]]
 name = "transcribe"
 required-features = ["sherpa"]
 

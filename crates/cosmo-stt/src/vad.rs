@@ -97,6 +97,13 @@ impl Vad {
         }
     }
 
+    /// Samples held toward the next window (fed but not yet decided): a
+    /// caller tracking positions subtracts them to find where the next
+    /// decision's window starts.
+    pub fn pending(&self) -> usize {
+        self.partial.len()
+    }
+
     /// Forget the recurrent state and any partial window: the next sample
     /// fed starts a new recording.
     pub fn reset(&mut self) {

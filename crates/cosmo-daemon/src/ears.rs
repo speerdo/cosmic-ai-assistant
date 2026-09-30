@@ -43,6 +43,12 @@ const LEVEL_WINDOW: usize = 800;
 const POLL: Duration = Duration::from_millis(30);
 /// Hard cap on one recording, beyond the silence backstop.
 const MAX_RECORDING: Duration = Duration::from_secs(60);
+/// A wake recording's cap: commands are short, and nobody holds it open.
+const MAX_WAKE_RECORDING: Duration = Duration::from_secs(15);
+/// Silence (in samples, 16 kHz) that ends a wake recording's command: 800 ms.
+const END_SILENCE: u64 = 12_800;
+/// How long a bare wake phrase waits for its command: 4 s.
+const WAKE_ONLY_WAIT: u64 = 64_000;
 
 /// What starts and stops a recording.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +142,8 @@ pub struct Ears {
     triggers: mpsc::UnboundedSender<Trigger>,
     listening: Arc<AtomicBool>,
     models: Models,
+    /// The wake word, when it's on.
+    wake: Option<Arc<Wake>>,
     devices: Arc<dyn Fn() -> (Option<cosmo_audio::CaptureStats>, usize) + Send + Sync>,
 }
 
@@ -148,6 +156,11 @@ impl Ears {
 
     pub fn models(&self) -> &Models {
         &self.models
+    }
+
+    /// The wake word's phrase and counters, if it's on.
+    pub fn wake(&self) -> Option<&Wake> {
+        self.wake.as_deref()
     }
 
     /// Capture stream stats and the number of keyboards carrying the
@@ -202,13 +215,27 @@ pub fn start(
         .map_err(|e| e.to_string())?;
 
     let listening = Arc::new(AtomicBool::new(false));
-    tokio::spawn(run(ring, models.clone(), rx, host, Arc::clone(&listening)));
+    let wake = cfg.wake_word.then(|| {
+        Arc::new(Wake {
+            phrase: cfg.wake_phrase.clone(),
+            stats: WakeStats::default(),
+        })
+    });
+    tokio::spawn(run(
+        ring,
+        models.clone(),
+        rx,
+        host,
+        Arc::clone(&listening),
+        wake.clone(),
+    ));
     let capture = Arc::new(capture);
     let watcher = Arc::new(watcher);
     Ok(Ears {
         triggers: tx,
         listening,
         models,
+        wake,
         devices: Arc::new(move || {
             (
                 Some(capture.stats()),
@@ -226,21 +253,98 @@ enum End {
     Timeout,
 }
 
-/// The controller: one recording at a time, until `triggers` closes.
+/// The wake word's settings and counters (phase 7). `None` in [`run`]
+/// means it's off.
+#[derive(Debug)]
+pub struct Wake {
+    pub phrase: String,
+    pub stats: WakeStats,
+}
+
+/// What `doctor` reports about the wake word. Only wakes are recorded: a
+/// stretch of speech that didn't start with the phrase leaves nothing.
+#[derive(Debug, Default)]
+pub struct WakeStats {
+    pub checks: std::sync::atomic::AtomicU64,
+    pub wakes: std::sync::atomic::AtomicU64,
+    /// The last wake's transcript (so a false accept can be seen).
+    pub last: Mutex<Option<String>>,
+}
+
+/// How a recording started.
+#[derive(Debug, Clone, Copy)]
+enum Start {
+    /// The trigger key, pressed at this instant.
+    Key(Instant),
+    /// `cosmo listen`.
+    Toggle,
+    /// The wake word: speech from ring position `from`; the wake check
+    /// covered it up to `checked`.
+    Wake { from: u64, checked: u64 },
+}
+
+/// How a recording ended.
+enum Outcome {
+    Committed(String, Duration),
+    Discarded,
+    /// The key went down during a wake recording: that recording is
+    /// dropped (open-mic audio must never become a key-held turn) and a
+    /// key recording starts.
+    Pressed(Instant),
+}
+
+/// The controller: one recording at a time, until `triggers` closes. With
+/// `wake` set, it also listens for the wake word while idle.
 pub async fn run(
     ring: Arc<Ring>,
     models: Models,
     mut triggers: mpsc::UnboundedReceiver<Trigger>,
     host: Arc<dyn Host>,
     listening: Arc<AtomicBool>,
+    wake: Option<Arc<Wake>>,
 ) {
-    while let Some(trigger) = triggers.recv().await {
-        let (pressed, by_key) = match trigger {
-            Trigger::Press(at) => (at, true),
-            Trigger::Toggle => (Instant::now(), false),
-            // A release with no recording: its press was discarded or
-            // came before startup.
-            Trigger::Release(_) => continue,
+    let mut watcher: Option<Watcher> = None;
+    let mut tick = tokio::time::interval(POLL);
+    loop {
+        let start = tokio::select! {
+            trigger = triggers.recv() => match trigger {
+                Some(Trigger::Press(at)) => Start::Key(at),
+                Some(Trigger::Toggle) => Start::Toggle,
+                // A release with no recording: its press was discarded or
+                // came before startup.
+                Some(Trigger::Release(_)) => continue,
+                None => return,
+            },
+            _ = tick.tick(), if wake.is_some() => {
+                let Some(wake) = &wake else { continue };
+                if host.paused() {
+                    watcher = None;
+                    continue;
+                }
+                let Ok(stt) = models.stt() else { continue };
+                if watcher.is_none() {
+                    watcher = Watcher::new(&stt, ring.now());
+                }
+                let Some(w) = watcher.as_mut() else { continue };
+                match w.step(&ring, &stt, &wake.phrase, &mut triggers).await {
+                    WatchStep::Nothing => continue,
+                    WatchStep::Woke { from, checked, heard } => {
+                        wake.stats.wakes.fetch_add(1, Ordering::Relaxed);
+                        *wake.stats.last.lock().unwrap() = Some(heard);
+                        wake.stats.checks.fetch_add(1, Ordering::Relaxed);
+                        Start::Wake { from, checked }
+                    }
+                    WatchStep::Checked => {
+                        wake.stats.checks.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                    WatchStep::Interrupted(t) => match t {
+                        Trigger::Press(at) => Start::Key(at),
+                        Trigger::Toggle => Start::Toggle,
+                        Trigger::Release(_) => continue,
+                    },
+                }
+            }
         };
         if host.paused() {
             continue;
@@ -254,26 +358,134 @@ pub async fn run(
                 continue;
             }
         };
-        listening.store(true, Ordering::Release);
-        let committed = record(&ring, &stt, &mut triggers, host.as_ref(), pressed, by_key).await;
-        listening.store(false, Ordering::Release);
-        host.set_state(State::Idle);
-        if let Some((text, latency)) = committed {
-            host.emit(Event::Transcript {
-                text: text.clone(),
-                r#final: true,
-                latency_ms: Some(latency.as_millis() as u64),
-            });
-            if !text.trim().is_empty() {
-                // Only a physical key hold may confirm; `cosmo listen` is
-                // an open mic (anything could have run it).
-                let source = if by_key {
-                    cosmo_gate::UtteranceSource::KeyHeld
-                } else {
-                    cosmo_gate::UtteranceSource::OpenMic
-                };
-                Arc::clone(&host).turn(text, source);
+        let mut start = start;
+        let outcome = loop {
+            listening.store(true, Ordering::Release);
+            let outcome = record(&ring, &stt, &mut triggers, host.as_ref(), start).await;
+            listening.store(false, Ordering::Release);
+            match outcome {
+                Outcome::Pressed(at) => start = Start::Key(at),
+                other => break other,
             }
+        };
+        host.set_state(State::Idle);
+        // The mic's audio during the recording isn't wake material.
+        watcher = None;
+        let Outcome::Committed(text, latency) = outcome else {
+            continue;
+        };
+        host.emit(Event::Transcript {
+            text: text.clone(),
+            r#final: true,
+            latency_ms: Some(latency.as_millis() as u64),
+        });
+        let (command, source) = match start {
+            // Only a physical key hold may confirm (gate invariant #5).
+            Start::Key(_) => (Some(text), cosmo_gate::UtteranceSource::KeyHeld),
+            // `cosmo listen` (anything could have run it) and the wake
+            // word (anything that reaches the mic) are open mics.
+            Start::Toggle => (Some(text), cosmo_gate::UtteranceSource::OpenMic),
+            Start::Wake { .. } => {
+                let phrase = wake.as_ref().map_or("cosmo", |w| w.phrase.as_str());
+                // The full decode must still start with the phrase, and
+                // leave a command after it.
+                let command = cosmo_stt::wake::strip_wake(&text, phrase).filter(|c| !c.is_empty());
+                if command.is_none() {
+                    tracing::info!("wake with no command after it: dropped");
+                }
+                (command, cosmo_gate::UtteranceSource::OpenMic)
+            }
+        };
+        if let Some(command) = command.filter(|c| !c.trim().is_empty()) {
+            Arc::clone(&host).turn(command, source);
+        }
+    }
+}
+
+/// What one wake-watching step found.
+enum WatchStep {
+    Nothing,
+    /// A stretch of speech was checked; it wasn't a wake.
+    Checked,
+    Woke {
+        from: u64,
+        checked: u64,
+        heard: String,
+    },
+    /// A trigger arrived mid-check: it wins.
+    Interrupted(Trigger),
+}
+
+/// Listens for the wake word while idle: VAD over the ring, one check per
+/// stretch of speech (phase-7 spec §7.2).
+struct Watcher {
+    vad: cosmo_stt::vad::Vad,
+    tracker: cosmo_stt::wake::WakeTracker,
+    pos: u64,
+}
+
+impl Watcher {
+    fn new(stt: &Stt, now: u64) -> Option<Self> {
+        let vad = match stt.vad() {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "wake word: no VAD");
+                return None;
+            }
+        };
+        Some(Self {
+            vad,
+            tracker: cosmo_stt::wake::WakeTracker::new(cosmo_stt::wake::WakeConfig::DEFAULT),
+            pos: now,
+        })
+    }
+
+    async fn step(
+        &mut self,
+        ring: &Ring,
+        stt: &Stt,
+        phrase: &str,
+        triggers: &mut mpsc::UnboundedReceiver<Trigger>,
+    ) -> WatchStep {
+        let (from, samples) = ring.read(self.pos, ring.now());
+        if from > self.pos {
+            // Lapped (a long stall): start the tracking afresh.
+            self.tracker.reset();
+            self.vad.reset();
+        }
+        // Positions of the windows completed by these samples.
+        let mut check = None;
+        let (tracker, mut window_start) = (&mut self.tracker, from);
+        let carried = self.vad.pending() as u64;
+        window_start -= carried;
+        self.vad.feed(&samples, |speech| {
+            if let Some(c) = tracker.push(window_start, cosmo_stt::vad::WINDOW, speech) {
+                check.get_or_insert(c);
+            }
+            window_start += cosmo_stt::vad::WINDOW as u64;
+        });
+        self.pos = from + samples.len() as u64;
+        let Some(cosmo_stt::wake::WakeCheck::Check { from, to }) = check else {
+            return WatchStep::Nothing;
+        };
+        let (_, audio) = ring.read(from, to);
+        let Some(rx) = stt.decode_once(audio) else {
+            return WatchStep::Nothing;
+        };
+        tokio::select! {
+            decoded = rx => match decoded {
+                Ok(d) if cosmo_stt::wake::wake_prefix(&d.text, phrase).is_some() => {
+                    tracing::info!(decode_ms = d.decode.as_millis() as u64, "wake word");
+                    WatchStep::Woke { from, checked: to, heard: d.text }
+                }
+                // Not a wake: dropped, never logged.
+                Ok(_) => WatchStep::Checked,
+                Err(_) => WatchStep::Nothing,
+            },
+            trigger = triggers.recv() => match trigger {
+                Some(t) => WatchStep::Interrupted(t),
+                None => WatchStep::Nothing,
+            },
         }
     }
 }
@@ -285,20 +497,33 @@ async fn record(
     stt: &Stt,
     triggers: &mut mpsc::UnboundedReceiver<Trigger>,
     host: &dyn Host,
-    pressed: Instant,
-    by_key: bool,
-) -> Option<(String, Duration)> {
+    start: Start,
+) -> Outcome {
     host.interrupt_speech();
-    // The press was read a moment ago; reach back from *then*.
-    let late = u32::try_from(pressed.elapsed().as_millis()).unwrap_or(0);
-    let mut pos = ring.mark_preroll(PREROLL_MS + late);
+    let (by_key, pressed) = match start {
+        Start::Key(at) => (true, at),
+        _ => (false, Instant::now()),
+    };
+    let mut pos = match start {
+        // The press was read a moment ago; reach back from *then*.
+        Start::Key(at) => {
+            let late = u32::try_from(at.elapsed().as_millis()).unwrap_or(0);
+            ring.mark_preroll(PREROLL_MS + late)
+        }
+        Start::Toggle => ring.mark_preroll(PREROLL_MS),
+        // From the speech's onset: the wake phrase and what follows it.
+        Start::Wake { from, .. } => from,
+    };
+    // Wake recordings end themselves (no key release): the last position
+    // speech was heard at, for end-pointing.
+    let mut last_speech = pos;
     let mut session = match stt.session(&host.hotwords()) {
         Ok(s) => s,
         Err(e) => {
             host.emit(Event::Log {
                 line: format!("not listening: {e}"),
             });
-            return None;
+            return Outcome::Discarded;
         }
     };
     host.set_state(State::Listening);
@@ -340,16 +565,37 @@ async fn record(
         backstop
     };
 
+    let wake = matches!(start, Start::Wake { .. });
     let end = loop {
         tokio::select! {
             _ = tick.tick() => {
-                if drain(&mut session, &mut pos) || started.elapsed() > MAX_RECORDING {
+                let limit = if wake { MAX_WAKE_RECORDING } else { MAX_RECORDING };
+                if drain(&mut session, &mut pos) || started.elapsed() > limit {
                     break End::Timeout;
+                }
+                if session.hearing_speech() {
+                    last_speech = pos;
+                }
+                if let Start::Wake { checked, .. } = start {
+                    // A command after the wake phrase ends on a short
+                    // pause; a bare "Hey Cosmo" gets longer for the
+                    // command to follow.
+                    let quiet = pos.saturating_sub(last_speech);
+                    let wait = if last_speech > checked { END_SILENCE } else { WAKE_ONLY_WAIT };
+                    if quiet >= wait {
+                        break End::Timeout;
+                    }
                 }
             }
             trigger = triggers.recv() => match trigger {
                 Some(Trigger::Release(at)) if by_key => break End::Released(at),
                 Some(Trigger::Toggle) => break End::Released(Instant::now()),
+                // The key during a wake recording: that recording is an
+                // open mic's and is dropped; the key starts its own.
+                Some(Trigger::Press(at)) if wake => {
+                    session.cancel();
+                    return Outcome::Pressed(at);
+                }
                 // A press while recording by `cosmo listen`, or a stray
                 // release: the recording continues.
                 Some(_) => {}
@@ -366,7 +612,7 @@ async fn record(
                     "hold under the minimum: a tap or shortcut, discarded"
                 );
                 session.cancel();
-                return None;
+                return Outcome::Discarded;
             }
             // Wait out the tail only while speech is still going.
             let deadline = at + MAX_TAIL;
@@ -395,13 +641,13 @@ async fn record(
                 segments = t.segments.len(),
                 "transcript committed"
             );
-            Some((t.text, latency))
+            Outcome::Committed(t.text, latency)
         }
         Err(e) => {
             host.emit(Event::Log {
                 line: format!("transcription failed: {e}"),
             });
-            None
+            Outcome::Discarded
         }
     }
 }

@@ -180,6 +180,7 @@ fn rig(script: Vec<f32>) -> Rig {
         rx,
         Arc::clone(&host) as Arc<dyn Host>,
         Arc::new(AtomicBool::new(false)),
+        None,
     ));
     Rig {
         mic,
@@ -339,4 +340,160 @@ async fn nothing_listens_while_paused() {
     let host = rig.finish().await;
     assert!(host.states.lock().unwrap().is_empty());
     assert!(host.finals.lock().unwrap().is_empty());
+}
+
+// ---- the wake word (phase 7) ----------------------------------------------
+
+/// Kokoro saying `text`, at capture's 16 kHz.
+async fn say(text: &str) -> Vec<f32> {
+    static TTS: tokio::sync::OnceCell<Box<dyn cosmo_tts::VoiceProvider>> =
+        tokio::sync::OnceCell::const_new();
+    let tts = TTS
+        .get_or_init(|| async {
+            cosmo_tts::Registry::with_builtins()
+                .create("kokoro", &cosmo_tts::ProviderInit::default())
+                .expect("kokoro (scripts/fetch-models)")
+        })
+        .await;
+    let pcm = tts.synthesize(text, "af_heart").await.unwrap();
+    // 24 kHz → 16 kHz: a 3-tap low-pass, then linear interpolation.
+    let d = &pcm.data;
+    let smooth: Vec<f32> = (0..d.len())
+        .map(|i| 0.25 * d[i.saturating_sub(1)] + 0.5 * d[i] + 0.25 * d[(i + 1).min(d.len() - 1)])
+        .collect();
+    let step = f64::from(pcm.sample_rate) / RATE as f64;
+    (0..(d.len() as f64 / step) as usize)
+        .map(|k| {
+            let x = k as f64 * step;
+            let (i, f) = (x as usize, x.fract() as f32);
+            smooth[i] * (1.0 - f) + smooth.get(i + 1).copied().unwrap_or(smooth[i]) * f
+        })
+        .collect()
+}
+
+/// A rig whose controller listens for "cosmo".
+fn wake_rig(script: Vec<f32>) -> (Rig, Arc<ears::Wake>) {
+    let models = models();
+    let mic = Mic::start(script);
+    let host = Arc::new(TestHost::default());
+    let (triggers, rx) = mpsc::unbounded_channel();
+    let wake = Arc::new(ears::Wake {
+        phrase: "cosmo".into(),
+        stats: ears::WakeStats::default(),
+    });
+    let task = tokio::spawn(ears::run(
+        Arc::clone(&mic.ring),
+        models,
+        rx,
+        Arc::clone(&host) as Arc<dyn Host>,
+        Arc::new(AtomicBool::new(false)),
+        Some(Arc::clone(&wake)),
+    ));
+    (
+        Rig {
+            mic,
+            host,
+            triggers,
+            task,
+        },
+        wake,
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hey_cosmo_turns_the_rest_into_an_open_mic_command() {
+    let _turn = exclusive().await;
+    let mut seed = 21;
+    let mut script = room(1.0, &mut seed);
+    script.extend(say("Hey Cosmo, pause the music.").await);
+    script.extend(room(2.5, &mut seed));
+    let end = script.len() as f32 / RATE as f32;
+    let (rig, wake) = wake_rig(script);
+    sleep_until(rig.mic.at(end)).await;
+    let host = rig.finish().await;
+
+    let turns = host.turns.lock().unwrap().clone();
+    println!(
+        "turns {turns:?}, last heard {:?}",
+        wake.stats.last.lock().unwrap()
+    );
+    let [(command, source)] = &turns[..] else {
+        panic!("one turn expected: {turns:?}");
+    };
+    assert_eq!(
+        command.to_lowercase().trim_end_matches('.'),
+        "pause the music"
+    );
+    assert_eq!(
+        *source,
+        cosmo_gate::UtteranceSource::OpenMic,
+        "a wake can never confirm"
+    );
+    assert_eq!(wake.stats.wakes.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        *host.states.lock().unwrap(),
+        [State::Listening, State::Idle]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ordinary_speech_never_wakes_and_leaves_nothing() {
+    let _turn = exclusive().await;
+    let mut seed = 22;
+    let mut script = room(0.5, &mut seed);
+    script.extend(clip("0.wav")); // a 7.4 s read sentence
+    script.extend(room(1.0, &mut seed));
+    script.extend(say("I told my brother about the cosmos last night.").await);
+    script.extend(room(1.5, &mut seed));
+    let end = script.len() as f32 / RATE as f32;
+    let (rig, wake) = wake_rig(script);
+    sleep_until(rig.mic.at(end)).await;
+    let host = rig.finish().await;
+
+    assert!(host.turns.lock().unwrap().is_empty());
+    assert!(
+        host.finals.lock().unwrap().is_empty(),
+        "no transcript was even shown"
+    );
+    assert!(
+        host.states.lock().unwrap().is_empty(),
+        "never went to Listening"
+    );
+    assert!(
+        wake.stats.checks.load(Ordering::SeqCst) >= 1,
+        "it did check"
+    );
+    assert_eq!(wake.stats.wakes.load(Ordering::SeqCst), 0);
+    assert!(wake.stats.last.lock().unwrap().is_none(), "nothing kept");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bare_wake_with_nothing_after_it_is_dropped() {
+    let _turn = exclusive().await;
+    let mut seed = 23;
+    let mut script = room(1.0, &mut seed);
+    script.extend(say("Hey Cosmo.").await);
+    script.extend(room(5.5, &mut seed)); // past the 4 s wait for a command
+    let end = script.len() as f32 / RATE as f32;
+    let (rig, wake) = wake_rig(script);
+    sleep_until(rig.mic.at(end)).await;
+    let host = rig.finish().await;
+    assert_eq!(wake.stats.wakes.load(Ordering::SeqCst), 1);
+    assert!(host.turns.lock().unwrap().is_empty(), "no command, no turn");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_key_still_works_with_the_wake_word_on() {
+    let _turn = exclusive().await;
+    let (script, from, to) = love();
+    let (rig, _wake) = wake_rig(script);
+    sleep_until(rig.mic.at(from - 0.2)).await;
+    rig.triggers.send(Trigger::Press(Instant::now())).unwrap();
+    sleep_until(rig.mic.at(to + 0.1)).await;
+    rig.triggers.send(Trigger::Release(Instant::now())).unwrap();
+    let host = rig.finish().await;
+    let turns = host.turns.lock().unwrap().clone();
+    assert_eq!(turns.len(), 1, "{turns:?}");
+    assert!(turns[0].0.to_lowercase().contains("i love you"));
+    assert_eq!(turns[0].1, cosmo_gate::UtteranceSource::KeyHeld);
 }

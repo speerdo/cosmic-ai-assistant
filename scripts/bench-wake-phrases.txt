@@ -1,0 +1,13 @@
+# Wake phrases for scripts/bench-wake's positives (record them with
+# scripts/bench-asr record --list this-file --dir ~/.local/share/cosmo/bench/wake).
+# Say them naturally; vary the pace, and the room if you can.
+Cosmo, pause the music
+Hey Cosmo, open Firefox
+Hey Cosmo
+Cosmo, what time is it
+OK Cosmo, next track
+Hey Cosmo, switch to workspace two
+Cosmo, launch Spotify
+Hey Cosmo, what's using the most memory right now
+Cosmo, maximize this window
+Hey Cosmo, remind me in twenty minutes to check the build

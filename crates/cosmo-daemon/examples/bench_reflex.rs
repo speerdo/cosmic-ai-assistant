@@ -138,6 +138,7 @@ async fn main() {
             rx,
             Arc::clone(&host) as Arc<dyn Host>,
             Arc::new(AtomicBool::new(false)),
+            None,
         ));
         let stop = Arc::new(AtomicBool::new(false));
         let t0 = Instant::now();

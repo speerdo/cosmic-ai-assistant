@@ -385,6 +385,22 @@ impl Engine {
                     if keyboards == 1 { "" } else { "s" }
                 )
             };
+            let wake = match ears.wake() {
+                None => "; wake word off (wake_word: true to use it)".to_owned(),
+                Some(w) => format!(
+                    "; wake word \"{}\" on: {} checks, {} wakes{}",
+                    w.phrase,
+                    w.stats.checks.load(Ordering::Relaxed),
+                    w.stats.wakes.load(Ordering::Relaxed),
+                    w.stats
+                        .last
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .map(|t| format!(", last heard \"{t}\""))
+                        .unwrap_or_default()
+                ),
+            };
             let barge = if self.cfg.barge_in {
                 "; ⚠ barge_in is on: the mic stays open while cosmo speaks, so on \
                  speakers it will hear itself (use a headset, or set barge_in: false)"
@@ -394,7 +410,7 @@ impl Engine {
             return DoctorCheck {
                 name: "ears".into(),
                 ok: models_ok && capture_ok && keyboards > 0 && !self.cfg.barge_in,
-                detail: format!("{capture}; {key}; {models}{barge}"),
+                detail: format!("{capture}; {key}; {models}{wake}{barge}"),
             };
         }
         DoctorCheck {
