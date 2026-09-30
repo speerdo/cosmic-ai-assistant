@@ -142,6 +142,8 @@ everything. It was tested against a throwaway `HOME`: 7 files installed,
 - **See it live**: `scripts/install-dev`, start the daemon and overlay,
   add the applet (Settings → Desktop → Panel → Applets), then hold Right
   Ctrl. Worth checking: the card's position above the dock on each
-  monitor, the Confirm button, and the voice picker's previews.
+  monitor, the Confirm button, the voice picker's previews, the card
+  disappearing at idle (tested in the view model, not yet watched), and a
+  light theme (only the dark one has been seen).
 - Parked by the plan: Kokoro voice blending, after the picker has been
   used.

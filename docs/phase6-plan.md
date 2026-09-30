@@ -46,11 +46,13 @@ nothing.
 ### 6.3 The overlay surface
 
 - [x] Layer surface, anchored bottom-center, no decorations, **no focus
-      steal** (no keyboard interactivity). Hidden when idle.
+      steal** (no keyboard interactivity). Hidden when idle. *(Hiding is
+      covered by the view-model tests; not yet watched live.)*
 - [x] The six states in build order: listening (waveform + live partial) →
       thinking → acting (tool name in plain words) → waiting (pending
       action + confirm/cancel buttons) → speaking → idle.
-- [x] COSMIC theme colours; readable in light and dark.
+- [~] COSMIC theme colours; readable in light and dark. *(Theme colours
+      come from libcosmic; seen only in the user's dark theme so far.)*
 - [~] Redraw discipline: coalesce across each burst of events, and again
       on `wl_surface.frame`. One input change = at most one buffer commit.
       Counted in a test. *(Bursts coalesce and commits are frame-paced and
