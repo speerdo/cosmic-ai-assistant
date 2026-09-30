@@ -162,12 +162,17 @@ struct Rig {
 
 /// `script` starts at t = 0; the controller runs against it.
 fn rig(script: Vec<f32>) -> Rig {
+    // Models first: loading them takes ~2 s for whichever test runs first,
+    // and the mic's clock must not be running meanwhile, or that test's
+    // key presses land late (a 690 ms hold measured as 220 ms and discarded
+    // as a tap).
+    let models = models();
     let mic = Mic::start(script);
     let host = Arc::new(TestHost::default());
     let (triggers, rx) = mpsc::unbounded_channel();
     let task = tokio::spawn(ears::run(
         Arc::clone(&mic.ring),
-        models(),
+        models,
         rx,
         Arc::clone(&host) as Arc<dyn Host>,
         Arc::new(AtomicBool::new(false)),
@@ -251,8 +256,12 @@ async fn preroll_keeps_words_spoken_before_the_press() {
     let host = rig.finish().await;
     let finals = host.finals.lock().unwrap().clone();
     assert!(
-        finals[0].0.to_lowercase().contains("i love you"),
-        "first words lost: {finals:?}"
+        finals
+            .first()
+            .is_some_and(|f| f.0.to_lowercase().contains("i love you")),
+        "first words lost: finals {finals:?}, states {:?}, log {:?}",
+        host.states.lock().unwrap(),
+        host.log.lock().unwrap()
     );
 }
 

@@ -173,7 +173,9 @@ pub struct Engine {
     lock_mode: LockMode,
     logind: Option<LogindLock>,
     /// Combined agent + native tool host (None until the agent connects).
-    tools: Mutex<Option<Arc<DaemonToolHost>>>,
+    tools: Mutex<Option<Arc<dyn ToolHost>>>,
+    /// How many agent tools that host carries, for `doctor`.
+    agent_tools: std::sync::atomic::AtomicUsize,
     /// Conversation history for the reasoning loop (compacted per turn by
     /// keeping only the tail; phase 5 replaces with the Realtime session).
     history: Mutex<Vec<serde_json::Value>>,
@@ -199,6 +201,11 @@ pub struct Engine {
     reflex_calls: std::sync::atomic::AtomicU64,
     /// "I need an API key" has been said this run (it's said once).
     no_key_said: AtomicBool,
+    /// The reasoning client, created on the first reasoning turn (the key
+    /// is resolved then, not at start-up) and kept: its HTTP connection
+    /// stays warm instead of a TLS handshake per turn (phase-5 spec §5.2).
+    /// Async lock: held across the turn, so reasoning turns take turns.
+    reasoner: tokio::sync::Mutex<Option<cosmo_reason::Reasoner>>,
     /// The turn in progress failed for want of a key. Set by the reasoning
     /// path, read and cleared by `utterance` (turns needing reasoning run
     /// one at a time: ears commits one recording at a time).
@@ -222,6 +229,7 @@ impl Engine {
             lock_mode,
             logind,
             tools: Mutex::new(None),
+            agent_tools: std::sync::atomic::AtomicUsize::new(0),
             history: Mutex::new(Vec::new()),
             speech: None,
             speech_absent: "built without the `speech` feature".into(),
@@ -233,6 +241,7 @@ impl Engine {
             reflex: OnceLock::new(),
             reflex_calls: std::sync::atomic::AtomicU64::new(0),
             no_key_said: AtomicBool::new(false),
+            reasoner: tokio::sync::Mutex::new(None),
             no_key_hit: AtomicBool::new(false),
         }
     }
@@ -376,10 +385,16 @@ impl Engine {
                     if keyboards == 1 { "" } else { "s" }
                 )
             };
+            let barge = if self.cfg.barge_in {
+                "; ⚠ barge_in is on: the mic stays open while cosmo speaks, so on \
+                 speakers it will hear itself (use a headset, or set barge_in: false)"
+            } else {
+                ""
+            };
             return DoctorCheck {
                 name: "ears".into(),
-                ok: models_ok && capture_ok && keyboards > 0,
-                detail: format!("{capture}; {key}; {models}"),
+                ok: models_ok && capture_ok && keyboards > 0 && !self.cfg.barge_in,
+                detail: format!("{capture}; {key}; {models}{barge}"),
             };
         }
         DoctorCheck {
@@ -456,14 +471,23 @@ impl Engine {
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let tmux_session = cosmo_config::load()?.tmux_session;
-        *self.tools.lock().unwrap() = Some(Arc::new(DaemonToolHost::new(
+        let host = DaemonToolHost::new(
             Arc::new(host),
             &tmux_session,
             cosmo_tools::announce::Announcer::with_delivery(Arc::new(AnnounceDelivery {
                 speech: self.speech.clone(),
             })),
-        )));
+        );
+        let count = host.agent_tool_count();
+        self.attach_tools(Arc::new(host), count);
         Ok(())
+    }
+
+    /// Register the tool host the reasoning path uses. `connect_tools` does
+    /// this with the MCP agent; tests pass a fake.
+    pub fn attach_tools(&self, host: Arc<dyn ToolHost>, agent_tool_count: usize) {
+        self.agent_tools.store(agent_tool_count, Ordering::SeqCst);
+        *self.tools.lock().unwrap() = Some(host);
     }
 
     /// Refresh the gate's lock state according to the active policy and
@@ -593,8 +617,8 @@ impl Engine {
         let socket_ok = std::path::Path::new(&cosmo_ipc::socket_path()).exists();
         let tools = self.tools.lock().unwrap().clone();
         let (agent_ok, agent_detail) = match tools.as_ref() {
-            Some(host) => {
-                let n = host.agent_tool_count();
+            Some(_) => {
+                let n = self.agent_tools.load(Ordering::SeqCst);
                 (true, format!("agent connected, {n} tools allowlisted"))
             }
             None => (
@@ -774,11 +798,12 @@ impl Engine {
         };
 
         // Key resolution is lazy (first reasoning turn) — a locked keyring
-        // at boot must not have killed the daemon (plan §1.4).
-        let key_source = DefaultKeySource;
-        let mut reasoner =
-            match cosmo_reason::Reasoner::new(Arc::new(self.cfg.clone()), &key_source) {
-                Ok(r) => r,
+        // at boot must not have killed the daemon (plan §1.4). A failure
+        // isn't kept: the next turn tries again.
+        let mut slot = self.reasoner.lock().await;
+        if slot.is_none() {
+            match cosmo_reason::Reasoner::new(Arc::new(self.cfg.clone()), &DefaultKeySource) {
+                Ok(r) => *slot = Some(r),
                 Err(cosmo_reason::ReasonError::NoKey(msg)) => {
                     self.no_key_hit.store(true, Ordering::SeqCst);
                     return cosmo_ipc::TurnResult::Failed { reason: msg };
@@ -788,14 +813,46 @@ impl Engine {
                         reason: e.to_string(),
                     };
                 }
-            };
+            }
+        }
+        let reasoner = slot.as_mut().expect("just created");
+        // What `remember` holds, fresh each turn: a note added last turn
+        // applies to this one (phase-5 spec §5.7). No file is no notes.
+        let memory = tokio::fs::read_to_string(cosmo_tools::memory::memory_path())
+            .await
+            .unwrap_or_default();
+        reasoner.set_memory(&memory);
 
         self.set_state(State::Thinking);
         let mut history = self.history.lock().unwrap().clone();
+        // The reply is spoken as it streams, sentence by sentence (§5.3).
+        let spoken = self.speech.as_ref().map(|s| s.speak_stream());
+        let on_text = |t: &str| {
+            if let Some(stream) = &spoken {
+                stream.push(t);
+            }
+        };
         let outcome = reasoner
-            .turn(&text, &self.gate, tools.as_ref(), &mut history)
+            .turn_streaming(&text, &self.gate, tools.as_ref(), &mut history, &on_text)
             .instrument(turn_span)
             .await;
+        let usage = reasoner.last_usage().clone();
+        drop(slot);
+        if usage.requests > 0 {
+            let _ = self.events.send(Event::Usage {
+                prompt_tokens: usage.prompt_tokens,
+                completion_tokens: usage.completion_tokens,
+                total_tokens: usage.total_tokens,
+                remaining_requests: usage.remaining_requests,
+                remaining_tokens: usage.remaining_tokens,
+            });
+        }
+        // Whatever the outcome, the stream ends here: text already written
+        // (a reply, or words before a held call) is spoken in full.
+        let streamed = spoken.is_some();
+        if let Some(stream) = spoken {
+            stream.finish();
+        }
         // Persist a bounded tail of the history (phase 5 replaces this).
         {
             let mut hist = self.history.lock().unwrap();
@@ -809,11 +866,10 @@ impl Engine {
                 let _ = self.events.send(Event::Reply {
                     text: reply.clone(),
                 });
-                // Spoken in the background: the CLI gets its text now, and
-                // the speech task moves Thinking → Speaking → Idle.
-                match &self.speech {
-                    Some(speech) if !reply.trim().is_empty() => speech.speak(reply.clone()),
-                    _ => self.set_state(State::Idle),
+                // Already being spoken as it streamed; that task moves
+                // Thinking → Speaking → Idle. The CLI gets its text now.
+                if !streamed {
+                    self.set_state(State::Idle);
                 }
                 cosmo_ipc::TurnResult::Completed {
                     reply,

@@ -345,6 +345,10 @@ async fn record(
     let released = match end {
         End::Released(at) => {
             if by_key && at.duration_since(pressed) < MIN_HOLD {
+                tracing::debug!(
+                    held_ms = at.duration_since(pressed).as_millis() as u64,
+                    "hold under the minimum: a tap or shortcut, discarded"
+                );
                 session.cancel();
                 return None;
             }

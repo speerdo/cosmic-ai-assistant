@@ -129,8 +129,12 @@ fn attach_ears(
     cfg: &cosmo_config::Config,
 ) {
     // No player means nothing cosmo says can reach the mic: a gate that
-    // never closes is correct then.
-    let gate = gate.unwrap_or_default();
+    // never closes is correct then. Barge-in asks for exactly that on
+    // purpose (headsets; `doctor` warns).
+    let gate = match gate {
+        Some(gate) if !cfg.barge_in => gate,
+        _ => cosmo_audio::SpeechGate::default(),
+    };
     let host: Arc<dyn ears::Host> = Arc::clone(engine) as _;
     match ears::start(host, gate, cfg) {
         Ok(ears) => {

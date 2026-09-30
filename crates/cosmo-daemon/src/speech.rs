@@ -285,6 +285,111 @@ impl Speech {
         }
     }
 
+    /// Speak a reply **as it is written** (phase-5 spec §5.3): push text
+    /// into the returned stream as it arrives; each complete sentence is
+    /// synthesized and queued while the next is still being written.
+    /// Playback is gapless, so later sentences normally synthesize while
+    /// earlier ones play. Dropping the stream (or [`SpeechStream::finish`])
+    /// speaks whatever is left. A new turn ([`Speech::interrupt`]) silences
+    /// it like any reply.
+    pub fn speak_stream(self: &Arc<Self>) -> SpeechStream {
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            let started = Instant::now();
+            let mut pending = String::new();
+            let mut playing = Vec::new();
+            let mut first = true;
+            let mut closed = false;
+            let mut result = Ok(());
+            while !closed {
+                match rx.recv().await {
+                    Some(text) => pending.push_str(&text),
+                    None => closed = true,
+                }
+                // Every piece but the last is a finished sentence; the last
+                // may still be growing, unless the stream has ended.
+                let mut parts = cosmo_tts::split(&pending);
+                let rest = if closed {
+                    String::new()
+                } else {
+                    parts.pop().unwrap_or_default()
+                };
+                if parts.is_empty() {
+                    continue;
+                }
+                pending = rest;
+                for sentence in parts {
+                    if this.generation.load(Ordering::SeqCst) != generation {
+                        return; // a newer turn took over
+                    }
+                    match this
+                        .queue_sentence(&sentence, generation, first, started)
+                        .await
+                    {
+                        Ok(Some(done)) => {
+                            first = false;
+                            playing.push(done);
+                        }
+                        Ok(None) => return,
+                        Err(e) => {
+                            result = Err(e);
+                            break;
+                        }
+                    }
+                }
+            }
+            for done in playing {
+                let _ = done.await;
+            }
+            if let Err(err) = &result {
+                tracing::warn!(error = %err, "streamed reply not fully spoken");
+            }
+            *this.last_error.lock().unwrap() = result.err();
+            this.state
+                .set_if_current(&this.generation, generation, State::Idle);
+        });
+        SpeechStream { tx: Some(tx) }
+    }
+
+    /// Synthesize one sentence and queue it; `None` if a newer turn began
+    /// meanwhile. The first sentence moves the state to `Speaking` and is
+    /// what time-to-first-audio measures.
+    async fn queue_sentence(
+        self: &Arc<Self>,
+        sentence: &str,
+        generation: u64,
+        first: bool,
+        started: Instant,
+    ) -> Result<Option<futures::future::BoxFuture<'static, Result<Outcome, AudioError>>>, String>
+    {
+        let voice = self.voice();
+        let provider = self.provider(&voice).await.map_err(|e| e.to_string())?;
+        let pcm = provider
+            .synthesize(sentence, &voice.voice)
+            .await
+            .map_err(|e| e.to_string())?;
+        let clip = Clip::new(pcm.sample_rate, pcm.data).map_err(|e| e.to_string())?;
+        let admitted = if first {
+            self.state
+                .set_if_current(&self.generation, generation, State::Speaking)
+        } else {
+            self.generation.load(Ordering::SeqCst) == generation
+        };
+        if !admitted {
+            return Ok(None);
+        }
+        if first {
+            *self.last_ttfa.lock().unwrap() = Some((started.elapsed(), clip.duration()));
+            tracing::info!(
+                ttfa_ms = started.elapsed().as_millis() as u64,
+                "first sentence queued"
+            );
+        }
+        Ok(Some(self.sink.play(clip)))
+    }
+
     /// Play a cached reflex phrase by key — a buffer push, no synthesis.
     /// Does not touch the daemon state: an ack is short and the caller's
     /// state (Acting, Waiting, …) is the one that matters. Returns `false`
@@ -624,6 +729,25 @@ fn unknown_voice(key: &VoiceKey) -> String {
             format!(" --provider {}", key.provider)
         }
     )
+}
+
+/// Text in, speech out, sentence by sentence (see [`Speech::speak_stream`]).
+pub struct SpeechStream {
+    tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+}
+
+impl SpeechStream {
+    /// More of the reply.
+    pub fn push(&self, text: &str) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(text.to_owned());
+        }
+    }
+
+    /// The reply is complete: speak what's left.
+    pub fn finish(mut self) {
+        self.tx = None;
+    }
 }
 
 #[cfg(test)]
@@ -1188,5 +1312,73 @@ mod tests {
         assert_eq!(next_state(&mut rx).await, State::Idle);
         let (_, detail) = speech.doctor();
         assert!(detail.contains("last reply: first audio"), "{detail}");
+    }
+
+    // ---- sentence-streamed replies (phase-5 spec §5.3) ----------------------
+
+    /// Wait until `n` clips have been queued; their lengths (one sample per
+    /// character with `FakeVoice`) say which sentences they were.
+    async fn played(sink: &FakeSink, n: usize) -> Vec<usize> {
+        for _ in 0..200 {
+            let p = sink.played.lock().unwrap().clone();
+            if p.len() >= n {
+                return p;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("only {:?} played", sink.played.lock().unwrap());
+    }
+
+    #[tokio::test]
+    async fn each_sentence_plays_as_soon_as_it_is_complete() {
+        let (speech, sink, state, _rx) = setup();
+        let stream = speech.speak_stream();
+        stream.push("Hello there. How ar");
+        // The first sentence is out while the reply is still streaming.
+        assert_eq!(played(&sink, 1).await, ["Hello there.".len()]);
+        assert_eq!(state.get(), State::Speaking);
+        stream.push("e you? Fi");
+        assert_eq!(
+            played(&sink, 2).await,
+            ["Hello there.".len(), "How are you?".len()]
+        );
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(
+            sink.played.lock().unwrap().len(),
+            2,
+            "\"Fi\" waits: it may still grow"
+        );
+        stream.push("ne, thanks");
+        stream.finish();
+        assert_eq!(played(&sink, 3).await[2], "Fine, thanks".len());
+        // Drain the clips one by one (a Notify holds one stored permit, so
+        // each release goes to a clip that is already waiting).
+        for _ in 0..200 {
+            if state.get() == State::Idle {
+                return;
+            }
+            sink.release.notify_one();
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("never went Idle: {:?}", state.get());
+    }
+
+    #[tokio::test]
+    async fn a_new_turn_silences_the_rest_of_a_streamed_reply() {
+        let (speech, sink, _state, _rx) = setup();
+        let stream = speech.speak_stream();
+        // A sentence goes out once text after it arrives: until then it
+        // might still grow ("…Mr." + " Smith").
+        stream.push("First one. Sec");
+        assert_eq!(played(&sink, 1).await.len(), 1);
+        speech.interrupt();
+        stream.push("Second one. Third one.");
+        stream.finish();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            sink.played.lock().unwrap().len(),
+            1,
+            "nothing after the interrupt"
+        );
     }
 }

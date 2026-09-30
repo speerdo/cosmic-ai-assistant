@@ -63,6 +63,10 @@ pub struct Config {
     /// Threads for the offline model, 1–4: past four it stops getting
     /// faster (blueprint §3.3).
     pub offline_threads: u8,
+    /// Barge-in (phase 5): keep the mic open while cosmo speaks. Off by
+    /// default: on speakers cosmo hears its own voice (blueprint §8). Only
+    /// for headsets; `doctor` warns while it's on.
+    pub barge_in: bool,
     /// Log filter string, e.g. `cosmo=debug`. Overridden by `RUST_LOG`.
     pub log_filter: String,
 }
@@ -89,6 +93,7 @@ impl Default for Config {
             asr_offline_model: String::new(),
             asr_threads: 2,
             offline_threads: 4,
+            barge_in: false,
             log_filter: "info".into(),
         }
     }
@@ -328,6 +333,10 @@ pub fn commented_default() -> String {
     // asr_threads: {asr_threads},
     // offline_threads: {offline_threads},
 
+    // Keep the mic open while cosmo speaks (barge-in). Headsets only: on
+    // speakers cosmo would hear, and transcribe, its own voice.
+    // barge_in: {barge_in},
+
     // Log filter, e.g. "cosmo=debug". RUST_LOG wins when set.
     // log_filter: "{log_filter}",
 )
@@ -353,6 +362,7 @@ pub fn commented_default() -> String {
         asr_offline_model = d.asr_offline_model,
         asr_threads = d.asr_threads,
         offline_threads = d.offline_threads,
+        barge_in = d.barge_in,
         log_filter = d.log_filter,
     )
 }
