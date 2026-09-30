@@ -27,10 +27,14 @@ const RATE: usize = CAPTURE_RATE as usize;
 const PREROLL: Duration = Duration::from_millis(750);
 const TAIL: Duration = Duration::from_millis(300);
 
+/// A committed turn: when, what was heard, and the reflex match (intent in
+/// words, time to match), if any.
+type Turn = (Instant, String, Option<(String, Duration)>);
+
 /// Records when each hop happened.
 struct Clock {
     matcher: Matcher,
-    turn: Mutex<Option<(Instant, String, Option<(String, Duration)>)>>,
+    turn: Mutex<Option<Turn>>,
 }
 
 impl Host for Clock {
@@ -98,8 +102,12 @@ async fn main() {
             let home = std::env::var_os("HOME").expect("HOME");
             std::path::PathBuf::from(home).join(".local/share/cosmo/bench/commands")
         });
-    let manifest = std::fs::read_to_string(dir.join("manifest.tsv"))
-        .unwrap_or_else(|_| panic!("no recordings in {}: scripts/bench-asr record", dir.display()));
+    let manifest = std::fs::read_to_string(dir.join("manifest.tsv")).unwrap_or_else(|_| {
+        panic!(
+            "no recordings in {}: scripts/bench-asr record",
+            dir.display()
+        )
+    });
 
     let t = Instant::now();
     let stt = tokio::task::spawn_blocking(|| Stt::load(&SttConfig::defaults().unwrap()))
@@ -112,7 +120,9 @@ async fn main() {
     let mut transcript_ms = Vec::new();
     println!("{:<62} {:>9} {:>7}  result", "said", "→commit", "→ack");
     for line in manifest.lines() {
-        let Some((file, said)) = line.split_once('\t') else { continue };
+        let Some((file, said)) = line.split_once('\t') else {
+            continue;
+        };
         let clip = read_wav(&dir.join(file));
         let secs = clip.len() as f64 / RATE as f64;
 

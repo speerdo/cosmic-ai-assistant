@@ -128,3 +128,50 @@ numbers.
 - The phase-1 `Event::ToolStarted` / `ToolFinished` were defined but never
   emitted. Reflex calls are the first to emit them, for the overlay
   (phase 6).
+
+## §2. Hotwords curated; failures answered aloud (spec §4.5, §4.7; 2026-09-29)
+
+### 2a. Curation: kept on principle, not on a measured win
+
+The rule: bias rare names the model spells badly on its own, not short
+ordinary-looking ones. So single-word app names of 6 letters or fewer
+("Zoom", "Claude", "Tasks", "Help") are no longer biased, and a small list
+of rare domain words ("PipeWire") is. The matcher still knows every app.
+One deviation from the spec: **the reflex grammar's words aren't added**.
+They're ordinary English the model already gets right, and biasing
+ordinary words is what caused the phase-3 insertions.
+
+Measured on the user's 30 recordings, all runs with §1d's VAD change:
+
+| Pairing | every app name | curated | phase 3 (every name, old VAD) |
+|---|---|---|---|
+| A (nemotron + tdt-0.6b-v2) | 10.5% | 10.5% | 14.0% |
+| **B (default)** | **1.8%** | **1.8%** | 1.8% |
+| G (tdt-110m) | 10.5% | 12.3% | 12.3% |
+
+- **The hallucinations were fixed by §1d, not by curation.** With every
+  app name still biased, A's "Mute" → "Zoom Zoom." is gone under the
+  shorter VAD debounce, which changes how each segment is trimmed.
+- **Curation makes no measurable difference to the default.** G lost one
+  word ("Next track" → "The next track."): one clip, within noise.
+- **Kept anyway**: a smaller biasing set means fewer candidates to insert
+  as more apps get installed, and it costs the default nothing here. This
+  is a judgement, recorded as one. `bench-asr` keeps both
+  (`COSMO_HOTWORDS=all`), so it can be re-measured on new recordings.
+
+**A method slip, caught.** The first A/B ran both halves on the old
+binary: the edit script had failed partway, and the build-then-bench
+pipeline didn't check the build's exit status. The two identical tables
+and the unchanged report header gave it away. Both measurements were
+redone. Builds before measurements are now checked explicitly.
+
+### 2b. Failed spoken turns are answered aloud (§4.5)
+
+A spoken turn that escalates and fails (no agent, no API key) used to fail
+silently: no terminal waits on it. Now it's answered with a cached
+phrase: "I need an API key for anything beyond simple commands." the
+first time a key is missing (once per run), otherwise "I can't do that
+right now." The no-key case is flagged by the reasoning path itself, not
+matched from the error text, whose wording varies ("no key stored",
+"keyring locked", "keyring unavailable"). Typed turns are unchanged: the
+CLI prints the reason. Two new phrases, eight in all.

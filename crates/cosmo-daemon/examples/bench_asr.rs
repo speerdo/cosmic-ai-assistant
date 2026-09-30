@@ -112,6 +112,10 @@ fn main() {
     }
 }
 
+fn all_hotwords() -> bool {
+    std::env::var("COSMO_HOTWORDS").as_deref() == Ok("all")
+}
+
 fn default_dir() -> PathBuf {
     let data = std::env::var_os("XDG_DATA_HOME")
         .filter(|v| !v.is_empty())
@@ -322,10 +326,12 @@ fn run(dir: &Path, only: Option<&str>, fast: bool, score: Option<&str>) {
         },
         str::to_owned,
     );
-    report.insert_str(
-        0,
-        &format!("Hotwords: installed app names, score {score}.\n\n"),
-    );
+    let set = if all_hotwords() {
+        "every installed app name"
+    } else {
+        "curated (phase 4: rare app names + domain words)"
+    };
+    report.insert_str(0, &format!("Hotwords: {set}, score {score}.\n\n"));
     println!("\n{report}");
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -456,12 +462,16 @@ fn one(label: &str, dir: &Path, fast: bool, score: Option<f32>) {
     let load_s = t.elapsed().as_secs_f64();
     let (rss_loaded_mb, _) = memory_mb();
 
-    let mut apps = cosmo_stt::hotwords::Hotwords::new();
-    apps.add(
-        cosmo_stt::hotwords::desktop_apps()
-            .iter()
-            .map(|a| a.name.as_str()),
-    );
+    // `COSMO_HOTWORDS=all` biases every app name, as before phase 4's
+    // curation, for comparison.
+    let installed = cosmo_stt::hotwords::desktop_apps();
+    let apps = if all_hotwords() {
+        let mut all = cosmo_stt::hotwords::Hotwords::new();
+        all.add(installed.iter().map(|a| a.name.as_str()));
+        all
+    } else {
+        cosmo_stt::hotwords::curated(&installed)
+    };
     let apps = apps.for_app(None);
 
     let rt = tokio::runtime::Builder::new_current_thread()

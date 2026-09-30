@@ -53,6 +53,12 @@ pub fn default_phrases() -> Vec<Phrase> {
         ("confirm-hold", "That one needs your confirmation."),
         // Phase 4: a spoken confirm heard without the trigger key held.
         ("confirm-needs-key", "Hold the key while you confirm."),
+        // Phase 4: a spoken turn that escalated and failed.
+        (
+            "err-no-key",
+            "I need an API key for anything beyond simple commands.",
+        ),
+        ("err-cant", "I can't do that right now."),
     ]
     .into_iter()
     .map(|(k, t)| Phrase::new(k, t))

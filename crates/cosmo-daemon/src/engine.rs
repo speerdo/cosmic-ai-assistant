@@ -197,6 +197,12 @@ pub struct Engine {
     reflex: OnceLock<crate::reflex::Reflex>,
     /// Numbers reflex tool calls for their events.
     reflex_calls: std::sync::atomic::AtomicU64,
+    /// "I need an API key" has been said this run (it's said once).
+    no_key_said: AtomicBool,
+    /// The turn in progress failed for want of a key. Set by the reasoning
+    /// path, read and cleared by `utterance` (turns needing reasoning run
+    /// one at a time: ears commits one recording at a time).
+    no_key_hit: AtomicBool,
 }
 
 impl Engine {
@@ -220,20 +226,14 @@ impl Engine {
             speech: None,
             speech_absent: "built without the `speech` feature".into(),
             #[cfg(feature = "ears")]
-            hotwords: {
-                let mut h = cosmo_stt::hotwords::Hotwords::new();
-                h.add(
-                    cosmo_stt::hotwords::desktop_apps()
-                        .iter()
-                        .map(|a| a.name.as_str()),
-                );
-                h
-            },
+            hotwords: cosmo_stt::hotwords::curated(&cosmo_stt::hotwords::desktop_apps()),
             #[cfg(feature = "ears")]
             ears: OnceLock::new(),
             ears_absent: OnceLock::new(),
             reflex: OnceLock::new(),
             reflex_calls: std::sync::atomic::AtomicU64::new(0),
+            no_key_said: AtomicBool::new(false),
+            no_key_hit: AtomicBool::new(false),
         }
     }
 
@@ -701,6 +701,28 @@ impl Engine {
     /// that may confirm: gate invariant #5); everything else runs the
     /// reasoning tool loop.
     pub async fn utterance(&self, text: String, source: UtteranceSource) -> TurnResult {
+        let result = self.turn_inner(text, source).await;
+        // A typed turn's failure is printed by the CLI. A spoken one has no
+        // terminal waiting on it, so it is answered aloud (spec §4.5).
+        let no_key = self.no_key_hit.swap(false, Ordering::SeqCst);
+        if source != UtteranceSource::Typed && matches!(result, TurnResult::Failed { .. }) {
+            self.say_failure(no_key);
+        }
+        result
+    }
+
+    /// The spoken answer to a failed spoken turn: why, the first time it's
+    /// a missing API key; a short "can't" otherwise.
+    fn say_failure(&self, no_key: bool) {
+        let Some(speech) = &self.speech else { return };
+        if no_key && !self.no_key_said.swap(true, Ordering::SeqCst) {
+            speech.play_phrase("err-no-key");
+        } else {
+            speech.play_phrase("err-cant");
+        }
+    }
+
+    async fn turn_inner(&self, text: String, source: UtteranceSource) -> TurnResult {
         if self.paused.load(Ordering::SeqCst) {
             return cosmo_ipc::TurnResult::Failed {
                 reason: "daemon is paused (cosmo toggle to resume)".into(),
@@ -758,6 +780,7 @@ impl Engine {
             match cosmo_reason::Reasoner::new(Arc::new(self.cfg.clone()), &key_source) {
                 Ok(r) => r,
                 Err(cosmo_reason::ReasonError::NoKey(msg)) => {
+                    self.no_key_hit.store(true, Ordering::SeqCst);
                     return cosmo_ipc::TurnResult::Failed { reason: msg };
                 }
                 Err(e) => {
@@ -826,6 +849,7 @@ impl Engine {
                 }
             }
             Err(cosmo_reason::ReasonError::NoKey(msg)) => {
+                self.no_key_hit.store(true, Ordering::SeqCst);
                 self.set_state(State::Idle);
                 cosmo_ipc::TurnResult::Failed { reason: msg }
             }

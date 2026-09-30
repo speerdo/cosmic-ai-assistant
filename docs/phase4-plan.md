@@ -6,8 +6,9 @@
 **Status:** §4.1 done 2026-09-29 (the spoken-confirm path is closed and
 tested). §4.2–§4.4 done 2026-09-29: transcripts are turns, and reflex
 verbs run live (window verbs in under 1 ms over a persistent connection).
-§4.6 measured 2026-09-29 (findings §1d). Next: §4.5's no-key message,
-§4.7 hotwords.
+§4.6 measured 2026-09-29 (findings §1d). §4.5 and §4.7 done 2026-09-29
+(findings §2). **Open: the user trying reflex live** (it needs the daemon
+restarted on this build), then phase 4 closes.
 
 Goal: **a spoken command runs locally, with a cached spoken ack, in under
 150 ms**, and anything reflex can't do safely goes to reasoning. Transcripts
@@ -127,7 +128,11 @@ stop being display-only: they become turns.
 - [x] Below the confidence threshold → the reasoning path with the
       transcript. A reflex match whose action **fails** → also escalate,
       rather than report the failure. *(Tested through the engine.)*
-- [ ] Without an API key, the escalation says so once, spoken, and logs.
+- [x] Without an API key, the escalation says so once, spoken, and logs.
+      *(Any failed **spoken** turn is now answered aloud: "I need an API
+      key for anything beyond simple commands." the first time a key is
+      missing, else "I can't do that right now." Typed turns are printed
+      by the CLI, as before.)*
 
 ### 4.6 Acks and latency
 
@@ -142,11 +147,18 @@ stop being display-only: they become turns.
 
 ### 4.7 Hotwords, curated
 
-- [ ] The reflex vocabulary joins the list. App names that are ordinary
+- [x] ~~The reflex vocabulary joins the list.~~ App names that are ordinary
       English words or very short ("Zoom", "Claude", "Tasks", "Help") are
-      dropped from biasing; the matcher still knows them.
-- [ ] Re-run `bench-asr` on the user's recordings to confirm the
-      hallucinations are gone and nothing regressed.
+      dropped from biasing; the matcher still knows them. *(Deviation, on
+      evidence: the reflex grammar's words are ordinary English the model
+      already gets right, and biasing ordinary words is what caused the
+      insertions, so they are not added. Biased: single-word app names of
+      7+ letters, multi-word names, and rare domain words ("PipeWire").
+      Findings §2.)*
+- [x] Re-run `bench-asr` on the user's recordings to confirm the
+      hallucinations are gone and nothing regressed. *(Gone, but because
+      of §4.6's VAD change; curation itself measured neutral for the
+      default (1.8% either way). Kept on principle; findings §2a.)*
 
 ## Not in phase 4
 

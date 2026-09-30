@@ -104,6 +104,36 @@ pub fn clean(phrase: &str) -> Option<String> {
     (ok && lettered).then(|| words.join(" "))
 }
 
+/// Rare words cosmo is asked about that aren't app names: biased like the
+/// rarer app names. The bench heard "PipeWire" as "pipe wire".
+pub const DOMAIN_WORDS: &[&str] = &["PipeWire"];
+
+/// Whether an app name is worth biasing toward (phase-4 spec §4.7).
+///
+/// Biasing helps with names the model spells badly on its own ("Spotube",
+/// "KeePassXC"). It hurts with short ordinary-looking ones: on the user's
+/// recordings, app-name hotwords turned "Mute" into "Zoom Zoom." and
+/// "Launch LibreWolf" into "Claude LibreWolf." (phase-3 findings §6e).
+/// So single-word names of six letters or fewer aren't biased; the reflex
+/// matcher still knows them.
+pub fn worth_biasing(name: &str) -> bool {
+    let words: Vec<&str> = name.split_whitespace().collect();
+    !(words.len() == 1 && words[0].chars().count() <= 6)
+}
+
+/// The biasing set cosmo uses: [`DOMAIN_WORDS`] plus the installed app
+/// names [`worth_biasing`] keeps.
+pub fn curated(apps: &[DesktopApp]) -> Hotwords {
+    let mut h = Hotwords::new();
+    h.add(DOMAIN_WORDS.iter().copied());
+    h.add(
+        apps.iter()
+            .map(|a| a.name.as_str())
+            .filter(|n| worth_biasing(n)),
+    );
+    h
+}
+
 /// An installed application, from its `.desktop` file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopApp {
@@ -258,6 +288,22 @@ mod tests {
             "Downloads\nFirefox\nSpotube\nTrash"
         );
         assert_eq!(h.len(), 5);
+    }
+
+    #[test]
+    fn short_single_word_names_are_not_biased() {
+        for hallucinated in ["Zoom", "Claude", "Tasks", "Help"] {
+            assert!(!worth_biasing(hallucinated), "{hallucinated}");
+        }
+        for rare in [
+            "Spotube",
+            "KeePassXC",
+            "Thunderbird",
+            "LibreWolf",
+            "COSMIC Files",
+        ] {
+            assert!(worth_biasing(rare), "{rare}");
+        }
     }
 
     #[test]
