@@ -112,9 +112,11 @@ stop being display-only: they become turns.
       `zcosmic_toplevel_manager` v4, workspaces through `ext_workspace`.
       Commands in 0.6–0.9 ms. Windows are matched by `.desktop` id or
       `StartupWMClass`.)*
-- [ ] **Not reflex:** closing windows, volume, anything touching files,
+- [x] **Not reflex:** closing windows, volume, anything touching files,
       terminals or settings. Those escalate to reasoning, where the gate
-      applies.
+      applies. *(No `Intent` exists for them; `everything_else_escalates`
+      and the engine's `anything_else_goes_straight_to_reasoning` assert
+      it on the user's own lines.)*
 - [x] A gate integration test: every reflex verb is `Allow`, and no deny or
       hold verb is reachable from reflex. *(`cosmo-reflex/tests/gate.rs`:
       an exhaustive list of `Intent` variants that fails to compile when a
