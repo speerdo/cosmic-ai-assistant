@@ -9,8 +9,14 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+# The overlay's and applet's client (client.rs): tokio, no daemon code.
+client = ["dep:tokio", "dep:thiserror"]
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+tokio = { workspace = true, optional = true, features = ["net", "io-util", "sync", "time", "rt", "macros"] }
+thiserror = { workspace = true, optional = true }
 
 [dev-dependencies]

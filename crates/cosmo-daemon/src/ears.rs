@@ -37,6 +37,8 @@ pub const MAX_TAIL: Duration = Duration::from_millis(200);
 /// Holds shorter than this are taps or Right Ctrl shortcuts, not
 /// utterances (findings §3a): discarded, never transcribed.
 pub const MIN_HOLD: Duration = Duration::from_millis(300);
+/// Samples per `Event::Level`: 50 ms at 16 kHz, 20 readings a second.
+const LEVEL_WINDOW: usize = 800;
 /// How often the ring is drained into the session.
 const POLL: Duration = Duration::from_millis(30);
 /// Hard cap on one recording, beyond the silence backstop.
@@ -303,12 +305,26 @@ async fn record(
 
     let started = Instant::now();
     let mut tick = tokio::time::interval(POLL);
+    // The waveform's level (phase 6): RMS over each ~50 ms of audio.
+    let level = std::sync::Mutex::new((0.0f64, 0usize));
     let drain = |session: &mut cosmo_stt::Session, pos: &mut u64| -> bool {
         let (from, samples) = ring.read(*pos, ring.now());
         if from > *pos {
             tracing::warn!(lost = from - *pos, "recording fell behind the ring");
         }
         *pos = from + samples.len() as u64;
+        {
+            let mut acc = level.lock().unwrap();
+            for &x in &samples {
+                acc.0 += f64::from(x) * f64::from(x);
+                acc.1 += 1;
+                if acc.1 >= LEVEL_WINDOW {
+                    let rms = (acc.0 / acc.1 as f64).sqrt() as f32;
+                    host.emit(Event::Level { rms });
+                    *acc = (0.0, 0);
+                }
+            }
+        }
         let mut backstop = false;
         for e in session.push(&samples) {
             match e {

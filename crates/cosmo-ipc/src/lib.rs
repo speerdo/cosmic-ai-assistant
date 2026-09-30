@@ -29,6 +29,9 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "client")]
+pub mod client;
+
 /// Socket file name under `$XDG_RUNTIME_DIR`.
 pub const SOCKET_NAME: &str = "cosmo.sock";
 
@@ -323,6 +326,9 @@ pub enum Event {
     },
     /// Free-form progress line.
     Log { line: String },
+    /// The mic's level while listening (phase 6), ~20 a second, for the
+    /// overlay's waveform: RMS of the last ~50 ms, 0–1.
+    Level { rms: f32 },
     /// Speech recognition (phase 3). Partials (`final: false`) are the
     /// streaming model's text so far and replace the previous partial; one
     /// final (`final: true`) ends each recording with the committed text.

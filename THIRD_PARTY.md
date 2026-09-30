@@ -20,11 +20,12 @@ worth naming:
 
 | Crate | License | Note |
 |---|---|---|
-| `libcosmic` (applet only) | MPL-2.0 | File-level copyleft: fine to link; modifications to its own files would have to be shared. cosmo doesn't modify it. |
+| `libcosmic` (overlay, applet) and its `cosmic-config`, `cosmic-theme` | MPL-2.0 | File-level copyleft: fine to link; modifications to its own files would have to be shared. cosmo doesn't modify it. Its iced fork, winit fork, `cryoglyph`, `softbuffer`, `smithay-clipboard`, `window_clipboard` and `freedesktop-icons` are MIT/Apache-2.0; `dbus-settings-bindings` is MPL-2.0; its `cosmic-protocols` revision (c0cff4d) is **MIT**. |
+| `cosmic-panel-config`, `xdg-shell-wrapper-config` (**`cosmo-applet` only**) | **GPL-3.0-only** | Pulled in by libcosmic's `applet` feature; every COSMIC panel applet links them. **The user chose a real panel applet on 2026-09-30**, so the `cosmo-applet` binary, as distributed, carries GPL-3.0 terms (its source stays MIT, which is GPL-compatible). `cosmod`, `cosmo` and `cosmo-overlay` don't link them: `cargo tree` checked. |
 | `webpki-roots`, `webpki-root-certs` | CDLA-Permissive-2.0 | Permissive data license (Mozilla's CA list). |
 | `r-efi` | MIT OR Apache-2.0 OR LGPL-2.1+ | Used under MIT/Apache. |
 
-**Removed on 2026-09-29:** `cosmic-protocols`, which is GPL-3.0-only.
+**Removed on 2026-09-29:** `cosmic-protocols` **0.2.0 from crates.io**, which is GPL-3.0-only (the git revision libcosmic uses since is MIT).
 `cosmo-focus` now generates its own bindings (see "Vendored" below).
 
 ### Native libraries (heavy tier: features `kokoro`, `sherpa`, `speech`, `ears`)
@@ -82,6 +83,8 @@ sherpa's GitHub releases.
 
 ## Before anything is packaged (phase 8)
 
+- `cosmo-applet`'s package must say it's GPL-3.0 as distributed, and ship
+  (or point to) the source, as the GPL requires.
 - A binary distribution must carry the license texts and notices of what
   it links: the permissive licenses above require that much. Generate
   them from the dependency graph (for example with `cargo about`) rather

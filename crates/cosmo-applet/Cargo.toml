@@ -8,3 +8,12 @@ repository.workspace = true
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "cosmo-applet"
+path = "src/main.rs"
+
+[dependencies]
+libcosmic = { workspace = true, features = ["applet", "tokio", "wayland"] }
+cosmo-ipc = { workspace = true, features = ["client"] }
+futures.workspace = true

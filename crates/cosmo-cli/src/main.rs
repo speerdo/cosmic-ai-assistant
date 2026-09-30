@@ -217,7 +217,10 @@ fn print_event(event: &Event) {
             r#final: true,
             ..
         } => println!("[heard] {text}"),
-        Event::Usage { .. } | Event::Log { .. } | Event::Transcript { .. } => {}
+        Event::Usage { .. }
+        | Event::Log { .. }
+        | Event::Transcript { .. }
+        | Event::Level { .. } => {}
     }
 }
 

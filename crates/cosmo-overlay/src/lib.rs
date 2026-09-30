@@ -9,3 +9,6 @@
 //! single change produces, and again on `wl_surface.frame` — so one input is
 //! at most one buffer. Degrades to notifications where layer shell is absent
 //! (GNOME).
+
+pub mod notify;
+pub mod view;

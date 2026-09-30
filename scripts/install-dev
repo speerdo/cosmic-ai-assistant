@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# Install cosmo for the current user, from this checkout (phase 6; proper
+# packages are phase 8).
+#
+#   scripts/install-dev              # build (release) and install
+#   scripts/install-dev --no-build   # install what's already built
+#   scripts/install-dev --uninstall  # remove everything this installs
+#
+# Installs:
+#   ~/.local/bin/{cosmod,cosmo,cosmo-overlay,cosmo-applet}
+#   ~/.config/systemd/user/cosmo.service      the daemon (not enabled: see below)
+#   ~/.config/autostart/…CosmoOverlay.desktop the overlay, at login
+#   ~/.local/share/applications/…CosmoApplet.desktop
+#                                              the panel applet (add it in
+#                                              Settings → Desktop → Panel → Applets)
+#
+# Nothing is started or enabled for you. At the end it prints the commands.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$HOME/.local/bin"
+UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+AUTOSTART="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
+APPS="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+APPLET_ID="io.github.speerdo.CosmoApplet"
+OVERLAY_ID="io.github.speerdo.CosmoOverlay"
+BINARIES=(cosmod cosmo cosmo-overlay cosmo-applet)
+
+build=1
+case "${1:-}" in
+    --no-build) build=0 ;;
+    --uninstall)
+        for b in "${BINARIES[@]}"; do rm -fv "$BIN/$b"; done
+        rm -fv "$UNIT_DIR/cosmo.service" "$AUTOSTART/$OVERLAY_ID.desktop" "$APPS/$APPLET_ID.desktop"
+        echo "removed; if the daemon was enabled: systemctl --user disable --now cosmo"
+        exit 0
+        ;;
+    "") ;;
+    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+esac
+
+if (( build )); then
+    [[ -d "$ROOT/.native" ]] || { echo "run scripts/fetch-native first" >&2; exit 1; }
+    (cd "$ROOT" && cargo build --release -p cosmo-daemon --features ears --bin cosmod \
+        && cargo build --release -p cosmo-cli -p cosmo-overlay -p cosmo-applet)
+fi
+for b in "${BINARIES[@]}"; do
+    [[ -x "$ROOT/target/release/$b" ]] || { echo "not built: target/release/$b" >&2; exit 1; }
+done
+
+mkdir -p "$BIN" "$UNIT_DIR" "$AUTOSTART" "$APPS"
+for b in "${BINARIES[@]}"; do
+    install -m 0755 "$ROOT/target/release/$b" "$BIN/$b"
+done
+
+cat >"$UNIT_DIR/cosmo.service" <<UNIT
+[Unit]
+Description=cosmo voice assistant daemon
+PartOf=graphical-session.target
+After=graphical-session.target pipewire.service
+
+[Service]
+ExecStart=$BIN/cosmod
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target
+UNIT
+
+# Absolute paths: the panel and the session don't necessarily have
+# ~/.local/bin on their PATH.
+cat >"$AUTOSTART/$OVERLAY_ID.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=cosmo overlay
+Comment=cosmo's on-screen face
+Exec=$BIN/cosmo-overlay
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+DESKTOP
+
+cat >"$APPS/$APPLET_ID.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=cosmo
+Comment=cosmo voice assistant
+Exec=$BIN/cosmo-applet
+Icon=audio-input-microphone-symbolic
+Terminal=false
+Categories=COSMIC;
+Keywords=COSMIC;Applet;voice;assistant;
+NoDisplay=true
+X-CosmicApplet=true
+X-CosmicHoverPopup=Auto
+DESKTOP
+
+cat <<NEXT
+Installed to $BIN. To start using it:
+
+  systemctl --user daemon-reload
+  systemctl --user enable --now cosmo      # the daemon
+  $BIN/cosmo-overlay &                     # the overlay (starts itself at next login)
+
+Then add the applet: Settings → Desktop → Panel → Applets → "cosmo".
+Check it all with: cosmo doctor
+NEXT

@@ -6,9 +6,25 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[[bin]]
+name = "cosmo-overlay"
+path = "src/main.rs"
+
 [dependencies]
-smithay-client-toolkit.workspace = true
+# No `applet` feature: that one pulls in GPL-3.0 crates (THIRD_PARTY.md).
+# The rest of libcosmic, including its cosmic-protocols rev, is MPL/MIT.
+libcosmic = { workspace = true, features = ["tokio", "wayland", "winit"] }
+futures.workspace = true
+# The GNOME fallback (notify.rs): a layer-shell probe and notifications.
 wayland-client.workspace = true
+zbus.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
+cosmo-ipc = { workspace = true, features = ["client"] }
+serde_json.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# The phase-0 layer-shell probe (examples/phase0_layer.rs).
+smithay-client-toolkit.workspace = true

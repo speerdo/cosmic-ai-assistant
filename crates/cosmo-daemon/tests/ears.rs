@@ -26,6 +26,7 @@ struct TestHost {
     interrupted: AtomicBool,
     paused: AtomicBool,
     turns: Mutex<Vec<(String, cosmo_gate::UtteranceSource)>>,
+    levels: std::sync::atomic::AtomicUsize,
 }
 
 impl Host for TestHost {
@@ -45,6 +46,9 @@ impl Host for TestHost {
                 .push((text, latency_ms.unwrap())),
             Event::Transcript { text, .. } => self.partials.lock().unwrap().push(text),
             Event::Log { line } => self.log.lock().unwrap().push(line),
+            Event::Level { .. } => {
+                self.levels.fetch_add(1, Ordering::SeqCst);
+            }
             _ => {}
         }
     }
@@ -228,6 +232,10 @@ async fn hold_speak_release_commits_a_transcript() {
     };
     assert!(text.to_lowercase().contains("i love you"), "{text:?}");
     assert!(*latency < 1_000, "release → commit {latency} ms");
+    // The waveform's levels streamed while listening: ~20 a second over a
+    // hold of about a second, plus the pre-roll.
+    let levels = host.levels.load(Ordering::SeqCst);
+    assert!((15..=60).contains(&levels), "{levels} level events");
     // The transcript became a turn, marked as spoken during a key hold.
     assert_eq!(
         *host.turns.lock().unwrap(),
