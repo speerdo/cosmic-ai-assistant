@@ -61,7 +61,10 @@ then). The Right Ctrl hold stays the deterministic fallback, always.
 ### 7.3 Reflex first, reasoning on escalation
 
 - [x] "Cosmo, pause the music" → the matcher (the wake words are filler
-      already) → reflex, zero network calls. Tested end to end.
+      already) → reflex, zero network calls. *(By composition of two tested
+      halves: the wake test yields the open-mic turn "pause the music.",
+      and phase 4/5's engine tests take that turn to reflex with zero API
+      requests. No single test runs audio through to the actuator.)*
 
 ### 7.4 False-accept hygiene
 
@@ -79,4 +82,5 @@ then). The Right Ctrl hold stays the deterministic fallback, always.
 ### 7.5 The fallback
 
 - [x] With `wake_word` on, Right Ctrl and `cosmo listen` behave exactly as
-      before (tested).
+      before. *(Right Ctrl tested with the wake word on; `cosmo listen`
+      shares the same trigger path but wasn't separately tested with it.)*
