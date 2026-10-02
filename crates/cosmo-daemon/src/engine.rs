@@ -25,7 +25,7 @@ use tracing::Instrument;
 use cosmo_config::Config;
 use cosmo_gate::{ConfirmResult, Gate, LockSource, LockState, UtteranceSource};
 use cosmo_mcp::McpHost;
-use cosmo_reason::secret::DefaultKeySource;
+use cosmo_reason::secret::ProviderKey;
 use cosmo_reason::tools::ToolHost;
 
 use crate::speech::{DefaultSpeechKey, Speech, SpeechSink, StateCell};
@@ -672,17 +672,55 @@ impl Engine {
             ),
         };
         // Key presence: the doctor's third distinct state set (plan §1.4).
-        let key_detail = if std::env::var("OPENAI_API_KEY")
-            .map(|k| !k.trim().is_empty())
-            .unwrap_or(false)
-        {
+        let provider = &self.cfg.provider;
+        let env_key = ["COSMO_API_KEY"]
+            .into_iter()
+            .chain((provider == "openai").then_some("OPENAI_API_KEY"))
+            .any(|v| std::env::var(v).is_ok_and(|k| !k.trim().is_empty()));
+        // A reasoner exists only once its key resolved. Busy (mid-turn)
+        // means it exists too.
+        let key_loaded = self
+            .reasoner
+            .try_lock()
+            .map(|slot| slot.is_some())
+            .unwrap_or(true);
+        let key_detail = if env_key {
             (true, "key present (source: env — dev/CI only)".to_owned())
+        } else if key_loaded {
+            (true, format!("the {provider} key is loaded (source: keyring)"))
         } else {
             (
                 false,
-                "no key in env; keyring checked at first turn".to_owned(),
+                format!(
+                    "no key in env; the {provider} key is read from the keyring at the first \
+                     turn (`cosmo auth-login` stores one)"
+                ),
             )
         };
+        // Which service reasoning goes to, and as what.
+        let env_base = std::env::var("COSMO_API_BASE").ok();
+        let reasoning_detail =
+            match cosmo_reason::provider::Endpoint::resolve(&self.cfg, env_base.as_deref()) {
+                Ok(e) => {
+                    let format = match e.format {
+                        cosmo_reason::provider::Format::OpenAiChat => "chat completions",
+                        cosmo_reason::provider::Format::AnthropicMessages => "Messages API",
+                    };
+                    let note = e
+                        .provider
+                        .note
+                        .map(|n| format!(" — note: {n}"))
+                        .unwrap_or_default();
+                    (
+                        true,
+                        format!(
+                            "{} · {} · {format} at {}{note}",
+                            e.provider.name, e.model, e.url
+                        ),
+                    )
+                }
+                Err(err) => (false, format!("{err} — fix `provider` in config.ron")),
+            };
         DoctorReport {
             checks: vec![
                 DoctorCheck {
@@ -711,8 +749,8 @@ impl Engine {
                 },
                 DoctorCheck {
                     name: "reasoning".into(),
-                    ok: true,
-                    detail: "cosmo-reason wired (chat-completions v1)".into(),
+                    ok: reasoning_detail.0,
+                    detail: reasoning_detail.1,
                 },
                 DoctorCheck {
                     name: "agent (MCP)".into(),
@@ -818,7 +856,8 @@ impl Engine {
         // isn't kept: the next turn tries again.
         let mut slot = self.reasoner.lock().await;
         if slot.is_none() {
-            match cosmo_reason::Reasoner::new(Arc::new(self.cfg.clone()), &DefaultKeySource) {
+            let key = ProviderKey::reasoning(&self.cfg.provider);
+            match cosmo_reason::Reasoner::new(Arc::new(self.cfg.clone()), &key) {
                 Ok(r) => *slot = Some(r),
                 Err(cosmo_reason::ReasonError::NoKey(msg)) => {
                     self.no_key_hit.store(true, Ordering::SeqCst);

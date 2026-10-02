@@ -17,6 +17,8 @@
 //! - Static prompt under 3,000 tokens.
 //! - Log the server-reported rate limit every turn.
 
+pub mod anthropic;
+pub mod provider;
 pub mod secret;
 pub mod stream;
 pub mod tools;
@@ -51,6 +53,8 @@ pub enum ReasonError {
     UnknownTool(String),
     #[error("api key unavailable: {0}")]
     NoKey(String),
+    #[error("provider setup: {0}")]
+    Config(String),
 }
 
 /// What one turn cost, for `Event::Usage` and the per-turn log (token
@@ -62,7 +66,10 @@ pub struct TurnUsage {
     pub total_tokens: u64,
     /// Round trips to the model this turn.
     pub requests: u32,
-    /// The server's `x-ratelimit-remaining-*` headers, last seen.
+    /// The server's remaining-quota headers, last seen (OpenAI's
+    /// `x-ratelimit-remaining-*` or Anthropic's
+    /// `anthropic-ratelimit-*-remaining`). `None` when the provider doesn't
+    /// send them, which is not the same as none left.
     pub remaining_requests: Option<u64>,
     pub remaining_tokens: Option<u64>,
 }
@@ -76,11 +83,15 @@ impl TurnUsage {
     }
 }
 
-/// The chat-completions reasoning client: streaming since phase 5
-/// (`stream.rs`). One per daemon, so its HTTP connection stays warm.
+/// The reasoning client: streaming since phase 5 (`stream.rs`), over
+/// chat completions or Anthropic's Messages API (`provider.rs`). One per
+/// daemon, so its HTTP connection stays warm.
 pub struct Reasoner {
     http: reqwest::Client,
-    cfg: Arc<cosmo_config::Config>,
+    endpoint: provider::Endpoint,
+    /// One conversation per reasoner: OpenCode asks for a stable id per
+    /// conversation (`x-opencode-session`), for routing and caching.
+    session: String,
     key: SecretKey,
     /// Static prompt (system role) — no live desktop state (invariant #7).
     static_prompt: String,
@@ -90,19 +101,42 @@ pub struct Reasoner {
 impl Reasoner {
     /// Build a client with the key resolved lazily by the caller's
     /// [`KeySource`]. `resolve` may be called on first use only (keyring
-    /// locked at boot ⇒ retry later; plan §1.4).
+    /// locked at boot ⇒ retry later; plan §1.4). The endpoint comes from
+    /// the config's provider; `COSMO_API_BASE` overrides it (tests, local
+    /// servers).
     pub fn new(
         cfg: Arc<cosmo_config::Config>,
         key_source: &dyn KeySource,
     ) -> Result<Self, ReasonError> {
+        let env_base = std::env::var("COSMO_API_BASE").ok();
+        let endpoint =
+            provider::Endpoint::resolve(&cfg, env_base.as_deref()).map_err(ReasonError::Config)?;
         let key = key_source.resolve()?;
+        let http = reqwest::Client::builder()
+            .user_agent(provider::user_agent())
+            .build()
+            .map_err(|e| ReasonError::Http(e.to_string()))?;
+        let session = format!(
+            "cosmo-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0)
+        );
         Ok(Self {
-            http: reqwest::Client::new(),
-            cfg,
+            http,
+            endpoint,
+            session,
             key,
             static_prompt: static_prompt(),
             usage: TurnUsage::default(),
         })
+    }
+
+    /// Where requests go, and as what.
+    pub fn endpoint(&self) -> &provider::Endpoint {
+        &self.endpoint
     }
 
     /// What the last turn cost.
@@ -167,16 +201,7 @@ impl Reasoner {
 
         let tools = host.tool_schemas();
         loop {
-            let body = {
-                let mut messages = vec![json!({"role": "system", "content": self.static_prompt})];
-                messages.extend(history.iter().cloned());
-                json!({
-                    "model": self.cfg.model,
-                    "messages": messages,
-                    "tools": tools,
-                })
-            };
-            let done = self.chat(body, on_text).await?;
+            let done = self.chat(history, &tools, on_text).await?;
             let message = done.message;
             let finish = done.finish_reason.as_str();
             history.push(message.clone());
@@ -290,38 +315,75 @@ impl Reasoner {
         }
     }
 
+    /// The request for one round trip, in the endpoint's format.
+    fn request(&self, history: &[Value], tools: &[Value]) -> reqwest::RequestBuilder {
+        use provider::{Auth, Format};
+        let e = &self.endpoint;
+        let body = match e.format {
+            Format::OpenAiChat => {
+                let mut messages = vec![json!({"role": "system", "content": self.static_prompt})];
+                messages.extend(history.iter().cloned());
+                json!({
+                    "model": e.model,
+                    "messages": messages,
+                    "tools": tools,
+                    "stream": true,
+                    "stream_options": { "include_usage": true },
+                })
+            }
+            Format::AnthropicMessages => {
+                // Only Anthropic's own API is sent its cache field.
+                let cache = e.provider.name == "anthropic";
+                anthropic::request(&e.model, &self.static_prompt, history, tools, cache)
+            }
+        };
+        let mut req = self.http.post(&e.url).json(&body);
+        req = match e.auth {
+            Auth::Bearer => req.bearer_auth(self.key.expose()),
+            Auth::XApiKey => req.header("x-api-key", self.key.expose()),
+        };
+        if e.format == Format::AnthropicMessages {
+            req = req.header("anthropic-version", anthropic::VERSION);
+        }
+        if e.provider.name == "opencode-go" {
+            req = req.header("x-opencode-session", &self.session);
+        }
+        req
+    }
+
     /// One model round trip, streamed. Text deltas go to `on_text` as they
     /// arrive. A server answering with plain JSON instead of an event
     /// stream is accepted too (its text is handed over whole).
     async fn chat(
         &mut self,
-        mut body: Value,
+        history: &[Value],
+        tools: &[Value],
         on_text: &(dyn Fn(&str) + Send + Sync),
     ) -> Result<stream::Completed, ReasonError> {
-        body["stream"] = json!(true);
-        body["stream_options"] = json!({ "include_usage": true });
-        // Base URL overridable for tests; production default is OpenAI.
-        let base = std::env::var("COSMO_API_BASE")
-            .unwrap_or_else(|_| "https://api.openai.com".to_string());
-        let url = format!("{}/v1/chat/completions", base.trim_end_matches('/'));
-        let mut response = self
-            .http
-            .post(url)
-            .bearer_auth(self.key.expose())
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                let src = std::error::Error::source(&e)
-                    .map(|s| s.to_string())
-                    .unwrap_or_default();
-                ReasonError::Http(format!("{e} (source: {src})"))
-            })?;
+        let anthropic_format = self.endpoint.format == provider::Format::AnthropicMessages;
+        let mut response = self.request(history, tools).send().await.map_err(|e| {
+            let src = std::error::Error::source(&e)
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            ReasonError::Http(format!("{e} (source: {src})"))
+        })?;
 
         // Rate-limit headers, every turn (invariant #7). The Authorization
         // header never reaches a log — we log only these response headers.
-        let remaining_requests = parse_header(response.headers(), "x-ratelimit-remaining-requests");
-        let remaining_tokens = parse_header(response.headers(), "x-ratelimit-remaining-tokens");
+        let remaining_requests = parse_header(
+            response.headers(),
+            &[
+                "x-ratelimit-remaining-requests",
+                "anthropic-ratelimit-requests-remaining",
+            ],
+        );
+        let remaining_tokens = parse_header(
+            response.headers(),
+            &[
+                "x-ratelimit-remaining-tokens",
+                "anthropic-ratelimit-tokens-remaining",
+            ],
+        );
         self.usage.requests += 1;
         self.usage.remaining_requests = remaining_requests.as_deref().and_then(|v| v.parse().ok());
         self.usage.remaining_tokens = remaining_tokens.as_deref().and_then(|v| v.parse().ok());
@@ -348,25 +410,28 @@ impl Reasoner {
             }
             let value: Value = serde_json::from_str(&text)
                 .map_err(|e| ReasonError::BadResponse(format!("{e}: {text}")))?;
-            let choice = &value["choices"][0];
-            let message = choice["message"].clone();
-            if let Some(t) = message["content"].as_str().filter(|t| !t.is_empty()) {
+            let done = if anthropic_format {
+                anthropic::from_message(&value).map_err(ReasonError::BadResponse)?
+            } else {
+                let choice = &value["choices"][0];
+                stream::Completed {
+                    message: choice["message"].clone(),
+                    finish_reason: choice["finish_reason"].as_str().unwrap_or("").to_owned(),
+                    usage: value.get("usage").cloned(),
+                }
+            };
+            if let Some(t) = done.message["content"].as_str().filter(|t| !t.is_empty()) {
                 on_text(t);
             }
-            let usage = value.get("usage").cloned();
-            if let Some(u) = &usage {
+            if let Some(u) = &done.usage {
                 tracing::info!(usage = %u, "tokens");
                 self.usage.add(u);
             }
-            return Ok(stream::Completed {
-                message,
-                finish_reason: choice["finish_reason"].as_str().unwrap_or("").to_owned(),
-                usage,
-            });
+            return Ok(done);
         }
 
         let mut decoder = stream::SseDecoder::default();
-        let mut acc = stream::Accumulator::default();
+        let mut acc = Acc::new(anthropic_format);
         let bad = ReasonError::BadResponse;
         loop {
             let chunk = response
@@ -407,9 +472,41 @@ fn tool_result(call_id: &str, content: &str) -> Value {
     json!({"role": "tool", "tool_call_id": call_id, "content": content})
 }
 
-fn parse_header(headers: &reqwest::header::HeaderMap, name: &str) -> Option<String> {
-    headers
-        .get(name)
+/// Either wire's stream accumulator.
+enum Acc {
+    Chat(stream::Accumulator),
+    Messages(anthropic::Accumulator),
+}
+
+impl Acc {
+    fn new(anthropic_format: bool) -> Self {
+        if anthropic_format {
+            Self::Messages(anthropic::Accumulator::default())
+        } else {
+            Self::Chat(stream::Accumulator::default())
+        }
+    }
+
+    fn feed(&mut self, payload: &str) -> Result<Option<String>, String> {
+        match self {
+            Self::Chat(a) => a.feed(payload),
+            Self::Messages(a) => a.feed(payload),
+        }
+    }
+
+    fn finish(self) -> Result<stream::Completed, String> {
+        match self {
+            Self::Chat(a) => a.finish(),
+            Self::Messages(a) => a.finish(),
+        }
+    }
+}
+
+/// The first of `names` the response carries.
+fn parse_header(headers: &reqwest::header::HeaderMap, names: &[&str]) -> Option<String> {
+    names
+        .iter()
+        .find_map(|n| headers.get(*n))
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned)
 }

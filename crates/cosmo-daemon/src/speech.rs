@@ -72,13 +72,14 @@ pub trait SpeechKey: Send + Sync {
     fn resolve(&self) -> Option<SecretKey>;
 }
 
-/// Production: the same source as the reasoner (env var → Secret Service).
+/// Production: OpenAI's own key (`OPENAI_API_KEY` → Secret Service), never
+/// the reasoning provider's, which may belong to another service.
 pub struct DefaultSpeechKey;
 
 impl SpeechKey for DefaultSpeechKey {
     fn resolve(&self) -> Option<SecretKey> {
         use cosmo_reason::secret::KeySource;
-        cosmo_reason::secret::DefaultKeySource.resolve().ok()
+        cosmo_reason::secret::ProviderKey::openai().resolve().ok()
     }
 }
 

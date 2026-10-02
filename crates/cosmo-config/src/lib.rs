@@ -18,11 +18,19 @@ pub mod secret;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// Reasoning provider name — never a key. Key storage is the Secret
-    /// Service (`cosmo auth login`), env var `OPENAI_API_KEY` for dev/CI only.
+    /// Reasoning provider name — never a key: openai, anthropic,
+    /// openrouter, opencode-go, ollama or zai. Key storage is the Secret
+    /// Service (`cosmo auth login`, one key per provider); env var
+    /// `COSMO_API_KEY` for dev/CI only.
     pub provider: String,
-    /// Model for the reasoning path (phase 1: plain chat completions).
+    /// Model for the reasoning path. Empty is the provider's default.
     pub model: String,
+    /// The provider's endpoint, as a whole URL. Empty is the provider's
+    /// own; set it for a local server or a provider cosmo doesn't list.
+    pub api_base: String,
+    /// The request format: "openai" (chat completions) or "anthropic"
+    /// (Messages). Empty is the provider's own.
+    pub api_format: String,
     /// MCP agent command to spawn (stdio transport).
     pub agent_command: String,
     /// Arguments passed to the agent command.
@@ -81,7 +89,9 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             provider: "openai".into(),
-            model: "gpt-4o-mini".into(),
+            model: String::new(),
+            api_base: String::new(),
+            api_format: String::new(),
             agent_command: "computer-use-linux".into(),
             agent_args: vec!["mcp".into()],
             allowed_tools: default_allowed_tools(),
@@ -167,6 +177,19 @@ pub fn load_from(path: &std::path::Path) -> Result<Config, ConfigError> {
 
 impl Config {
     pub fn validate(&self) -> Result<(), ConfigError> {
+        if !matches!(self.api_format.as_str(), "" | "openai" | "anthropic") {
+            return Err(ConfigError::Parse(format!(
+                "api_format {:?} must be \"openai\", \"anthropic\" or empty",
+                self.api_format
+            )));
+        }
+        let base = &self.api_base;
+        if !(base.is_empty() || base.starts_with("https://") || base.starts_with("http://")) {
+            return Err(ConfigError::Parse(format!(
+                "api_base {:?} must be a whole http(s) URL",
+                self.api_base
+            )));
+        }
         if self.allowed_tools.iter().any(|t| t == "run_shell") {
             return Err(ConfigError::Parse(
                 "allowed_tools contains run_shell — shell execution is not a cosmo tool (invariant #2)".into(),
@@ -305,12 +328,22 @@ pub fn commented_default() -> String {
 //
 // NOTE: never put an API key in this file. It is the file users paste into
 // bug reports. Keys live in the Secret Service (`cosmo auth login`); the
-// env var OPENAI_API_KEY is a dev/CI convenience only.
+// env var COSMO_API_KEY is a dev/CI convenience only.
 
 (
     // Reasoning provider name. The key itself is NOT configured here.
+    // One of: openai, anthropic, openrouter, opencode-go, ollama, zai.
+    // `cosmo auth login` stores a key for whichever is set.
     // provider: "{provider}",
+    // An empty model is the provider's default (openai: gpt-4o-mini,
+    // anthropic: claude-haiku-4-5, openrouter: anthropic/claude-haiku-4.5,
+    // opencode-go and zai: glm-5.3-flash, ollama: gpt-oss:120b).
     // model: "{model}",
+    // A whole endpoint URL, for a local server or an unlisted provider.
+    // api_base: "{api_base}",
+    // "openai" (chat completions) or "anthropic" (Messages). OpenCode Go
+    // serves its Qwen and MiniMax models in the "anthropic" format.
+    // api_format: "{api_format}",
 
     // MCP agent (stdio transport).
     // agent_command: "{agent_command}",
@@ -367,6 +400,8 @@ pub fn commented_default() -> String {
 "#,
         provider = d.provider,
         model = d.model,
+        api_base = d.api_base,
+        api_format = d.api_format,
         agent_command = d.agent_command,
         agent_args = d
             .agent_args
@@ -413,7 +448,8 @@ mod tests {
         let cfg = load_from(&path).unwrap();
         assert_eq!(cfg, Config::default());
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("// model: \"gpt-4o-mini\","));
+        assert!(text.contains("// model: \"\","));
+        assert!(text.contains("// api_base: \"\","));
         assert!(text.contains("// voice_provider: \"kokoro\","));
         assert!(text.contains("// voice_id: \"default\","));
         assert!(text.contains("// voice_model: \"\","));
@@ -544,6 +580,24 @@ mod tests {
         let mut cfg = Config::default();
         cfg.allowed_tools.push("run_shell".into());
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn the_endpoint_overrides_are_checked() {
+        let ok = Config {
+            api_base: "http://localhost:11434/v1/chat/completions".into(),
+            api_format: "anthropic".into(),
+            ..Config::default()
+        };
+        assert!(ok.validate().is_ok());
+        for (base, format) in [("localhost:11434", ""), ("", "grpc")] {
+            let bad = Config {
+                api_base: base.into(),
+                api_format: format.into(),
+                ..Config::default()
+            };
+            assert!(bad.validate().is_err(), "{base:?} {format:?}");
+        }
     }
 
     #[test]

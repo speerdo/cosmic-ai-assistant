@@ -47,13 +47,23 @@ enum Cmd {
     /// Print every transcript as it happens (partials update in place on a
     /// terminal; only finals when piped). Ctrl+C stops.
     Transcripts,
-    /// Open the OpenAI key page, read the key from stdin (echo disabled),
-    /// store it in the Secret Service.
-    AuthLogin,
-    /// Delete the stored key from the Secret Service.
-    AuthLogout,
-    /// Report whether a key is resolvable and from which source.
-    AuthStatus,
+    /// Open the provider's key page, read the key from stdin (echo
+    /// disabled), store it in the Secret Service.
+    AuthLogin {
+        /// Which provider's key (default: `provider` in config.ron).
+        #[arg(long)]
+        provider: Option<String>,
+    },
+    /// Delete a provider's stored key from the Secret Service.
+    AuthLogout {
+        #[arg(long)]
+        provider: Option<String>,
+    },
+    /// Report whether the provider's key is resolvable and from which source.
+    AuthStatus {
+        #[arg(long)]
+        provider: Option<String>,
+    },
     /// Voices: list them, hear one, pick one (the daemon plays audio; this
     /// CLI never does).
     Voice {
@@ -95,10 +105,22 @@ fn main() {
 async fn run(cmd: Cmd) -> i32 {
     // Auth commands are local (Secret Service), not daemon round trips.
     match cmd {
-        Cmd::AuthLogin => return auth_login().await,
-        Cmd::AuthLogout => return auth_logout().await,
-        Cmd::AuthStatus => {
-            println!("{}", cosmo_reason::secret::auth_status().await);
+        Cmd::AuthLogin { provider } => return auth_login(provider).await,
+        Cmd::AuthLogout { provider } => {
+            let Some(provider) = auth_provider(provider) else {
+                return 1;
+            };
+            return auth_logout(provider.name).await;
+        }
+        Cmd::AuthStatus { provider } => {
+            let Some(provider) = auth_provider(provider) else {
+                return 1;
+            };
+            println!(
+                "{}: {}",
+                provider.name,
+                cosmo_reason::secret::auth_status(provider.name).await
+            );
             return 0;
         }
         _ => {}
@@ -149,7 +171,7 @@ async fn exchange(
                 VoiceCmd::Preview { voice, provider } => Command::VoicePreview { provider, voice },
                 VoiceCmd::Set { voice, provider } => Command::VoiceSet { provider, voice },
             },
-            Cmd::AuthLogin | Cmd::AuthLogout | Cmd::AuthStatus => {
+            Cmd::AuthLogin { .. } | Cmd::AuthLogout { .. } | Cmd::AuthStatus { .. } => {
                 unreachable!("auth subcommands are handled before the daemon connection")
             }
         },
@@ -487,13 +509,40 @@ async fn read_line(stream: &mut UnixStream, buf: &mut Vec<u8>) -> std::io::Resul
     }
 }
 
-/// `cosmo auth login`: open the key-creation page, read the key with echo
-/// disabled, store it in the Secret Service (plan §1.4 — the whole browser
-/// story; there is deliberately no OAuth flow).
-async fn auth_login() -> i32 {
-    println!("Opening https://platform.openai.com/api-keys — create or copy an API key.");
+/// The provider an auth command is about: the one named, else the
+/// config's. `None` (after saying why) if it isn't one cosmo knows.
+fn auth_provider(named: Option<String>) -> Option<&'static cosmo_reason::provider::Preset> {
+    let name = named.unwrap_or_else(|| {
+        cosmo_config::load()
+            .map(|c| c.provider)
+            .unwrap_or_else(|_| cosmo_config::Config::default().provider)
+    });
+    let found = cosmo_reason::provider::preset(&name);
+    if found.is_none() {
+        eprintln!(
+            "unknown provider {name:?} (known: {})",
+            cosmo_reason::provider::names()
+        );
+    }
+    found
+}
+
+/// `cosmo auth-login`: open the provider's key page, read the key with echo
+/// disabled, store it in the Secret Service under that provider (plan §1.4 —
+/// the whole browser story; there is deliberately no OAuth flow).
+async fn auth_login(named: Option<String>) -> i32 {
+    let Some(provider) = auth_provider(named) else {
+        return 1;
+    };
+    if let Some(note) = provider.note {
+        println!("Note: {note}.");
+    }
+    println!(
+        "Opening {} — create or copy a {} API key, then paste it here.",
+        provider.key_page, provider.name
+    );
     let _ = std::process::Command::new("xdg-open")
-        .arg("https://platform.openai.com/api-keys")
+        .arg(provider.key_page)
         .spawn();
 
     let key = read_line_echo_disabled().expect("read key from stdin");
@@ -502,9 +551,20 @@ async fn auth_login() -> i32 {
         eprintln!("no key entered");
         return 1;
     }
-    match cosmo_reason::secret::store_key(&key).await {
+    match cosmo_reason::secret::store_key(provider.name, &key).await {
         Ok(()) => {
-            println!("key stored in the Secret Service (application=cosmo, provider=openai)");
+            println!(
+                "key stored in the Secret Service (application=cosmo, provider={})",
+                provider.name
+            );
+            let configured = cosmo_config::load().map(|c| c.provider).unwrap_or_default();
+            if configured != provider.name {
+                println!(
+                    "cosmo is set to use {configured:?}: set `provider: \"{}\",` in {} to use this key",
+                    provider.name,
+                    cosmo_config::config_path().display()
+                );
+            }
             0
         }
         Err(e) => {
@@ -514,11 +574,11 @@ async fn auth_login() -> i32 {
     }
 }
 
-/// `cosmo auth logout`: delete the stored key.
-async fn auth_logout() -> i32 {
-    match cosmo_reason::secret::delete_key().await {
+/// `cosmo auth-logout`: delete a provider's stored key.
+async fn auth_logout(provider: &str) -> i32 {
+    match cosmo_reason::secret::delete_key(provider).await {
         Ok(()) => {
-            println!("key deleted from the Secret Service");
+            println!("{provider} key deleted from the Secret Service");
             0
         }
         Err(e) => {

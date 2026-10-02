@@ -1,8 +1,13 @@
 //! Secret handling (plan §1.4 — decided, not a menu).
 //!
-//! Resolution order, exactly: `OPENAI_API_KEY` env var → Secret Service
-//! (oo7) → structured error pointing at `cosmo auth login`. The env var is
-//! for dev and CI only. The key is wrapped in [`SecretKey`], whose
+//! **One key per provider**, stored under `application=cosmo,
+//! provider=<name>` (an OpenAI key stored before providers existed is
+//! already in that shape). Resolution order, exactly: env var → Secret
+//! Service (oo7) → structured error pointing at `cosmo auth login`. The env
+//! vars are for dev and CI only: `COSMO_API_KEY` for the reasoning
+//! provider, `OPENAI_API_KEY` for OpenAI alone. A key is only ever sent to
+//! the provider it was stored for: OpenAI voice output never picks up
+//! `COSMO_API_KEY`, which may belong to another service. The key is wrapped in [`SecretKey`], whose
 //! `Debug`/`Display` print `[redacted]`, so it cannot reach a `tracing`
 //! span, an error chain, or a transcript log by accident.
 //!
@@ -39,14 +44,48 @@ pub trait KeySource {
     fn resolve(&self) -> Result<SecretKey, crate::ReasonError>;
 }
 
-/// The production source: env var first, then oo7.
-pub struct DefaultKeySource;
+/// The production source for one provider's key: env var first, then oo7.
+pub struct ProviderKey {
+    provider: String,
+    /// Whether `COSMO_API_KEY` counts: true for the reasoning provider only.
+    generic_env: bool,
+}
 
-impl KeySource for DefaultKeySource {
+impl ProviderKey {
+    /// The reasoning provider's key (`COSMO_API_KEY` counts).
+    pub fn reasoning(provider: &str) -> Self {
+        Self {
+            provider: provider.to_owned(),
+            generic_env: true,
+        }
+    }
+
+    /// OpenAI's key, for its voice output (`COSMO_API_KEY` doesn't count).
+    pub fn openai() -> Self {
+        Self {
+            provider: "openai".to_owned(),
+            generic_env: false,
+        }
+    }
+
+    /// The env var holding this key, if one is set (dev/CI only).
+    fn env(&self) -> Option<String> {
+        let mut vars = Vec::new();
+        if self.generic_env {
+            vars.push("COSMO_API_KEY");
+        }
+        if self.provider == "openai" {
+            vars.push("OPENAI_API_KEY");
+        }
+        vars.into_iter()
+            .filter_map(|v| std::env::var(v).ok())
+            .find(|k| !k.trim().is_empty())
+    }
+}
+
+impl KeySource for ProviderKey {
     fn resolve(&self) -> Result<SecretKey, crate::ReasonError> {
-        if let Ok(key) = std::env::var("OPENAI_API_KEY")
-            && !key.trim().is_empty()
-        {
+        if let Some(key) = self.env() {
             tracing::debug!("api key source: env (dev/CI only)");
             return Ok(SecretKey::from_raw(key));
         }
@@ -61,7 +100,8 @@ impl KeySource for DefaultKeySource {
         // exists"* — the message smuggled through a D-Bus error's
         // collection-name field and back out again.
         match tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::try_current().map(|h| h.block_on(keyring_lookup()))
+            tokio::runtime::Handle::try_current()
+                .map(|h| h.block_on(keyring_lookup(&self.provider)))
         }) {
             Ok(Ok(key)) => {
                 tracing::debug!("api key source: keyring");
@@ -75,10 +115,9 @@ impl KeySource for DefaultKeySource {
     }
 }
 
-/// Resolve through the Secret Service (async path; call from the daemon's
-/// first reasoning turn).
-pub async fn resolve_keyring() -> Result<SecretKey, ReasonKind> {
-    keyring_lookup().await
+/// Resolve a provider's key through the Secret Service (async path).
+pub async fn resolve_keyring(provider: &str) -> Result<SecretKey, ReasonKind> {
+    keyring_lookup(provider).await
 }
 
 /// A structured reason the key is unavailable — maps 1:1 onto the doctor's
@@ -129,7 +168,7 @@ impl std::fmt::Display for ReasonKind {
 /// Returns [`ReasonKind`] rather than `oo7::Error` so that the three states
 /// plan §1.4 requires — locked / missing / broken — are *the* return type,
 /// and every caller renders the same actionable sentence.
-async fn keyring_lookup() -> Result<SecretKey, ReasonKind> {
+async fn keyring_lookup(provider: &str) -> Result<SecretKey, ReasonKind> {
     let keyring = Keyring::new().await.map_err(|e| ReasonKind::from_oo7(&e))?;
     // Locked ≠ crash: surface it, let the daemon retry next turn.
     if keyring
@@ -140,7 +179,7 @@ async fn keyring_lookup() -> Result<SecretKey, ReasonKind> {
         return Err(ReasonKind::KeyringLocked);
     }
     let items = keyring
-        .search_items(&[("application", "cosmo"), ("provider", "openai")])
+        .search_items(&[("application", "cosmo"), ("provider", provider)])
         .await
         .map_err(|e| ReasonKind::from_oo7(&e))?;
     let Some(item) = items.into_iter().next() else {
@@ -151,13 +190,14 @@ async fn keyring_lookup() -> Result<SecretKey, ReasonKind> {
     Ok(SecretKey::from_raw(text))
 }
 
-/// Store the key in the Secret Service (`cosmo auth login`).
-pub async fn store_key(key: &str) -> anyhow::Result<()> {
+/// Store a provider's key in the Secret Service (`cosmo auth login`),
+/// replacing any it held.
+pub async fn store_key(provider: &str, key: &str) -> anyhow::Result<()> {
     let keyring = Keyring::new().await?;
     keyring
         .create_item(
-            "cosmo — OpenAI API key",
-            &[("application", "cosmo"), ("provider", "openai")],
+            &format!("cosmo — {provider} API key"),
+            &[("application", "cosmo"), ("provider", provider)],
             oo7::Secret::text(key),
             true,
         )
@@ -165,24 +205,22 @@ pub async fn store_key(key: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Delete the stored key (`cosmo auth logout`).
-pub async fn delete_key() -> anyhow::Result<()> {
+/// Delete a provider's stored key (`cosmo auth logout`).
+pub async fn delete_key(provider: &str) -> anyhow::Result<()> {
     let keyring = Keyring::new().await?;
     keyring
-        .delete(&[("application", "cosmo"), ("provider", "openai")])
+        .delete(&[("application", "cosmo"), ("provider", provider)])
         .await?;
     Ok(())
 }
 
-/// `cosmo auth status`: is a key resolvable, and from which source.
-pub async fn auth_status() -> String {
-    if std::env::var("OPENAI_API_KEY")
-        .map(|k| !k.trim().is_empty())
-        .unwrap_or(false)
-    {
+/// `cosmo auth status`: is the reasoning provider's key resolvable, and
+/// from which source.
+pub async fn auth_status(provider: &str) -> String {
+    if ProviderKey::reasoning(provider).env().is_some() {
         return "key present (source: env — dev/CI only)".into();
     }
-    match resolve_keyring().await {
+    match resolve_keyring(provider).await {
         Ok(_) => "key present (source: keyring)".into(),
         Err(ReasonKind::KeyringLocked) => "keyring locked — unlock and retry".into(),
         Err(ReasonKind::Missing) => "no key stored — run `cosmo auth login`".into(),
@@ -224,6 +262,18 @@ mod tests {
         let failed = ReasonKind::Failed("connection refused".into()).to_string();
         assert!(failed.contains("connection refused"));
         assert!(failed.contains("cosmo auth login"));
+    }
+
+    #[test]
+    fn a_generic_env_key_never_reaches_another_provider() {
+        let openai = ProviderKey::openai();
+        let reasoning = ProviderKey::reasoning("anthropic");
+        assert!(
+            !openai.generic_env,
+            "voice output must not take COSMO_API_KEY"
+        );
+        assert!(reasoning.generic_env);
+        assert_eq!(reasoning.provider, "anthropic");
     }
 
     #[test]

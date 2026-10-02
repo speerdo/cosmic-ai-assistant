@@ -18,6 +18,7 @@ clap.workspace = true
 libc.workspace = true
 cosmo-ipc.workspace = true
 cosmo-reason.workspace = true
+cosmo-config.workspace = true
 
 [[bin]]
 name = "cosmo"

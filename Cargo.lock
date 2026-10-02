@@ -1389,6 +1389,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "cosmo-config",
  "cosmo-ipc",
  "cosmo-reason",
  "libc",

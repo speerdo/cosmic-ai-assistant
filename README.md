@@ -19,6 +19,21 @@ Cosmo is four cooperating subsystems, each with a hard performance budget:
 
 Everything that can be local is local: push-to-talk is read straight off `evdev` (no root, no `input` group, thanks to logind `uaccess`), audio capture is a native PipeWire client on the RT data-loop so it doesn't stall while your machine compiles something, both STT models (`nemotron-speech-streaming-en-0.6b` class + a Parakeet-class offline pass) are resident int8 ONNX via `sherpa-onnx`, and the default TTS is Kokoro-82M running on `ort`. The cloud is used for what it's actually good at — the reasoning model — and even then it runs **text-out**, so your chosen voice speaks the reply instead of the API's fixed catalogue.
 
+## Reasoning providers
+
+The reasoning model is the only part that needs the cloud, and it isn't tied to one company. Set `provider` in `~/.config/cosmo/config.ron`, then run `cosmo auth-login`: it opens that provider's key page and stores the key in the Secret Service, one key per provider. Leave `model` empty for the provider's default.
+
+| `provider` | Format | Default model | Notes |
+|---|---|---|---|
+| `openai` | chat completions | `gpt-4o-mini` | |
+| `anthropic` | Messages API | `claude-haiku-4-5` | needs a Claude Console API key; a Claude Pro/Max subscription isn't one |
+| `openrouter` | chat completions | `anthropic/claude-haiku-4.5` | one key, many models |
+| `opencode-go` | chat completions, or Messages with `api_format: "anthropic"` (Qwen, MiniMax) | `glm-5.3-flash` | its terms say it's designed for coding agents: check them before using it for a voice assistant |
+| `ollama` | chat completions (Ollama Cloud) | `gpt-oss:120b` | |
+| `zai` | chat completions (pay-as-you-go) | `glm-5.3-flash` | a GLM *Coding Plan* is meant for coding tools |
+
+`api_base` points any of these at another endpoint (a local server, an unlisted provider), and `api_format` picks the wire. Tool calling has to work for cosmo to be useful, and it varies by model, so try a model with a few commands before relying on it. Voice output stays local (Kokoro) whatever is chosen here.
+
 ## Hard rules (the interesting part)
 
 These are the invariants the codebase is built around. They're the reason Cosmo can have a wake word without becoming a liability:

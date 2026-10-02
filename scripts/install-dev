@@ -54,6 +54,17 @@ for b in "${BINARIES[@]}"; do
     install -m 0755 "$ROOT/target/release/$b" "$BIN/$b"
 done
 
+# The MCP agent (computer-use-linux) is usually an npm global, often under
+# nvm, which a systemd service's PATH doesn't include; its `node` lives in
+# the same directory. Found now and written into the unit: re-run this
+# script after moving or upgrading node.
+path_line=""
+if agent="$(command -v computer-use-linux)"; then
+    path_line="Environment=PATH=$(dirname "$agent"):/usr/local/bin:/usr/bin:/bin"
+else
+    echo "note: computer-use-linux not found; the daemon will run without the MCP agent" >&2
+fi
+
 cat >"$UNIT_DIR/cosmo.service" <<UNIT
 [Unit]
 Description=cosmo voice assistant daemon
@@ -62,6 +73,7 @@ After=graphical-session.target pipewire.service
 
 [Service]
 ExecStart=$BIN/cosmod
+$path_line
 Restart=on-failure
 RestartSec=2
 
