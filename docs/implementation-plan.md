@@ -3,15 +3,15 @@
 **Derives from:** `docs/cosmo-blueprint.md` (v4)
 **Scope:** build order from empty repo to packaged release. Phases follow blueprint §13; each is expanded into concrete, checkable steps.
 
-## Where we are (2026-09-10)
+## Where we are (2026-10-04; the rows above phase 3 date from 2026-09-10)
 
 | | Status |
 |---|---|
 | **Step 0** | Done — workspace, pinned toolchain, CI, reference trees, phase-1 system packages (incl. `libxkbcommon-dev`). |
 | **Phase 0** | **COMPLETE — kill criterion PASS.** MCP timings, GNOME-shadowing, layer shell, and evdev hold-to-talk all verified on real hardware (`docs/phase0-findings.md`). Trigger *keycode* choice deliberately left open (findings §7). |
 | **Phase 1** | **Complete (2026-09-11), after a review pass.** §1.1–1.4 done and live-verified: gate + invariants, IPC + socket lifecycle, config, CLI, MCP host (agent connects, 10 tools), native tools (tmux + clipboard), cosmo-type (typing live-verified), cosmo-focus (mirror live-verified), cosmo-reason (tool loop, fake-API tests), secrets (oo7 + redaction). **A review found seven defects, four on boxes already ticked** — `cosmo confirm` could never succeed, the MCP annotation default was inverted fail-open, Surface B was laundered by `bash -c` and every other wrapper, and `run_in_terminal` was permanently denied on COSMIC. All fixed with regression tests (findings **§R**); the whole DoD is now demonstrated end to end against a fake API on the real session. 56 tests. One honest exception remains: **workspace-move chord not possible on this cosmic-comp build** (findings §C), plus one run against the real OpenAI API still to observe. |
-| **Phase 2** | In progress (2026-09-17), spec `docs/phase2-plan.md`. Done: §2.2 core types, §2.4 OpenAI provider (daemon speak-wiring waits on §2.3), §2.10 sentence splitter (findings §2, §4, §10). **Two review passes, eight defects, every one on a ticked box** — three in the WAV codec (findings **§R**: 24-bit files decoding as near-silence, a zero sample rate panicking inside the encoder), then three more (findings **§R2**: ordered-list markers spoken as their own sentences, and a stalled server hanging the speak path forever with no error). 99 tests green. §2.0 and **§2.1 done 2026-09-18**: packages installed, and the link spike says `ort` and `pipewire` both link and run live — but **`koko` is an unrelated crate and `kokoros` is not published at all**, so §2.5 needs a Kokoro decision it did not know it had (findings **§1**). §2.3 playback is now the next build. |
-| Phases 3–8 | Not started. |
+| **Phase 2** | In progress (2026-09-17), spec `docs/phase2-plan.md`. Done: §2.2 core types, §2.4 OpenAI provider (daemon speak-wiring waits on §2.3), §2.10 sentence splitter (findings §2, §4, §10). **Two review passes, eight defects, every one on a ticked box** — three in the WAV codec (findings **§R**: 24-bit files decoding as near-silence, a zero sample rate panicking inside the encoder), then three more (findings **§R2**: ordered-list markers spoken as their own sentences, and a stalled server hanging the speak path forever with no error). 99 tests green. §2.0 and **§2.1 done 2026-09-18**: packages installed, and the link spike says `ort` and `pipewire` both link and run live — but **`koko` is an unrelated crate and `kokoros` is not published at all**, so §2.5 needs a Kokoro decision it did not know it had (findings **§1**). §2.3 playback is now the next build. **Since completed** (`docs/phase2-plan.md`); Piper deferred and MeloTTS not pursued, both by the user. |
+| **Phases 3–8** | **Built (2026-09-26 → 2026-10-04).** Each phase's spec and findings are in `docs/phase{N}-plan.md` / `-findings.md`. Still open: the live reasoning run with a real key (E1, phase 5 §5.8), wake-word false-accept tuning on real days of audio (phase 7), building the RPM in COPR, and the clean-account release smoke test (phase 8 §8.6). All four need the user. |
 
 ### Carry-overs from phase 1 — tracked here so they don't rot
 
@@ -215,12 +215,12 @@ Goal: hold the key, see a transcript. Steal from cosmic-voice directly (`hotkey.
 
 ## Phase 4 — the reflex path — *where it starts feeling like Jarvis*
 
-- [ ] `cosmo-reflex`: matcher over the ~30-phrase command vocabulary + app names; confidence scoring; normalization ("pause the music" / "stop the track").
-- [ ] Escalation rule wired: below confidence threshold → hand transcript to reasoning (stubbed log if phase 5 incomplete); reflex matched but action **failed** → escalate rather than report failure.
-- [ ] Reflex executes only **allowlisted safe verbs** (media control, focus/launch, workspace moves) — gate integration test asserts deny/hold verbs are unreachable from reflex.
-- [ ] Cached-phrase acks on the reflex path: playback is pushing an existing buffer — zero synthesis. **Target < 150ms**; uncached Kokoro replies **< 400ms**.
-- [ ] `scripts/bench-reflex`: end-to-end timing harness (utterance audio fixture → action dispatched → ack started) so the 150ms budget is measured, not vibes.
-- [ ] Wake-independent correctness: works identically from `cosmo say` text input (testable without audio).
+- [x] `cosmo-reflex`: matcher over the ~30-phrase command vocabulary + app names; confidence scoring; normalization ("pause the music" / "stop the track"). *(phase-4 spec §4.3)*
+- [x] Escalation rule wired: below confidence threshold → hand transcript to reasoning (stubbed log if phase 5 incomplete); reflex matched but action **failed** → escalate rather than report failure. *(phase-4 spec §4.4)*
+- [x] Reflex executes only **allowlisted safe verbs** (media control, focus/launch, workspace moves) — gate integration test asserts deny/hold verbs are unreachable from reflex. *(phase-4 spec §4.3; workspace moves excluded, E2)*
+- [ ] Cached-phrase acks on the reflex path: playback is pushing an existing buffer — zero synthesis. **Target < 150ms**; uncached Kokoro replies **< 400ms**. *(zero synthesis, done. Budget partly met: 12 of 15 of the user's recorded commands ack within 150 ms, the rest 201–247 ms because they were still being spoken at release. Speculative decode at release recorded as the next step, not done: phase-4 findings §1)*
+- [x] `scripts/bench-reflex`: end-to-end timing harness (utterance audio fixture → action dispatched → ack started) so the 150ms budget is measured, not vibes. *(phase-4 findings §1)*
+- [x] Wake-independent correctness: works identically from `cosmo say` text input (testable without audio). *(phase-4 spec §4.2)*
 
 ---
 
@@ -228,21 +228,21 @@ Goal: hold the key, see a transcript. Steal from cosmic-voice directly (`hotkey.
 
 - [x] ~~`cosmo-reason` v2: **Realtime API** over `tokio-tungstenite`~~ *(Superseded 2026-09-30 by the user: the **streaming chat API** instead. Text-in/text-out Realtime costs 4–40× per token for no advantage once STT is local and cosmo speaks. Phase-5 findings §1–§2.)* **text-out** (no model audio — voice catalogue has no en-GB/en-AU, and marin/cedar ignore session instructions anyway). Reasoning + tool calls only; cosmo speaks.
 - [x] *(phase-5 findings §4: first audio ~550 ms after the first token, 4× sooner than the whole reply)* **Sentence-streamed TTS**: synthesize each sentence as it streams in; first audio in a few hundred ms.
-- [ ] Half-duplex enforcement on the live path; barge-in behind config with `doctor` warning when mic+speakers coexist.
-- [ ] Confirmation flow end to end: Hold → overlay/CLI confirm (local, no model) → execute. Forgeable-spoken-confirmation **rejected** (a spoken "confirm that" alone never completes a hold).
-- [ ] Token discipline verified live: log per-turn token usage + server rate limits; confirm reflex-path commands consume zero tokens.
-- [ ] `remember` memory loaded into each session's static prompt within budget.
+- [x] Half-duplex enforcement on the live path; barge-in behind config with `doctor` warning when mic+speakers coexist. *(phase-5 spec §5.4; the barge-in warning is `doctor`'s `!` since phase 8)*
+- [x] Confirmation flow end to end: Hold → overlay/CLI confirm (local, no model) → execute. Forgeable-spoken-confirmation **rejected** (a spoken "confirm that" alone never completes a hold). *(phase-4 spec §4.1 (a spoken confirm counts only while the key is held), phase-6 overlay confirm/cancel)*
+- [ ] Token discipline verified live: log per-turn token usage + server rate limits; confirm reflex-path commands consume zero tokens. *(logged per turn and shown by `doctor` since phase 8, and reflex turns are tested at zero API requests. The live run waits for the user's key: phase-5 spec §5.8)*
+- [x] `remember` memory loaded into each session's static prompt within budget. *(phase-5 spec §5.7)*
 
 ---
 
 ## Phase 6 — the overlay and applet
 
-- [ ] Path decision (blueprint §9 order): **libcosmic layer surface** first — same toolkit as the applet, COSMIC theming free. Fall back to raw `smithay-client-toolkit` + `wl_shm` + `tiny-skia` + `cosmic-text` if libcosmic fights the layer-shell use case (cosmic-voice's candidate window proves the raw path).
-- [ ] States, in build order: **listening** (waveform + live streaming partial) → **thinking** → **acting** (tool name in plain words) → **waiting** (pending action + confirm affordance) → **speaking** → **idle**. All driven by IPC events the daemon already emits.
-- [ ] Anchor bottom-center; no decorations; no focus steal. GNOME degradation → notifications.
-- [ ] Redraw discipline: coalesce twice — across each event burst and on `wl_surface.frame`. One input change = at most one buffer commit.
-- [ ] Voice picker with previews and background re-render progress.
-- [ ] `cosmo-applet`: thin libcosmic panel applet over the control socket. State the multiplicity invariant in a crate-level comment: **the panel spawns one applet process per output; the daemon owns the mic/hotkey/models, always.**
+- [x] Path decision (blueprint §9 order): **libcosmic layer surface** first — same toolkit as the applet, COSMIC theming free. Fall back to raw `smithay-client-toolkit` + `wl_shm` + `tiny-skia` + `cosmic-text` if libcosmic fights the layer-shell use case (cosmic-voice's candidate window proves the raw path). *(libcosmic layer surface: phase-6 spec §6.3)*
+- [x] States, in build order: **listening** (waveform + live streaming partial) → **thinking** → **acting** (tool name in plain words) → **waiting** (pending action + confirm affordance) → **speaking** → **idle**. All driven by IPC events the daemon already emits. *(phase-6 spec §6.3)*
+- [x] Anchor bottom-center; no decorations; no focus steal. GNOME degradation → notifications. *(phase-6 spec §6.3)*
+- [ ] Redraw discipline: coalesce twice — across each event burst and on `wl_surface.frame`. One input change = at most one buffer commit. *(built with one deviation: two commits per change while listening, phase-6 findings §3)*
+- [x] Voice picker with previews and background re-render progress. *(phase-6 spec §6.4)*
+- [x] `cosmo-applet`: thin libcosmic panel applet over the control socket. State the multiplicity invariant in a crate-level comment: **the panel spawns one applet process per output; the daemon owns the mic/hotkey/models, always.** *(phase-6 spec §6.5)*
 - [ ] Parked, not forgotten: Kokoro voice-blending slider (blueprint §4) — only after the picker ships.
 
 ---
