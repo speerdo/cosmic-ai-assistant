@@ -83,7 +83,7 @@ async fn notify(body: &str) -> zbus::Result<()> {
 }
 
 /// Lock policy mode (findings §L).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LockMode {
     /// logind `LockedHint` is authoritative (GNOME sets it; COSMIC today
     /// does not, so this mode must never be selected on COSMIC).
@@ -210,6 +210,8 @@ pub struct Engine {
     /// path, read and cleared by `utterance` (turns needing reasoning run
     /// one at a time: ears commits one recording at a time).
     no_key_hit: AtomicBool,
+    /// The last reasoning turn's usage, for `doctor`.
+    last_usage: Mutex<Option<cosmo_reason::TurnUsage>>,
 }
 
 impl Engine {
@@ -243,6 +245,7 @@ impl Engine {
             no_key_said: AtomicBool::new(false),
             reasoner: tokio::sync::Mutex::new(None),
             no_key_hit: AtomicBool::new(false),
+            last_usage: Mutex::new(None),
         }
     }
 
@@ -409,13 +412,15 @@ impl Engine {
             };
             return DoctorCheck {
                 name: "ears".into(),
-                ok: models_ok && capture_ok && keyboards > 0 && !self.cfg.barge_in,
+                ok: models_ok && capture_ok && keyboards > 0,
+                warn: self.cfg.barge_in,
                 detail: format!("{capture}; {key}; {models}{wake}{barge}"),
             };
         }
         DoctorCheck {
             name: "ears".into(),
             ok: false,
+            warn: false,
             detail: format!("not listening — {}", self.ears_absent()),
         }
     }
@@ -628,6 +633,39 @@ impl Engine {
         }
     }
 
+    /// The last reasoning turn's token use and the server's rate limit
+    /// (invariant #7), so they're visible without watching events.
+    fn usage_check(&self) -> DoctorCheck {
+        let detail = match &*self.last_usage.lock().unwrap() {
+            None => "no reasoning turn yet (reflex commands use none)".to_owned(),
+            Some(u) => {
+                let mut d = format!(
+                    "last turn: {} tokens ({} in, {} out)",
+                    u.total_tokens, u.prompt_tokens, u.completion_tokens
+                );
+                match (u.remaining_requests, u.remaining_tokens) {
+                    (None, None) => d.push_str("; the provider reports no rate limit"),
+                    (r, t) => {
+                        d.push_str("; remaining:");
+                        if let Some(r) = r {
+                            d.push_str(&format!(" {r} requests"));
+                        }
+                        if let Some(t) = t {
+                            d.push_str(&format!(" {t} tokens"));
+                        }
+                    }
+                }
+                d
+            }
+        };
+        DoctorCheck {
+            name: "token use".into(),
+            ok: true,
+            warn: false,
+            detail,
+        }
+    }
+
     fn doctor(&self) -> DoctorReport {
         let cfg_ok = cosmo_config::load().is_ok();
         let socket_ok = std::path::Path::new(&cosmo_ipc::socket_path()).exists();
@@ -639,9 +677,12 @@ impl Engine {
             }
             None => (
                 false,
-                "agent not connected — is computer-use-linux installed? (plan §1.3)".to_owned(),
+                "agent not connected — is computer-use-linux installed? \
+                 (`npm install -g @agent-sh/computer-use-linux`)"
+                    .to_owned(),
             ),
         };
+        let lock_warn = self.lock_mode == LockMode::CosmicDenyAll;
         let (lock_ok, lock_detail) = match (self.lock_mode, self.gate.lock_state()) {
             (LockMode::LogindHint, LockState::Unlocked) => (
                 true,
@@ -655,8 +696,10 @@ impl Engine {
                 false,
                 "logind probe failed — sensitive tools refuse (fail-closed)".to_owned(),
             ),
+            // Fail-closed by design until upstream sets LockedHint: a
+            // warning, so a working install can read green.
             (LockMode::CosmicDenyAll, _) => (
-                false,
+                true,
                 "no lock-state source on COSMIC (findings §L) — screenshot / \
                  click / type / clipboard denied outright until the upstream \
                  greeter sets LockedHint. run_in_terminal is unaffected: it \
@@ -687,7 +730,10 @@ impl Engine {
         let key_detail = if env_key {
             (true, "key present (source: env — dev/CI only)".to_owned())
         } else if key_loaded {
-            (true, format!("the {provider} key is loaded (source: keyring)"))
+            (
+                true,
+                format!("the {provider} key is loaded (source: keyring)"),
+            )
         } else {
             (
                 false,
@@ -726,6 +772,7 @@ impl Engine {
                 DoctorCheck {
                     name: "config".into(),
                     ok: cfg_ok,
+                    warn: false,
                     detail: if cfg_ok {
                         "config.ron loads".into()
                     } else {
@@ -735,34 +782,41 @@ impl Engine {
                 DoctorCheck {
                     name: "control socket".into(),
                     ok: socket_ok,
+                    warn: false,
                     detail: "the daemon is listening (you are talking to it)".into(),
                 },
                 DoctorCheck {
                     name: "lock policy".into(),
                     ok: lock_ok,
+                    warn: lock_warn,
                     detail: lock_detail,
                 },
                 DoctorCheck {
                     name: "api key".into(),
                     ok: key_detail.0,
+                    warn: false,
                     detail: key_detail.1,
                 },
                 DoctorCheck {
                     name: "reasoning".into(),
                     ok: reasoning_detail.0,
+                    warn: false,
                     detail: reasoning_detail.1,
                 },
                 DoctorCheck {
                     name: "agent (MCP)".into(),
                     ok: agent_ok,
+                    warn: false,
                     detail: agent_detail,
                 },
                 DoctorCheck {
                     name: "speech".into(),
                     ok: speech_ok,
+                    warn: false,
                     detail: speech_detail,
                 },
                 self.ears_check(),
+                self.usage_check(),
             ],
         }
     }
@@ -894,6 +948,7 @@ impl Engine {
         let usage = reasoner.last_usage().clone();
         drop(slot);
         if usage.requests > 0 {
+            *self.last_usage.lock().unwrap() = Some(usage.clone());
             let _ = self.events.send(Event::Usage {
                 prompt_tokens: usage.prompt_tokens,
                 completion_tokens: usage.completion_tokens,

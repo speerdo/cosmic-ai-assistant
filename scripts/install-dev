@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Install cosmo for the current user, from this checkout (phase 6; proper
-# packages are phase 8).
+# Install cosmo for the current user, from this checkout (phase 6). The
+# packages (packaging/) install the same files system-wide.
 #
 #   scripts/install-dev              # build (release) and install
 #   scripts/install-dev --no-build   # install what's already built
@@ -10,6 +10,7 @@
 #   ~/.local/bin/{cosmod,cosmo,cosmo-overlay,cosmo-applet}
 #   ~/.config/systemd/user/cosmo.service      the daemon (not enabled: see below)
 #   ~/.config/autostart/…CosmoOverlay.desktop the overlay, at login
+#   ~/.local/libexec/cosmo/fetch-models       for `cosmo models fetch`
 #   ~/.local/share/applications/…CosmoApplet.desktop
 #                                              the panel applet (add it in
 #                                              Settings → Desktop → Panel → Applets)
@@ -31,12 +32,13 @@ case "${1:-}" in
     --no-build) build=0 ;;
     --uninstall)
         for b in "${BINARIES[@]}"; do rm -fv "$BIN/$b"; done
-        rm -fv "$UNIT_DIR/cosmo.service" "$AUTOSTART/$OVERLAY_ID.desktop" "$APPS/$APPLET_ID.desktop"
+        rm -fv "$UNIT_DIR/cosmo.service" "$AUTOSTART/$OVERLAY_ID.desktop" "$APPS/$APPLET_ID.desktop" \
+            "$HOME/.local/libexec/cosmo/fetch-models"
         echo "removed; if the daemon was enabled: systemctl --user disable --now cosmo"
         exit 0
         ;;
     "") ;;
-    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
 esac
 
@@ -54,63 +56,22 @@ for b in "${BINARIES[@]}"; do
     install -m 0755 "$ROOT/target/release/$b" "$BIN/$b"
 done
 
-# The MCP agent (computer-use-linux) is usually an npm global, often under
-# nvm, which a systemd service's PATH doesn't include; its `node` lives in
-# the same directory. Found now and written into the unit: re-run this
-# script after moving or upgrading node.
-path_line=""
-if agent="$(command -v computer-use-linux)"; then
-    path_line="Environment=PATH=$(dirname "$agent"):/usr/local/bin:/usr/bin:/bin"
-else
-    echo "note: computer-use-linux not found; the daemon will run without the MCP agent" >&2
-fi
-
-cat >"$UNIT_DIR/cosmo.service" <<UNIT
-[Unit]
-Description=cosmo voice assistant daemon
-PartOf=graphical-session.target
-After=graphical-session.target pipewire.service
-
-[Service]
-ExecStart=$BIN/cosmod
-$path_line
-Restart=on-failure
-RestartSec=2
-
-[Install]
-WantedBy=graphical-session.target
-UNIT
-
-# Absolute paths: the panel and the session don't necessarily have
-# ~/.local/bin on their PATH.
-cat >"$AUTOSTART/$OVERLAY_ID.desktop" <<DESKTOP
-[Desktop Entry]
-Type=Application
-Name=cosmo overlay
-Comment=cosmo's on-screen face
-Exec=$BIN/cosmo-overlay
-NoDisplay=true
-X-GNOME-Autostart-enabled=true
-DESKTOP
-
-cat >"$APPS/$APPLET_ID.desktop" <<DESKTOP
-[Desktop Entry]
-Type=Application
-Name=cosmo
-Comment=cosmo voice assistant
-Exec=$BIN/cosmo-applet
-Icon=audio-input-microphone-symbolic
-Terminal=false
-Categories=COSMIC;
-Keywords=COSMIC;Applet;voice;assistant;
-NoDisplay=true
-X-CosmicApplet=true
-X-CosmicHoverPopup=Auto
-DESKTOP
+# The unit and desktop files are the packages' own (packaging/), with
+# /usr/bin rewritten to where this installs. The daemon finds the MCP agent
+# itself, nvm and npm-global included (phase-8 §8.1), so no PATH is baked in.
+PKG="$ROOT/packaging"
+LIBEXEC="$HOME/.local/libexec/cosmo"
+sed "s|/usr/bin/|$BIN/|g" "$PKG/systemd/cosmo.service" >"$UNIT_DIR/cosmo.service"
+sed "s|/usr/bin/|$BIN/|g" "$PKG/desktop/$OVERLAY_ID.desktop" >"$AUTOSTART/$OVERLAY_ID.desktop"
+sed "s|/usr/bin/|$BIN/|g" "$PKG/desktop/$APPLET_ID.desktop" >"$APPS/$APPLET_ID.desktop"
+# `cosmo models fetch` looks for the fetcher beside its binary first.
+mkdir -p "$LIBEXEC"
+install -m 0755 "$ROOT/scripts/fetch-models" "$LIBEXEC/fetch-models"
 
 cat <<NEXT
 Installed to $BIN. To start using it:
 
+  cosmo models fetch                       # the local models, ~2 GB, once
   systemctl --user daemon-reload
   systemctl --user enable --now cosmo      # the daemon
   $BIN/cosmo-overlay &                     # the overlay (starts itself at next login)

@@ -11,6 +11,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+pub mod locate;
+pub mod models;
 pub mod secret;
 
 /// The whole config file. Every field has a default; the file written on
@@ -20,7 +22,7 @@ pub mod secret;
 pub struct Config {
     /// Reasoning provider name — never a key: openai, anthropic,
     /// openrouter, opencode-go, ollama or zai. Key storage is the Secret
-    /// Service (`cosmo auth login`, one key per provider); env var
+    /// Service (`cosmo auth-login`, one key per provider); env var
     /// `COSMO_API_KEY` for dev/CI only.
     pub provider: String,
     /// Model for the reasoning path. Empty is the provider's default.
@@ -327,13 +329,13 @@ pub fn commented_default() -> String {
 // override a field, uncomment it (keep the surrounding `( ... )`).
 //
 // NOTE: never put an API key in this file. It is the file users paste into
-// bug reports. Keys live in the Secret Service (`cosmo auth login`); the
+// bug reports. Keys live in the Secret Service (`cosmo auth-login`); the
 // env var COSMO_API_KEY is a dev/CI convenience only.
 
 (
     // Reasoning provider name. The key itself is NOT configured here.
     // One of: openai, anthropic, openrouter, opencode-go, ollama, zai.
-    // `cosmo auth login` stores a key for whichever is set.
+    // `cosmo auth-login` stores a key for whichever is set.
     // provider: "{provider}",
     // An empty model is the provider's default (openai: gpt-4o-mini,
     // anthropic: claude-haiku-4-5, openrouter: anthropic/claude-haiku-4.5,
@@ -359,7 +361,7 @@ pub fn commented_default() -> String {
     // tmux_session: "{tmux_session}",
 
     // Voice output (phase 2). A provider name only — never a key.
-    // "kokoro" speaks locally once `scripts/fetch-models` has run; "openai"
+    // "kokoro" speaks locally once `cosmo models fetch` has run; "openai"
     // is the cloud alternative (uses the stored key). Voice ids come from
     // `cosmo voice list`; "default" is the provider's pick. An empty
     // voice_model is the provider's default (kokoro: "fp32" | "fp16" | "q8").
@@ -377,7 +379,7 @@ pub fn commented_default() -> String {
     // trigger_key: {trigger_key},
 
     // Speech recognition: model directory names under
-    // ~/.cache/cosmo/models/asr/ (`scripts/fetch-models --asr`). Empty is
+    // ~/.cache/cosmo/models/asr/ (`cosmo models fetch`). Empty is
     // the default pair; "none" turns one off. Streaming shows live
     // partials; offline produces the text that commits.
     // asr_streaming_model: "{asr_streaming_model}",

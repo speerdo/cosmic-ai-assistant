@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# The "static-ish binary" claim as a gate (phase-8 §8.3): each binary's
+# NEEDED shared libraries must be in its allowlist, so a new system
+# library can't slip into the packages' dependencies unnoticed.
+#
+#   packaging/check-deps [target/release]
+#
+# Audited 2026-10-04. ONNX Runtime and sherpa-onnx are static, Wayland is
+# the pure-Rust client, eSpeak NG is dlopen()ed (not linked, and not
+# allowed to be: it's GPL).
+set -euo pipefail
+
+DIR="${1:-$(cd "$(dirname "$0")/.." && pwd)/target/release}"
+BASE="libc.so.6 libm.so.6 libgcc_s.so.1 ld-linux-x86-64.so.2"
+declare -A ALLOWED=(
+    [cosmod]="$BASE libmvec.so.1 libstdc++.so.6 libpipewire-0.3.so.0"
+    [cosmo]="$BASE"
+    [cosmo-overlay]="$BASE libxkbcommon.so.0"
+    [cosmo-applet]="$BASE libxkbcommon.so.0"
+)
+
+fail=0
+for bin in "${!ALLOWED[@]}"; do
+    path="$DIR/$bin"
+    [[ -x "$path" ]] || { echo "missing: $path" >&2; fail=1; continue; }
+    while read -r lib; do
+        [[ " ${ALLOWED[$bin]} " == *" $lib "* ]] || {
+            echo "$bin: unexpected dependency $lib" >&2
+            fail=1
+        }
+    done < <(readelf -d "$path" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p')
+done
+(( fail == 0 )) && echo "dependencies: as audited"
+exit "$fail"

@@ -3,7 +3,7 @@
 //! **One key per provider**, stored under `application=cosmo,
 //! provider=<name>` (an OpenAI key stored before providers existed is
 //! already in that shape). Resolution order, exactly: env var → Secret
-//! Service (oo7) → structured error pointing at `cosmo auth login`. The env
+//! Service (oo7) → structured error pointing at `cosmo auth-login`. The env
 //! vars are for dev and CI only: `COSMO_API_KEY` for the reasoning
 //! provider, `OPENAI_API_KEY` for OpenAI alone. A key is only ever sent to
 //! the provider it was stored for: OpenAI voice output never picks up
@@ -96,7 +96,7 @@ impl KeySource for ProviderKey {
         // `keyring_lookup` yields a [`ReasonKind`], whose Display is the
         // user-facing fix. Mapping an `oo7::Error` here instead renders
         // oo7's own Display and produces nonsense like *"DBus error The
-        // collection 'no key stored — run `cosmo auth login`' doesn't
+        // collection 'no key stored — run `cosmo auth-login`' doesn't
         // exists"* — the message smuggled through a D-Bus error's
         // collection-name field and back out again.
         match tokio::task::block_in_place(|| {
@@ -109,7 +109,7 @@ impl KeySource for ProviderKey {
             }
             Ok(Err(kind)) => Err(crate::ReasonError::NoKey(kind.to_string())),
             Err(e) => Err(crate::ReasonError::NoKey(format!(
-                "keyring unavailable from this context: {e}; run `cosmo auth login`"
+                "keyring unavailable from this context: {e}; run `cosmo auth-login`"
             ))),
         }
     }
@@ -126,7 +126,7 @@ pub async fn resolve_keyring(provider: &str) -> Result<SecretKey, ReasonKind> {
 pub enum ReasonKind {
     /// The keyring is locked; unlocking it fixes this.
     KeyringLocked,
-    /// No key stored; `cosmo auth login` fixes this.
+    /// No key stored; `cosmo auth-login` fixes this.
     Missing,
     /// Something else went wrong reaching the keyring.
     Failed(String),
@@ -155,9 +155,9 @@ impl std::fmt::Display for ReasonKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ReasonKind::KeyringLocked => write!(f, "keyring locked — unlock and retry"),
-            ReasonKind::Missing => write!(f, "no key stored — run `cosmo auth login`"),
+            ReasonKind::Missing => write!(f, "no key stored — run `cosmo auth-login`"),
             ReasonKind::Failed(e) => {
-                write!(f, "keyring lookup failed: {e}; run `cosmo auth login`")
+                write!(f, "keyring lookup failed: {e}; run `cosmo auth-login`")
             }
         }
     }
@@ -190,7 +190,7 @@ async fn keyring_lookup(provider: &str) -> Result<SecretKey, ReasonKind> {
     Ok(SecretKey::from_raw(text))
 }
 
-/// Store a provider's key in the Secret Service (`cosmo auth login`),
+/// Store a provider's key in the Secret Service (`cosmo auth-login`),
 /// replacing any it held.
 pub async fn store_key(provider: &str, key: &str) -> anyhow::Result<()> {
     let keyring = Keyring::new().await?;
@@ -205,7 +205,7 @@ pub async fn store_key(provider: &str, key: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Delete a provider's stored key (`cosmo auth logout`).
+/// Delete a provider's stored key (`cosmo auth-logout`).
 pub async fn delete_key(provider: &str) -> anyhow::Result<()> {
     let keyring = Keyring::new().await?;
     keyring
@@ -214,7 +214,7 @@ pub async fn delete_key(provider: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `cosmo auth status`: is the reasoning provider's key resolvable, and
+/// `cosmo auth-status`: is the reasoning provider's key resolvable, and
 /// from which source.
 pub async fn auth_status(provider: &str) -> String {
     if ProviderKey::reasoning(provider).env().is_some() {
@@ -223,7 +223,7 @@ pub async fn auth_status(provider: &str) -> String {
     match resolve_keyring(provider).await {
         Ok(_) => "key present (source: keyring)".into(),
         Err(ReasonKind::KeyringLocked) => "keyring locked — unlock and retry".into(),
-        Err(ReasonKind::Missing) => "no key stored — run `cosmo auth login`".into(),
+        Err(ReasonKind::Missing) => "no key stored — run `cosmo auth-login`".into(),
         Err(other) => format!("keyring unavailable — {other}"),
     }
 }
@@ -241,13 +241,13 @@ mod tests {
     /// path renders `ReasonKind` directly, so its Display is the message a
     /// user sees on a keyless machine — it must name the fix, not leak a
     /// transport error. This previously reached the CLI as
-    /// *"DBus error The collection 'no key stored — run `cosmo auth login`'
+    /// *"DBus error The collection 'no key stored — run `cosmo auth-login`'
     /// doesn't exists"*: the message had been stuffed into an `oo7` error's
     /// collection-name field and rendered back out through oo7's Display.
     #[test]
     fn key_failures_render_their_fix() {
         let missing = ReasonKind::Missing.to_string();
-        assert_eq!(missing, "no key stored — run `cosmo auth login`");
+        assert_eq!(missing, "no key stored — run `cosmo auth-login`");
         assert!(
             !missing.contains("DBus"),
             "transport detail leaked: {missing}"
@@ -261,7 +261,7 @@ mod tests {
         // A genuine transport failure keeps its detail *and* names the fix.
         let failed = ReasonKind::Failed("connection refused".into()).to_string();
         assert!(failed.contains("connection refused"));
-        assert!(failed.contains("cosmo auth login"));
+        assert!(failed.contains("cosmo auth-login"));
     }
 
     #[test]

@@ -29,6 +29,14 @@ const WIDTH: u32 = 560;
 const BOTTOM_MARGIN: i32 = 48;
 
 fn main() -> cosmic::iced::Result {
+    // For `cosmo doctor`: 0 = layer shell, 1 = none, 2 = no display.
+    if std::env::args().nth(1).as_deref() == Some("--check-layer-shell") {
+        std::process::exit(match cosmo_overlay::notify::layer_shell() {
+            Some(true) => 0,
+            Some(false) => 1,
+            None => 2,
+        });
+    }
     // No layer shell (GNOME on Wayland): notifications instead of a face.
     if !cosmo_overlay::notify::layer_shell_available() {
         eprintln!("cosmo-overlay: no layer shell here; using notifications");

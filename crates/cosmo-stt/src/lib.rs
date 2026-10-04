@@ -45,7 +45,7 @@ use std::path::PathBuf;
 /// one, so `doctor` can print it as is.
 #[derive(Debug, thiserror::Error)]
 pub enum SttError {
-    #[error("model file not found: {0} (run scripts/fetch-models --asr)")]
+    #[error("model file not found: {0} (run `cosmo models fetch`)")]
     Missing(PathBuf),
     #[error("sherpa-onnx could not load the model in {0}")]
     Load(PathBuf),

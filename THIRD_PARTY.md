@@ -2,7 +2,8 @@
 
 cosmo's own source is MIT (see `LICENSE`). This file records what else goes
 into cosmo, under what terms, and what that asks of anyone who builds or
-redistributes it. It was audited on 2026-09-29 (phase-3 findings §9).
+redistributes it. It was audited on 2026-09-29 (phase-3 findings §9), and again for
+packaging on 2026-10-04 (phase-8 findings).
 
 **The rule it follows:** nothing linked into a cosmo binary is under a
 copyleft license that would bind the binary as a whole, and anything cosmo
@@ -81,18 +82,32 @@ cosmo doesn't redistribute any model today: the user's own machine
 downloads them. The files are sherpa-onnx's int8 ONNX exports, taken from
 sherpa's GitHub releases.
 
-## Before anything is packaged (phase 8)
+## In the packages (phase 8, 2026-10-04)
 
-- `cosmo-applet`'s package must say it's GPL-3.0 as distributed, and ship
-  (or point to) the source, as the GPL requires.
-- A binary distribution must carry the license texts and notices of what
-  it links: the permissive licenses above require that much. Generate
-  them from the dependency graph (for example with `cargo about`) rather
-  than by hand.
-- If a package **bundles** the NVIDIA models, include each model's
-  `NOTICE.txt` and a copy of the NVIDIA Open Model License Agreement.
-- eSpeak NG stays a separate system package, never bundled into cosmo's
-  own files.
+`packaging/` builds two packages per distribution (`packaging/README.md`):
+
+- **`cosmo`** (cosmod, cosmo, cosmo-overlay): MIT, plus the licences of
+  what it links. `/usr/share/doc/cosmo/third-party-licenses.txt` (Fedora:
+  the `%license` directory) holds every licence text with the crates and
+  native libraries that use it, generated from `Cargo.lock` by
+  `packaging/gen-licenses` (`cargo about`), with the native libraries'
+  own licence files collected by `scripts/fetch-native` (ONNX Runtime's
+  `LICENSE` and `ThirdPartyNotices.txt`, which its prebuilt archive
+  lacks, are fetched from upstream at the same version, pinned by
+  checksum). The generation **refuses GPL** for these three binaries.
+- **`cosmo-applet`**: declared GPL-3.0-only as distributed, with the
+  source pointed to at the exact commit, and the GPL text included.
+- **libcosmic embeds two fonts** (Open Sans, Noto Sans Mono) under the
+  SIL Open Font License 1.1, which allows embedding as long as the licence
+  goes with them. It does, in the notices above. libcosmic's CC-BY-SA-4.0
+  icons are embedded only on non-unix targets, so they aren't in these
+  binaries.
+- **No model is packaged.** Each user runs `cosmo models fetch`, so the
+  NVIDIA notice duty (on redistribution) still never arises. If a package
+  ever bundles them, include each model's `NOTICE.txt` and a copy of the
+  NVIDIA Open Model License Agreement.
+- eSpeak NG is a package dependency (`libespeak-ng1` / `espeak-ng`),
+  never bundled.
 
 ## Data that stays local
 

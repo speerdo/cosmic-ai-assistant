@@ -44,7 +44,8 @@ fn every_response_variant_round_trips() {
         Response::Doctor(DoctorReport {
             checks: vec![DoctorCheck {
                 name: "lock policy".into(),
-                ok: false,
+                ok: true,
+                warn: true,
                 detail: "no lock-state source on COSMIC".into(),
             }],
         }),
@@ -281,4 +282,13 @@ fn transcript_uses_the_plain_field_name() {
     })
     .unwrap();
     assert_eq!(json, r#"{"type":"transcript","text":"hi","final":true}"#);
+}
+
+/// `warn` arrived in phase 8; a report from an older daemon (no field) still
+/// reads, as not a warning.
+#[test]
+fn doctor_check_without_warn_reads_as_no_warning() {
+    let check: DoctorCheck =
+        serde_json::from_str(r#"{"name":"ears","ok":true,"detail":"fine"}"#).unwrap();
+    assert!(check.ok && !check.warn);
 }

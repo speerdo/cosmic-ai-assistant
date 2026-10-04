@@ -272,6 +272,11 @@ pub enum ConfirmOutcome {
 pub struct DoctorCheck {
     pub name: String,
     pub ok: bool,
+    /// Works, but there's something to read: a limit by design (no lock
+    /// state on COSMIC), or a setting with a cost (barge-in). Never fails
+    /// `doctor`.
+    #[serde(default)]
+    pub warn: bool,
     /// Short explanation when not ok, or extra detail when ok.
     pub detail: String,
 }

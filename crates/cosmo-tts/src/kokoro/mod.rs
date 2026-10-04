@@ -145,7 +145,7 @@ impl KokoroTts {
 
 fn missing(path: &Path) -> TtsError {
     TtsError::Synthesis(format!(
-        "Kokoro model files missing ({}) — run scripts/fetch-models",
+        "Kokoro model files missing ({}) — run `cosmo models fetch`",
         path.display()
     ))
 }

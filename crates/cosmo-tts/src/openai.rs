@@ -231,7 +231,7 @@ mod tests {
     fn no_key_is_a_structured_error_before_any_network() {
         let err = OpenAiTts::new(&ProviderInit::default()).unwrap_err();
         assert!(matches!(err, TtsError::NoKey));
-        assert!(err.to_string().contains("cosmo auth login"));
+        assert!(err.to_string().contains("cosmo auth-login"));
     }
 
     #[test]

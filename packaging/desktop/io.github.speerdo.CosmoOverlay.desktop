@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=cosmo overlay
+Comment=cosmo's on-screen face
+Exec=/usr/bin/cosmo-overlay
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

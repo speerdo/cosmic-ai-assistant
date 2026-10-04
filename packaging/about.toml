@@ -1,0 +1,96 @@
+# cargo-about policy for the `cosmo` package (daemon, CLI, overlay): the
+# licences a crate linked into them may carry. GPL is deliberately absent:
+# a GPL crate reaching these binaries fails `packaging/gen-licenses`.
+# THIRD_PARTY.md explains each choice.
+accepted = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unlicense",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+    "BSL-1.0",
+    # The fonts libcosmic embeds (Open Sans, Noto Sans Mono): embedding is
+    # allowed, with the licence carried alongside.
+    "OFL-1.1",
+]
+targets = ["x86_64-unknown-linux-gnu"]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# Git dependencies whose crate directory names no licence: each is
+# clarified from its repository's root licence file, pinned by checksum, so
+# a relicensing upstream fails generation instead of passing silently.
+# (Checked 2026-10-04 against the revisions in Cargo.lock.)
+# libcosmic's own tree also holds CC-BY-SA-4.0 icons (cosmic-icons/), but
+# its build.rs embeds them only for non-unix targets; on Linux the binary
+# carries its MPL-2.0 code and two OFL-1.1 fonts (res/, include_bytes!).
+[libcosmic.clarify]
+license = "MPL-2.0 AND OFL-1.1"
+[[libcosmic.clarify.git]]
+path = "LICENSE"
+checksum = "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"
+[[libcosmic.clarify.git]]
+path = "res/open-sans/LICENSE"
+checksum = "87a330d2f56cfe470431eed7996fa5423f694c79e2ad7c4c515ac75bc9a340d6"
+[[libcosmic.clarify.git]]
+path = "res/noto/LICENSE"
+checksum = "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2"
+
+[cosmic-config.clarify]
+license = "MPL-2.0"
+[[cosmic-config.clarify.git]]
+path = "LICENSE"
+checksum = "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"
+
+[cosmic-config-derive.clarify]
+license = "MPL-2.0"
+[[cosmic-config-derive.clarify.git]]
+path = "LICENSE"
+checksum = "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"
+
+[cosmic-theme.clarify]
+license = "MPL-2.0"
+[[cosmic-theme.clarify.git]]
+path = "LICENSE"
+checksum = "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"
+
+[cosmic-settings-daemon.clarify]
+license = "MPL-2.0"
+[[cosmic-settings-daemon.clarify.git]]
+path = "LICENSE.md"
+checksum = "e368885fd6ab4d78863ed9a0daac8a16b40a55c58395a9061f7c36b52a30536d"
+
+[dnd.clarify]
+license = "MIT"
+[[dnd.clarify.git]]
+path = "LICENSE"
+checksum = "7faec985f3e9b1c4a1df646bfedc304ba67e409447f7ab7f4f591f68708d85dc"
+
+# Keyed by name only, so this also tries crates.io's `mime 0.3.17` and warns
+# that it doesn't match; that crate then keeps its own `license` field.
+[mime.clarify]
+license = "MIT"
+[[mime.clarify.git]]
+path = "LICENSE"
+checksum = "7faec985f3e9b1c4a1df646bfedc304ba67e409447f7ab7f4f591f68708d85dc"
+
+# cosmo-applet only (packaging/gen-licenses accepts GPL-3.0 for it alone).
+[cosmic-panel-config.clarify]
+license = "GPL-3.0-only"
+[[cosmic-panel-config.clarify.git]]
+path = "LICENSE.md"
+checksum = "6ea843d9f221a2a7cb757d65c86368b9f207584ed0f2653e4b215a7702a7e1c7"
+
+[xdg-shell-wrapper-config.clarify]
+license = "GPL-3.0-only"
+[[xdg-shell-wrapper-config.clarify.git]]
+path = "LICENSE.md"
+checksum = "6ea843d9f221a2a7cb757d65c86368b9f207584ed0f2653e4b215a7702a7e1c7"

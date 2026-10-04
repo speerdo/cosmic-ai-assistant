@@ -147,7 +147,7 @@ pub struct Speech {
     active: Mutex<Arc<Active>>,
     /// Providers by (name, model). Built lazily (the keyring may be locked
     /// at boot); a cloud one is cached only once it was built with a key,
-    /// so `cosmo auth login` after startup takes effect without a restart.
+    /// so `cosmo auth-login` after startup takes effect without a restart.
     providers: Mutex<HashMap<(String, String), Arc<dyn VoiceProvider>>>,
     /// Turn generation: see [`Speech::interrupt`].
     generation: AtomicU64,

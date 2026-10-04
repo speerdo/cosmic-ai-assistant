@@ -3,7 +3,7 @@
 //! cosmo speaks two wire formats: OpenAI's chat completions (most providers
 //! copy it) and Anthropic's Messages API (`anthropic.rs`). A provider is a
 //! name in `config.ron` (`provider`), which picks the endpoint, the format,
-//! how the key is sent, where `cosmo auth login` sends you for a key, and
+//! how the key is sent, where `cosmo auth-login` sends you for a key, and
 //! the model used when `model` is left empty. `api_base` and `api_format`
 //! override the endpoint and format for anything not in the table.
 //!
@@ -59,11 +59,11 @@ pub struct Preset {
     pub format: Format,
     /// How the key is sent to the Messages endpoint (chat is always Bearer).
     pub messages_auth: Auth,
-    /// Where `cosmo auth login` opens.
+    /// Where `cosmo auth-login` opens.
     pub key_page: &'static str,
     /// The model used when `model` is empty.
     pub default_model: &'static str,
-    /// A caution `cosmo auth login` and `doctor` show (terms of use).
+    /// A caution `cosmo auth-login` and `doctor` show (terms of use).
     pub note: Option<&'static str>,
 }
 

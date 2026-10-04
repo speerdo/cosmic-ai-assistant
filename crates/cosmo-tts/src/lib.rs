@@ -48,7 +48,7 @@ pub enum TtsError {
     UnknownProvider { name: String, available: String },
     #[error("provider \"{provider}\" has no voice \"{voice}\"")]
     UnknownVoice { provider: String, voice: String },
-    #[error("no API key — run `cosmo auth login`")]
+    #[error("no API key — run `cosmo auth-login`")]
     NoKey,
     #[error("speech service unreachable: {0}")]
     Network(String),

@@ -258,11 +258,13 @@ Goal: hold the key, see a transcript. Steal from cosmic-voice directly (`hotkey.
 
 ## Phase 8 — packaging and release
 
-- [ ] `packaging/`: systemd **user** unit for the daemon (WantedBy `graphical-session.target`); autostart consideration for overlay/applet.
-- [ ] Model files: first-run fetch into `~/.cache/cosmo/models/` with checksums + progress (don't bloat packages; do ship config).
-- [ ] COPR spec (Fedora) and deb (Pop!_OS). Rust static-ish binary + models is the packaging argument; keep it true (audit dynamic deps: onnxruntime, pipewire, wayland).
-- [ ] `cosmo doctor` final form: uaccess ACL, PipeWire, models present, layer-shell support, lock-screen fail-closed check, barge-in warning, token/rate-limit display.
-- [ ] README with the positioning statement (§14) and attribution: `omarchy-voice`, `cosmic-voice`, `computer-use-linux`, Kokoro-82M.
+*Spec `docs/phase8-plan.md`, findings `docs/phase8-findings.md`.*
+
+- [x] `packaging/`: systemd **user** unit for the daemon (WantedBy `graphical-session.target`); autostart consideration for overlay/applet. *(Unit enabled globally on install; overlay via `/etc/xdg/autostart`; the applet is added in the panel settings. The daemon now finds the npm agent itself, so no PATH is baked in: findings §3.)*
+- [x] Model files: first-run fetch into `~/.cache/cosmo/models/` with checksums + progress (don't bloat packages; do ship config). *(`cosmo models` / `cosmo models fetch`, running the pinned, checksummed `fetch-models` installed as `/usr/libexec/cosmo/fetch-models`.)*
+- [ ] COPR spec (Fedora) and deb (Pop!_OS). Rust static-ish binary + models is the packaging argument; keep it true (audit dynamic deps: onnxruntime, pipewire, wayland). *(Debs built, `cosmo` + GPL-3.0 `cosmo-applet`, with generated licence notices; dependencies audited and gated by `packaging/check-deps` (findings §1–2). **The RPM spec is written but not built**: no Fedora box.)*
+- [x] `cosmo doctor` final form: uaccess ACL, PipeWire, models present, layer-shell support, lock-screen fail-closed check, barge-in warning, token/rate-limit display. *(Plus works with the daemon down, and a warning state so COSMIC's by-design lock refusal doesn't keep it red: findings §4.)*
+- [x] README with the positioning statement (§14) and attribution: `omarchy-voice`, `cosmic-voice`, `computer-use-linux`, Kokoro-82M.
 - [ ] Release smoke test on a clean COSMIC VM/user account: install → `doctor` green → `say` → voice → hotkey, with no manual group membership or root.
 
 ---

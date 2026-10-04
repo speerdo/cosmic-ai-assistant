@@ -29,7 +29,7 @@ pub fn default_model_path() -> Option<PathBuf> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum VadError {
-    #[error("VAD model not found at {0} (run scripts/fetch-models --vad)")]
+    #[error("VAD model not found at {0} (run `cosmo models fetch`)")]
     Missing(PathBuf),
     #[error("sherpa-onnx could not load the VAD model at {0}")]
     Load(PathBuf),

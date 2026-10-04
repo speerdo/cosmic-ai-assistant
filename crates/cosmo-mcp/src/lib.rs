@@ -110,8 +110,18 @@ impl McpHost {
 
 impl AgentConnection {
     async fn spawn(cfg: &Config) -> Result<Self, HostError> {
+        // Beyond PATH too: a user unit's PATH has neither nvm nor the npm
+        // prefix, and the agent's `node` lives beside it (phase-8 §8.1).
+        let found = cosmo_config::locate::agent(&cfg.agent_command).ok_or_else(|| {
+            HostError::Spawn(format!(
+                "`{}` not found on PATH or in the usual npm locations",
+                cfg.agent_command
+            ))
+        })?;
+        tracing::info!(agent = %found.program.display(), "spawning MCP agent");
         let transport = TokioChildProcess::new(
-            tokio::process::Command::new(&cfg.agent_command).configure(|cmd| {
+            tokio::process::Command::new(&found.program).configure(|cmd| {
+                cmd.env("PATH", &found.path_env);
                 for arg in &cfg.agent_args {
                     cmd.arg(arg);
                 }

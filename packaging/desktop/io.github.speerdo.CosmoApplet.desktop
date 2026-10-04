@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=cosmo
+Comment=cosmo voice assistant
+Exec=/usr/bin/cosmo-applet
+Icon=audio-input-microphone-symbolic
+Terminal=false
+Categories=COSMIC;
+Keywords=COSMIC;Applet;voice;assistant;
+NoDisplay=true
+X-CosmicApplet=true
+X-CosmicHoverPopup=Auto

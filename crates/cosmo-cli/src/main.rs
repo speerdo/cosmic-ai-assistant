@@ -15,6 +15,8 @@ use tokio::net::UnixStream;
 
 use cosmo_ipc::{Command, DaemonMessage, Event, Request, Response, TurnResult, socket_path};
 
+mod setup;
+
 #[derive(Parser)]
 #[command(
     name = "cosmo",
@@ -30,8 +32,14 @@ struct Cli {
 enum Cmd {
     /// Daemon status: state, pending holds, version.
     Status,
-    /// Readiness report.
+    /// Readiness report: this machine's install, then the daemon's view.
     Doctor,
+    /// The local models: which are present. `cosmo models fetch` downloads
+    /// the missing ones (checksummed) and restarts the daemon.
+    Models {
+        #[command(subcommand)]
+        cmd: Option<ModelsCmd>,
+    },
     /// Submit a user turn (prints events as they happen).
     Say { text: String },
     /// Confirm a held action by token (executes locally, no model).
@@ -69,6 +77,18 @@ enum Cmd {
     Voice {
         #[command(subcommand)]
         cmd: VoiceCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum ModelsCmd {
+    /// Download the default models (~1.6 GB) into ~/.cache/cosmo/models.
+    /// Re-running is cheap: verified files are skipped.
+    Fetch {
+        /// Passed to the fetcher, e.g. `--variant q8` for the smaller voice
+        /// model.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
 }
 
@@ -123,8 +143,23 @@ async fn run(cmd: Cmd) -> i32 {
             );
             return 0;
         }
+        Cmd::Models { cmd: None } => return setup::models_status(),
+        Cmd::Models {
+            cmd: Some(ModelsCmd::Fetch { args }),
+        } => return setup::models_fetch(&args),
         _ => {}
     }
+    // Doctor's local half first: it has to work with the daemon down.
+    let doctor = matches!(cmd, Cmd::Doctor);
+    let local_ok = if doctor {
+        let checks = setup::local_checks();
+        println!("this machine:");
+        print_checks(&checks);
+        println!();
+        checks.iter().all(|c| c.ok)
+    } else {
+        true
+    };
     let path = socket_path();
     let mut stream = match UnixStream::connect(&path).await {
         Ok(s) => s,
@@ -133,6 +168,9 @@ async fn run(cmd: Cmd) -> i32 {
                 "daemon not running — start it with 'systemctl --user start cosmo' or run 'cosmod' in a terminal"
             );
             eprintln!("(connect {}: {e})", path.display());
+            if doctor {
+                eprintln!("(`journalctl --user -u cosmo` says why it isn't running)");
+            }
             return 3;
         }
     };
@@ -142,11 +180,23 @@ async fn run(cmd: Cmd) -> i32 {
         cmd => exchange(stream, cmd).await,
     };
     match result {
+        Ok(0) if !local_ok => 1,
         Ok(code) => code,
         Err(e) => {
             eprintln!("protocol error: {e}");
             4
         }
+    }
+}
+
+fn print_checks(checks: &[cosmo_ipc::DoctorCheck]) {
+    for check in checks {
+        let mark = match (check.ok, check.warn) {
+            (true, false) => "✓",
+            (true, true) => "!",
+            (false, _) => "✗",
+        };
+        println!("  {mark} {:<16} {}", check.name, check.detail);
     }
 }
 
@@ -171,8 +221,11 @@ async fn exchange(
                 VoiceCmd::Preview { voice, provider } => Command::VoicePreview { provider, voice },
                 VoiceCmd::Set { voice, provider } => Command::VoiceSet { provider, voice },
             },
-            Cmd::AuthLogin { .. } | Cmd::AuthLogout { .. } | Cmd::AuthStatus { .. } => {
-                unreachable!("auth subcommands are handled before the daemon connection")
+            Cmd::AuthLogin { .. }
+            | Cmd::AuthLogout { .. }
+            | Cmd::AuthStatus { .. }
+            | Cmd::Models { .. } => {
+                unreachable!("local subcommands are handled before the daemon connection")
             }
         },
     };
@@ -378,11 +431,8 @@ fn render(response: Response) -> i32 {
             0
         }
         Response::Doctor(report) => {
-            println!("readiness:");
-            for check in &report.checks {
-                let mark = if check.ok { "✓" } else { "✗" };
-                println!("  {mark} {:<16} {}", check.name, check.detail);
-            }
+            println!("daemon:");
+            print_checks(&report.checks);
             if report.checks.iter().all(|c| c.ok) {
                 0
             } else {

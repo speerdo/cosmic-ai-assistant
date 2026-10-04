@@ -27,6 +27,13 @@ VERSION="1.13.8"
 SRC_URL="https://github.com/k2-fsa/sherpa-onnx/archive/refs/tags/v${VERSION}.tar.gz"
 SRC_SHA256="b0374cc56dbc186d442ae73d5de743bb092470b640c4c50ce7b029044c0c4fa8"
 NAME="sherpa-onnx-v${VERSION}-asr-static"
+# The prebuilt static ONNX Runtime sherpa links carries no licence files;
+# these are upstream's, at the same version, pinned.
+ORT_TAG="v1.28.2"
+ORT_LICENSES="
+    LICENSE                2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c
+    ThirdPartyNotices.txt  0e07b95f3a8d6230037707c5c4a2b554d12c4cb67369669ac255635528ffcee2
+"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="$ROOT/.native"
@@ -50,7 +57,8 @@ CMAKE_FLAGS=(
     # two disagree and the first model load dies in free() (findings §9b).
     -DCMAKE_CXX_FLAGS=-D_GLIBCXX_USE_CXX11_ABI=0
 )
-STAMP="$SRC_SHA256 ${CMAKE_FLAGS[*]}"
+# "licenses": builds before phase 8 kept no licence files (§8.3).
+STAMP="$SRC_SHA256 ${CMAKE_FLAGS[*]} licenses-2"
 
 if [[ "$(uname -m)" != "x86_64" ]]; then
     echo "only linux x86_64 is wired up so far ($(uname -m))" >&2
@@ -95,9 +103,34 @@ for lib in espeak-ng piper_phonemize ucd; do
         || { echo "lib$lib.a is not empty — refusing to install" >&2; exit 1; }
 done
 
+# The licence files of everything linked, for the packages' notices
+# (phase-8 §8.3): sherpa-onnx's own, then each dependency cmake fetched,
+# ONNX Runtime's prebuilt archive included.
+lic="$work/install/licenses"
+mkdir -p "$lic/sherpa-onnx"
+cp "$work/sherpa-onnx-$VERSION/LICENSE" "$lic/sherpa-onnx/"
+mkdir -p "$lic/onnxruntime"
+while read -r f sha; do
+    [[ -n "$f" ]] || continue
+    curl --fail --location --retry 3 --silent -o "$lic/onnxruntime/$f" \
+        "https://raw.githubusercontent.com/microsoft/onnxruntime/$ORT_TAG/$f"
+    echo "$sha  $lic/onnxruntime/$f" | sha256sum --check --status \
+        || { echo "checksum mismatch for ONNX Runtime's $f" >&2; exit 1; }
+done <<<"$ORT_LICENSES"
+for dep in "$work/build/_deps/"*-src; do
+    [[ -d "$dep" ]] || continue
+    name="$(basename "$dep" -src)"
+    [[ "$name" == onnxruntime ]] && continue # the prebuilt binary: above
+    files="$(find "$dep" -maxdepth 1 -type f \( -iname 'LICENSE*' -o -iname 'COPYING*' \
+        -o -iname 'NOTICE*' -o -iname 'ThirdPartyNotices*' -o -iname 'COPYRIGHT*' \))"
+    [[ -n "$files" ]] || { echo "warning: no licence file found in $name" >&2; continue; }
+    mkdir -p "$lic/$name"
+    while read -r f; do cp "$f" "$lic/$name/"; done <<<"$files"
+done
+
 rm -rf "$OUT"
 mkdir -p "$OUT"
-mv "$work/install/lib" "$work/install/include" "$OUT/"
+mv "$work/install/lib" "$work/install/include" "$lic" "$OUT/"
 echo "$STAMP" >"$OUT/.built"
 rm -rf "$work"
 # Cargo relinks when a library *path* changes, not when the archive at the

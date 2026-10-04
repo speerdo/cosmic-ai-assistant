@@ -23,6 +23,12 @@ pub fn for_event(event: &Event) -> Option<(String, String)> {
 
 /// Whether the compositor offers layer shell (the overlay's surface).
 pub fn layer_shell_available() -> bool {
+    layer_shell() == Some(true)
+}
+
+/// Whether the compositor offers layer shell; `None` with no Wayland
+/// display to ask (`cosmo doctor` run from outside the session).
+pub fn layer_shell() -> Option<bool> {
     use wayland_client::globals::{GlobalListContents, registry_queue_init};
     use wayland_client::protocol::wl_registry;
     use wayland_client::{Connection, Dispatch, QueueHandle};
@@ -39,17 +45,15 @@ pub fn layer_shell_available() -> bool {
         ) {
         }
     }
-    let Ok(conn) = Connection::connect_to_env() else {
-        return false;
-    };
-    let Ok((globals, _queue)) = registry_queue_init::<Probe>(&conn) else {
-        return false;
-    };
-    globals
-        .contents()
-        .clone_list()
-        .iter()
-        .any(|g| g.interface == "zwlr_layer_shell_v1")
+    let conn = Connection::connect_to_env().ok()?;
+    let (globals, _queue) = registry_queue_init::<Probe>(&conn).ok()?;
+    Some(
+        globals
+            .contents()
+            .clone_list()
+            .iter()
+            .any(|g| g.interface == "zwlr_layer_shell_v1"),
+    )
 }
 
 /// Follow the daemon and turn its important moments into notifications,

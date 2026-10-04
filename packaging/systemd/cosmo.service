@@ -1,0 +1,13 @@
+[Unit]
+Description=cosmo voice assistant daemon
+Documentation=https://github.com/speerdo/cosmic-ai-assistant
+PartOf=graphical-session.target
+After=graphical-session.target pipewire.service
+
+[Service]
+ExecStart=/usr/bin/cosmod
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target
