@@ -21,6 +21,11 @@ tracing.workspace = true
 oo7.workspace = true
 cosmo-config.workspace = true
 cosmo-gate.workspace = true
+# Browser sign-in (login.rs): PKCE's S256 challenge and random values.
+# All three were already in the dependency graph (MIT OR Apache-2.0).
+sha2 = "0.10"
+base64 = "0.22"
+getrandom = "0.3"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }

@@ -18,6 +18,7 @@
 //! - Log the server-reported rate limit every turn.
 
 pub mod anthropic;
+pub mod login;
 pub mod provider;
 pub mod secret;
 pub mod stream;
@@ -111,7 +112,13 @@ impl Reasoner {
         let env_base = std::env::var("COSMO_API_BASE").ok();
         let endpoint =
             provider::Endpoint::resolve(&cfg, env_base.as_deref()).map_err(ReasonError::Config)?;
-        let key = key_source.resolve()?;
+        // A local server needs no key; one stored anyway is still sent.
+        let key = match key_source.resolve() {
+            Err(ReasonError::NoKey(_)) if !endpoint.provider.needs_key => {
+                SecretKey::from_raw(String::new())
+            }
+            other => other?,
+        };
         let http = reqwest::Client::builder()
             .user_agent(provider::user_agent())
             .build()
@@ -339,6 +346,7 @@ impl Reasoner {
         };
         let mut req = self.http.post(&e.url).json(&body);
         req = match e.auth {
+            _ if self.key.expose().is_empty() => req,
             Auth::Bearer => req.bearer_auth(self.key.expose()),
             Auth::XApiKey => req.header("x-api-key", self.key.expose()),
         };

@@ -1511,13 +1511,16 @@ name = "cosmo-reason"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "cosmo-config",
  "cosmo-gate",
  "futures",
+ "getrandom 0.3.4",
  "oo7",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.20",
  "tokio",
  "tracing",

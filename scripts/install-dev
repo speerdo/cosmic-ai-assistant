@@ -33,7 +33,8 @@ case "${1:-}" in
     --uninstall)
         for b in "${BINARIES[@]}"; do rm -fv "$BIN/$b"; done
         rm -fv "$UNIT_DIR/cosmo.service" "$AUTOSTART/$OVERLAY_ID.desktop" "$APPS/$APPLET_ID.desktop" \
-            "$HOME/.local/libexec/cosmo/fetch-models"
+            "$HOME/.local/libexec/cosmo/fetch-models" \
+            "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps/io.github.speerdo.Cosmo.svg"
         echo "removed; if the daemon was enabled: systemctl --user disable --now cosmo"
         exit 0
         ;;
@@ -64,6 +65,10 @@ LIBEXEC="$HOME/.local/libexec/cosmo"
 sed "s|/usr/bin/|$BIN/|g" "$PKG/systemd/cosmo.service" >"$UNIT_DIR/cosmo.service"
 sed "s|/usr/bin/|$BIN/|g" "$PKG/desktop/$OVERLAY_ID.desktop" >"$AUTOSTART/$OVERLAY_ID.desktop"
 sed "s|/usr/bin/|$BIN/|g" "$PKG/desktop/$APPLET_ID.desktop" >"$APPS/$APPLET_ID.desktop"
+# The logo, for the applet's entry.
+ICONS="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
+mkdir -p "$ICONS"
+install -m 0644 "$ROOT/assets/icons/io.github.speerdo.Cosmo.svg" "$ICONS/"
 # `cosmo models fetch` looks for the fetcher beside its binary first.
 mkdir -p "$LIBEXEC"
 install -m 0755 "$ROOT/scripts/fetch-models" "$LIBEXEC/fetch-models"

@@ -116,7 +116,8 @@ impl View {
                 voice, done, total, ..
             } => self.voice_render = Some((voice.clone(), *done, *total)),
             Event::VoiceCacheDone { .. } => self.voice_render = None,
-            Event::Usage { .. } | Event::Log { .. } => {}
+            // Sign-in outcomes are the applet's to show.
+            Event::Usage { .. } | Event::Log { .. } | Event::SignIn { .. } => {}
         }
         // Levels only matter while listening: off-screen, they don't redraw.
         if self.state != State::Listening && self.levels != before.levels {

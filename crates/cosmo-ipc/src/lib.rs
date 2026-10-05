@@ -124,6 +124,30 @@ pub enum Command {
         provider: Option<String>,
         voice: String,
     },
+    /// The reasoning providers, which one is in use, and whether each is
+    /// connected (a stored key, or a local server answering).
+    Reasoning,
+    /// Reason with `provider` from the next turn: persisted to
+    /// `config.ron`. An empty `model` is the provider's default.
+    ReasoningSet { provider: String, model: String },
+    /// Begin a browser sign-in. Answered at once with the URL for the
+    /// asking client to open; the outcome arrives as [`Event::SignIn`].
+    SignInStart { provider: String },
+    /// Store a pasted API key for `provider` in the Secret Service.
+    StoreKey { provider: String, key: Redacted },
+}
+
+/// A secret on the wire (the socket is the user's own, mode 0600): it
+/// serializes as itself, and never prints, so logging a command can't
+/// leak it.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Redacted(pub String);
+
+impl std::fmt::Debug for Redacted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[redacted]")
+    }
 }
 
 /// Daemon → client message: a response or a broadcast event, one per line.
@@ -186,9 +210,69 @@ pub enum Response {
         /// The config file the choice was written to.
         persisted_to: String,
     },
+    Reasoning(ReasoningInfo),
+    /// Reasoning switched; the next turn uses it.
+    ReasoningSet {
+        provider: String,
+        model: String,
+    },
+    /// Open this in a browser to sign in to `provider`.
+    SignInUrl {
+        provider: String,
+        url: String,
+    },
+    /// The key is stored.
+    KeyStored {
+        provider: String,
+    },
     Error {
         message: String,
     },
+}
+
+/// [`Response::Reasoning`]: what's in use and what could be.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReasoningInfo {
+    pub active: String,
+    /// The model in use (the provider's default when none is set).
+    pub model: String,
+    pub providers: Vec<ProviderInfo>,
+}
+
+/// One reasoning provider, as the applet shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderInfo {
+    pub name: String,
+    pub label: String,
+    pub connect: Connect,
+    /// A key is stored, or (local) the server answers.
+    pub connected: bool,
+    /// Where keys are made (or, for local, where to get a server).
+    pub key_page: String,
+    pub default_model: String,
+    /// Models a local server runs on this computer (empty for cloud
+    /// providers).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<String>,
+    /// Models the local server lists but forwards to a cloud (Ollama's
+    /// `:cloud` models): usable, but not private.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remote_models: Vec<String>,
+    /// Why it isn't connected, or a caution about its terms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// How a provider is connected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Connect {
+    /// Sign in with the browser ([`Command::SignInStart`]).
+    Browser,
+    /// Paste an API key ([`Command::StoreKey`]).
+    Key,
+    /// Nothing: a server on this machine.
+    Local,
 }
 
 /// One voice in a [`Response::Voices`] listing.
@@ -359,6 +443,13 @@ pub enum Event {
     VoiceCacheDone {
         provider: String,
         voice: String,
+        ok: bool,
+        detail: String,
+    },
+    /// A browser sign-in finished: the key is stored (`ok`), or `detail`
+    /// says why not.
+    SignIn {
+        provider: String,
         ok: bool,
         detail: String,
     },

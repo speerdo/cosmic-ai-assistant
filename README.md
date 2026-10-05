@@ -16,7 +16,7 @@ Every improvement to [`computer-use-linux`](https://github.com/agent-sh/computer
 sudo apt install ./cosmo_0.1.0-1_amd64.deb ./cosmo-applet_0.1.0-1_amd64.deb
 cosmo models fetch          # once per user: ~1.6 GB of local models, checksummed
 npm install -g @agent-sh/computer-use-linux   # the "hands" (desktop control)
-cosmo auth-login            # your reasoning provider's API key → the Secret Service
+cosmo auth-login --provider openrouter   # sign in with your browser (or any provider below, with a key)
 cosmo doctor                # what works, what doesn't, and the fix for each
 ```
 
@@ -41,16 +41,39 @@ Everything that can be local is local: push-to-talk is read straight off `evdev`
 
 ## Reasoning providers
 
-The reasoning model is the only part that needs the cloud, and it isn't tied to one company. Set `provider` in `~/.config/cosmo/config.ron`, then run `cosmo auth-login`: it opens that provider's key page and stores the key in the Secret Service, one key per provider. Leave `model` empty for the provider's default.
+The reasoning model is the only part that can use the cloud, and it isn't tied to one company, or to the cloud at all: it can run on your own computer. The simplest way to choose is the panel applet's **Reasoning** section. It lists every provider with a **Sign in** button (OpenRouter), a key field (the other cloud providers), or the models your local server has, and switches on the spot. From a terminal: `cosmo use` lists them, `cosmo use <name>` switches, and `cosmo auth-login --provider <name>` connects one. The key goes into the Secret Service (one per provider, never into a file), and cosmo offers to switch to that provider. Leave `model` empty for the provider's default.
 
-| `provider` | Format | Default model | Notes |
-|---|---|---|---|
-| `openai` | chat completions | `gpt-4o-mini` | |
-| `anthropic` | Messages API | `claude-haiku-4-5` | needs a Claude Console API key; a Claude Pro/Max subscription isn't one |
-| `openrouter` | chat completions | `anthropic/claude-haiku-4.5` | one key, many models |
-| `opencode-go` | chat completions, or Messages with `api_format: "anthropic"` (Qwen, MiniMax) | `glm-5.3-flash` | its terms say it's designed for coding agents: check them before using it for a voice assistant |
-| `ollama` | chat completions (Ollama Cloud) | `gpt-oss:120b` | |
-| `zai` | chat completions (pay-as-you-go) | `glm-5.3-flash` | a GLM *Coding Plan* is meant for coding tools |
+**Two ways to connect:**
+
+- **Sign in with your browser: OpenRouter.** `cosmo auth-login --provider openrouter` opens OpenRouter, you approve cosmo, and the key comes back by itself, with nothing to copy. This is the quickest start, and one OpenRouter account reaches most models (Claude, GPT, Gemini, GLM…).
+- **Paste an API key: everyone else.** `auth-login` opens the provider's key page; create a key there and paste it (it isn't echoed).
+
+- **Nothing at all: a local model.** See below.
+
+Why only OpenRouter: browser sign-in has to be a flow the provider publishes for other apps. OpenRouter publishes one. Anthropic forbids third-party apps from using Claude.ai logins, and Z.ai, OpenCode Go and Ollama Cloud offer API keys only. OpenAI's "Sign in with ChatGPT" (October 2026, in preview) is different: it bills your ChatGPT plan, not an API key, and isn't supported yet. Use `--paste` to paste a key even for OpenRouter (over SSH, for example).
+
+| `provider` | Connect | Format | Default model | Notes |
+|---|---|---|---|---|
+| `openrouter` | **browser sign-in** | chat completions | `anthropic/claude-haiku-4.5` | one account, many models |
+| `openai` | API key | chat completions | `gpt-4o-mini` | a ChatGPT subscription isn't an API key |
+| `anthropic` | API key | Messages API | `claude-haiku-4-5` | needs a Claude Console API key; a Claude Pro/Max subscription isn't one |
+| `opencode-go` | API key | chat completions, or Messages with `api_format: "anthropic"` (Qwen, MiniMax) | `glm-5.3-flash` | its terms say it's designed for coding agents: check them before using it for a voice assistant |
+| `ollama` | API key | chat completions (Ollama Cloud) | `gpt-oss:120b` | |
+| `zai` | API key | chat completions (pay-as-you-go) | `glm-5.3-flash` | a GLM *Coding Plan* is meant for coding tools |
+| `local` | nothing | chat completions (any OpenAI-compatible server) | `granite4.1:8b` | runs on this computer: nothing leaves it |
+
+### Local models
+
+With `provider: "local"`, reasoning runs on your own machine: no account, no key, no usage bill, and nothing you say leaves the computer. cosmo talks to any server that speaks the OpenAI chat-completions API:
+
+- **[Ollama](https://ollama.com/download)** is the default (`localhost:11434`): install it, run `ollama pull granite4.1:8b`, then `cosmo use local`, or press **Use** in the applet.
+- **LM Studio** or **llama.cpp's `llama-server`**: set `api_base` to their address (`http://localhost:1234/v1/chat/completions` or `http://localhost:8080/v1/chat/completions`).
+
+`cosmo doctor` says whether the server is up and has the model, and the applet lists the models it has, each with a **Use** button. What to expect:
+
+- **The model has to call tools well.** That's how cosmo acts on the desktop. The default is IBM's Granite 4.1 8B (Apache-2.0): it supports tool calling and answers without a "thinking" pass, which a spoken reply can't afford to wait for.
+- **Size is the trade-off.** Small models are quick but simpler; a 30B model handles harder requests and wants a good GPU. Many newer models think before answering, which costs seconds per turn.
+- **Speed depends on your hardware.** On a CPU alone, expect several seconds per reply.
 
 `api_base` points any of these at another endpoint (a local server, an unlisted provider), and `api_format` picks the wire. Tool calling has to work for cosmo to be useful, and it varies by model, so try a model with a few commands before relying on it. Voice output stays local (Kokoro) whatever is chosen here.
 

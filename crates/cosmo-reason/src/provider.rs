@@ -52,6 +52,11 @@ pub enum Auth {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Preset {
     pub name: &'static str,
+    /// How it's shown to people (the applet).
+    pub label: &'static str,
+    /// False for a local server: no key to store, and none is sent unless
+    /// one was stored anyway (llama.cpp's `--api-key`).
+    pub needs_key: bool,
     /// The endpoint for each format the provider serves.
     pub chat_url: Option<&'static str>,
     pub messages_url: Option<&'static str>,
@@ -59,8 +64,11 @@ pub struct Preset {
     pub format: Format,
     /// How the key is sent to the Messages endpoint (chat is always Bearer).
     pub messages_auth: Auth,
-    /// Where `cosmo auth-login` opens.
+    /// Where `cosmo auth-login` opens to have a key pasted.
     pub key_page: &'static str,
+    /// The provider's browser sign-in for third-party apps, when it has
+    /// one: `cosmo auth-login` then needs no pasting (`login.rs`).
+    pub browser_login: Option<crate::login::BrowserLogin>,
     /// The model used when `model` is empty.
     pub default_model: &'static str,
     /// A caution `cosmo auth-login` and `doctor` show (terms of use).
@@ -71,21 +79,27 @@ pub struct Preset {
 pub const PRESETS: &[Preset] = &[
     Preset {
         name: "openai",
+        label: "OpenAI",
+        needs_key: true,
         chat_url: Some("https://api.openai.com/v1/chat/completions"),
         messages_url: None,
         format: Format::OpenAiChat,
         messages_auth: Auth::Bearer,
         key_page: "https://platform.openai.com/api-keys",
+        browser_login: None,
         default_model: "gpt-4o-mini",
         note: None,
     },
     Preset {
         name: "anthropic",
+        label: "Anthropic",
+        needs_key: true,
         chat_url: None,
         messages_url: Some("https://api.anthropic.com/v1/messages"),
         format: Format::AnthropicMessages,
         messages_auth: Auth::XApiKey,
         key_page: "https://platform.claude.com/settings/keys",
+        browser_login: None,
         default_model: "claude-haiku-4-5",
         note: Some(
             "needs an API key from the Claude Console; a Claude Pro/Max subscription is not one",
@@ -93,21 +107,27 @@ pub const PRESETS: &[Preset] = &[
     },
     Preset {
         name: "openrouter",
+        label: "OpenRouter",
+        needs_key: true,
         chat_url: Some("https://openrouter.ai/api/v1/chat/completions"),
         messages_url: None,
         format: Format::OpenAiChat,
         messages_auth: Auth::Bearer,
         key_page: "https://openrouter.ai/settings/keys",
+        browser_login: Some(crate::login::OPENROUTER),
         default_model: "anthropic/claude-haiku-4.5",
         note: None,
     },
     Preset {
         name: "opencode-go",
+        label: "OpenCode Go",
+        needs_key: true,
         chat_url: Some("https://opencode.ai/zen/go/v1/chat/completions"),
         messages_url: Some("https://opencode.ai/zen/go/v1/messages"),
         format: Format::OpenAiChat,
         messages_auth: Auth::Bearer,
         key_page: "https://opencode.ai/auth",
+        browser_login: None,
         default_model: "glm-5.3-flash",
         note: Some(
             "OpenCode Go's terms say it is designed for coding agents; voice-assistant \
@@ -116,25 +136,94 @@ pub const PRESETS: &[Preset] = &[
     },
     Preset {
         name: "ollama",
+        label: "Ollama Cloud",
+        needs_key: true,
         chat_url: Some("https://ollama.com/v1/chat/completions"),
         messages_url: None,
         format: Format::OpenAiChat,
         messages_auth: Auth::Bearer,
         key_page: "https://ollama.com/settings/keys",
+        browser_login: None,
         default_model: "gpt-oss:120b",
         note: None,
     },
     Preset {
         name: "zai",
+        label: "Z.ai",
+        needs_key: true,
         chat_url: Some("https://api.z.ai/api/paas/v4/chat/completions"),
         messages_url: None,
         format: Format::OpenAiChat,
         messages_auth: Auth::Bearer,
         key_page: "https://z.ai/manage-apikey/apikey-list",
+        browser_login: None,
         default_model: "glm-5.3-flash",
         note: None,
     },
+    // A model on this machine, through any OpenAI-compatible local server.
+    // Ollama's address is the default; LM Studio (:1234) and llama.cpp
+    // (:8080) work by setting api_base. Granite 4.1 (Apache-2.0) is the
+    // default model: it calls tools and answers without a thinking pass,
+    // which a spoken reply can't afford.
+    Preset {
+        name: "local",
+        label: "Local (on this computer)",
+        needs_key: false,
+        chat_url: Some("http://localhost:11434/v1/chat/completions"),
+        messages_url: None,
+        format: Format::OpenAiChat,
+        messages_auth: Auth::Bearer,
+        key_page: "https://ollama.com/download",
+        browser_login: None,
+        default_model: "granite4.1:8b",
+        note: None,
+    },
 ];
+
+/// Where a chat-completions URL lists its models (`/v1/models`), for local
+/// servers: Ollama, LM Studio and llama.cpp all serve it.
+pub fn models_url(chat_url: &str) -> Option<String> {
+    chat_url
+        .strip_suffix("/chat/completions")
+        .map(|base| format!("{base}/models"))
+}
+
+/// The model ids a local server offers. A short timeout: it's on this
+/// machine, or it isn't running.
+pub async fn local_models(chat_url: &str) -> Result<Vec<String>, String> {
+    let url = models_url(chat_url).ok_or("api_base doesn't end in /chat/completions")?;
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(2))
+        .send()
+        .await
+        .map_err(|e| {
+            if e.is_connect() {
+                format!("no server at {url}")
+            } else {
+                e.to_string()
+            }
+        })?;
+    if !resp.status().is_success() {
+        return Err(format!("{url}: {}", resp.status()));
+    }
+    let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let mut ids: Vec<String> = body["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m["id"].as_str().map(str::to_owned))
+        .collect();
+    ids.sort();
+    Ok(ids)
+}
+
+/// Whether a model a local server lists actually runs elsewhere: Ollama's
+/// `:cloud` / `-cloud` models are forwarded to ollama.com, so what's said
+/// to them leaves the machine.
+pub fn runs_remotely(model: &str) -> bool {
+    model.ends_with(":cloud") || model.ends_with("-cloud")
+}
 
 /// Look a provider up by its config name.
 pub fn preset(name: &str) -> Option<&'static Preset> {
@@ -235,7 +324,13 @@ mod tests {
         for p in PRESETS {
             let e = Endpoint::resolve(&cfg(p.name), None).unwrap();
             assert_eq!(e.model, p.default_model, "{}", p.name);
-            assert!(e.url.starts_with("https://"), "{}", p.name);
+            // Only a local server is plain HTTP, and only on this machine.
+            let scheme = if p.needs_key {
+                "https://"
+            } else {
+                "http://localhost:"
+            };
+            assert!(e.url.starts_with(scheme), "{}", p.name);
             assert_eq!(e.format, p.format, "{}", p.name);
         }
     }
@@ -272,6 +367,19 @@ mod tests {
             (Format::AnthropicMessages, Auth::Bearer)
         );
         assert_eq!(e.model, "qwen3.8-plus");
+    }
+
+    #[test]
+    fn local_servers_list_their_models_beside_chat() {
+        assert_eq!(
+            models_url("http://localhost:11434/v1/chat/completions").as_deref(),
+            Some("http://localhost:11434/v1/models")
+        );
+        assert_eq!(models_url("http://localhost:1234/v1/models"), None);
+        assert!(runs_remotely("kimi-k3:cloud") && runs_remotely("gpt-oss:120b-cloud"));
+        assert!(!runs_remotely("granite4.1:8b") && !runs_remotely("cloudy:7b"));
+        let local = preset("local").unwrap();
+        assert!(!local.needs_key && local.browser_login.is_none());
     }
 
     #[test]

@@ -59,7 +59,9 @@ and talk: speech recognition and the voice are local; only the reasoning
 model is in the cloud, with the provider of your choice.
 
 After installing, run `cosmo models fetch` once (about 1.6 GB of local
-models), then `cosmo doctor`. Desktop control needs computer-use-linux:
+models), `cosmo auth-login --provider openrouter` to sign in with your
+browser (other providers take an API key), then `cosmo doctor`. Desktop
+control needs computer-use-linux:
 npm install -g @agent-sh/computer-use-linux
 
 %package -n cosmo-applet
@@ -104,6 +106,9 @@ install -Dm0644 packaging/desktop/%{appid}.CosmoOverlay.desktop \
     %{buildroot}%{_sysconfdir}/xdg/autostart/%{appid}.CosmoOverlay.desktop
 install -Dm0644 packaging/desktop/%{appid}.CosmoApplet.desktop \
     %{buildroot}%{_datadir}/applications/%{appid}.CosmoApplet.desktop
+%{_datadir}/icons/hicolor/scalable/apps/%{appid}.Cosmo.svg
+install -Dm0644 assets/icons/%{appid}.Cosmo.svg \
+    %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/%{appid}.Cosmo.svg
 
 %post
 %systemd_user_post cosmo.service
@@ -129,6 +134,7 @@ install -Dm0644 packaging/desktop/%{appid}.CosmoApplet.desktop \
 %license licenses-cosmo-applet/third-party-licenses.txt
 %{_bindir}/cosmo-applet
 %{_datadir}/applications/%{appid}.CosmoApplet.desktop
+%{_datadir}/icons/hicolor/scalable/apps/%{appid}.Cosmo.svg
 
 %changelog
 * Sun Oct 04 2026 speerdo <adamspeer@gmail.com> - 0.1.0-1

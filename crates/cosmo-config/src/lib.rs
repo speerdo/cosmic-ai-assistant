@@ -21,7 +21,7 @@ pub mod secret;
 #[serde(default)]
 pub struct Config {
     /// Reasoning provider name — never a key: openai, anthropic,
-    /// openrouter, opencode-go, ollama or zai. Key storage is the Secret
+    /// openrouter, opencode-go, ollama, zai or local (no key). Key storage is the Secret
     /// Service (`cosmo auth-login`, one key per provider); env var
     /// `COSMO_API_KEY` for dev/CI only.
     pub provider: String,
@@ -334,12 +334,16 @@ pub fn commented_default() -> String {
 
 (
     // Reasoning provider name. The key itself is NOT configured here.
-    // One of: openai, anthropic, openrouter, opencode-go, ollama, zai.
-    // `cosmo auth-login` stores a key for whichever is set.
+    // One of: openai, anthropic, openrouter, opencode-go, ollama, zai, or
+    // local (a model on this computer, through Ollama, LM Studio or
+    // llama.cpp: no key, nothing leaves the machine).
+    // `cosmo auth-login` connects whichever is set: openrouter signs in with
+    // your browser; the others take a pasted API key.
     // provider: "{provider}",
     // An empty model is the provider's default (openai: gpt-4o-mini,
     // anthropic: claude-haiku-4-5, openrouter: anthropic/claude-haiku-4.5,
-    // opencode-go and zai: glm-5.3-flash, ollama: gpt-oss:120b).
+    // opencode-go and zai: glm-5.3-flash, ollama: gpt-oss:120b,
+    // local: granite4.1:8b).
     // model: "{model}",
     // A whole endpoint URL, for a local server or an unlisted provider.
     // api_base: "{api_base}",

@@ -159,6 +159,27 @@ use cosmo_ipc::{
     Response, State, StatusInfo, TurnResult,
 };
 
+/// Whether a local server is up and has `model`; the reason, with its fix,
+/// when not.
+async fn local_ready(url: &str, model: &str) -> Result<(), String> {
+    match cosmo_reason::provider::local_models(url).await {
+        Err(why) => Err(format!(
+            "{why}: start a local model server (Ollama: ollama.com/download, then \
+             `ollama serve`), or point api_base at yours"
+        )),
+        Ok(models) if !models.iter().any(|m| m == model) => Err(format!(
+            "the local server doesn't have {model}: `ollama pull {model}`, or pick one it has \
+             ({})",
+            if models.is_empty() {
+                "none yet".to_owned()
+            } else {
+                models.join(", ")
+            }
+        )),
+        Ok(_) => Ok(()),
+    }
+}
+
 pub struct Engine {
     cfg: Config,
     gate: Arc<Gate>,
@@ -212,6 +233,12 @@ pub struct Engine {
     no_key_hit: AtomicBool,
     /// The last reasoning turn's usage, for `doctor`.
     last_usage: Mutex<Option<cosmo_reason::TurnUsage>>,
+    /// The reasoning settings (provider, model, api_base, api_format):
+    /// switchable while running (`Command::ReasoningSet`), unlike the rest
+    /// of `cfg`. Everything reasoning reads them from here.
+    reasoning_cfg: Mutex<Config>,
+    /// A browser sign-in waiting for its browser; a new one replaces it.
+    sign_in: Mutex<Option<tokio::task::AbortHandle>>,
 }
 
 impl Engine {
@@ -222,6 +249,8 @@ impl Engine {
             _ => LockMode::LogindHint,
         };
         Self {
+            reasoning_cfg: Mutex::new(cfg.clone()),
+            sign_in: Mutex::new(None),
             cfg,
             gate: Arc::new(Gate::new()),
             state: Arc::new(StateCell::new(events.clone())),
@@ -557,7 +586,7 @@ impl Engine {
         tracing::debug!(?cmd, "command");
         match cmd {
             Command::Status => Response::Status(self.status()),
-            Command::Doctor => Response::Doctor(self.doctor()),
+            Command::Doctor => Response::Doctor(self.doctor().await),
             Command::Say { text } => self.say(text).await,
             Command::Confirm { token } => self.confirm(token).await,
             Command::Cancel { token } => {
@@ -606,12 +635,193 @@ impl Engine {
                     Err(message) => Response::Error { message },
                 }
             }
+            Command::Reasoning => Response::Reasoning(self.reasoning_info().await),
+            Command::ReasoningSet { provider, model } => {
+                self.set_reasoning(&provider, &model).await
+            }
+            Command::SignInStart { provider } => self.sign_in_start(&provider).await,
+            Command::StoreKey { provider, key } => {
+                if cosmo_reason::provider::preset(&provider).is_none() {
+                    return Response::Error {
+                        message: format!("unknown provider {provider:?}"),
+                    };
+                }
+                match cosmo_reason::secret::store_key(&provider, key.0.trim()).await {
+                    Ok(()) => {
+                        self.key_changed(&provider).await;
+                        Response::KeyStored { provider }
+                    }
+                    Err(e) => Response::Error {
+                        message: format!("storing the key failed: {e}"),
+                    },
+                }
+            }
             Command::Listen => self.listen(),
             Command::Toggle => {
                 let paused = !self.paused.load(Ordering::SeqCst);
                 self.paused.store(paused, Ordering::SeqCst);
                 Response::Toggled { paused }
             }
+        }
+    }
+
+    /// Every provider, whether it's connected, and what's in use.
+    async fn reasoning_info(&self) -> cosmo_ipc::ReasoningInfo {
+        use cosmo_ipc::{Connect, ProviderInfo};
+        use cosmo_reason::provider::{Endpoint, PRESETS, local_models, runs_remotely};
+        let rcfg = self.reasoning_cfg.lock().unwrap().clone();
+        let model = Endpoint::resolve(&rcfg, None)
+            .map(|e| e.model)
+            .unwrap_or_default();
+        let probes = PRESETS.iter().map(|p| {
+            let rcfg = &rcfg;
+            async move {
+                let (connected, models, why) = if p.needs_key {
+                    let stored = tokio::time::timeout(
+                        std::time::Duration::from_secs(2),
+                        cosmo_reason::secret::resolve_keyring(p.name),
+                    )
+                    .await;
+                    match stored {
+                        Ok(Ok(_)) => (true, Vec::new(), None),
+                        Ok(Err(e)) => (false, Vec::new(), Some(e.to_string())),
+                        Err(_) => (false, Vec::new(), Some("the keyring didn't answer".into())),
+                    }
+                } else {
+                    // The local server this config would use.
+                    let url = if rcfg.provider == p.name && !rcfg.api_base.is_empty() {
+                        rcfg.api_base.clone()
+                    } else {
+                        p.chat_url.unwrap_or_default().to_owned()
+                    };
+                    match local_models(&url).await {
+                        Ok(m) => (true, m, None),
+                        Err(why) => (false, Vec::new(), Some(why)),
+                    }
+                };
+                ProviderInfo {
+                    name: p.name.into(),
+                    label: p.label.into(),
+                    connect: match (p.needs_key, p.browser_login) {
+                        (false, _) => Connect::Local,
+                        (true, Some(_)) => Connect::Browser,
+                        (true, None) => Connect::Key,
+                    },
+                    connected,
+                    key_page: p.key_page.into(),
+                    default_model: p.default_model.into(),
+                    remote_models: models
+                        .iter()
+                        .filter(|m| runs_remotely(m))
+                        .cloned()
+                        .collect(),
+                    models: models.into_iter().filter(|m| !runs_remotely(m)).collect(),
+                    note: why.or(p.note.map(str::to_owned)),
+                }
+            }
+        });
+        cosmo_ipc::ReasoningInfo {
+            active: rcfg.provider.clone(),
+            model,
+            providers: futures::future::join_all(probes).await,
+        }
+    }
+
+    /// Reason with `provider` (and `model`, empty = its default) from the
+    /// next turn, and persist it.
+    async fn set_reasoning(&self, provider: &str, model: &str) -> Response {
+        if cosmo_reason::provider::preset(provider).is_none() {
+            return Response::Error {
+                message: format!(
+                    "unknown provider {provider:?} (known: {})",
+                    cosmo_reason::provider::names()
+                ),
+            };
+        }
+        let path = cosmo_config::config_path();
+        let same = self.reasoning_cfg.lock().unwrap().provider == provider;
+        let mut fields = vec![("provider", provider), ("model", model)];
+        // Another provider: an endpoint or wire set for the old one would
+        // send this one's requests to the wrong place.
+        if !same {
+            fields.extend([("api_base", ""), ("api_format", "")]);
+        }
+        match cosmo_config::set_string_fields(&path, &fields) {
+            Ok(cfg) => {
+                *self.reasoning_cfg.lock().unwrap() = cfg;
+                self.key_changed(provider).await;
+                // The conversation so far belongs to the old model.
+                if !same {
+                    self.history.lock().unwrap().clear();
+                }
+                tracing::info!(provider, model, "reasoning switched");
+                let model = cosmo_reason::provider::Endpoint::resolve(
+                    &self.reasoning_cfg.lock().unwrap(),
+                    None,
+                )
+                .map(|e| e.model)
+                .unwrap_or_default();
+                Response::ReasoningSet {
+                    provider: provider.to_owned(),
+                    model,
+                }
+            }
+            Err(e) => Response::Error {
+                message: format!("couldn't update {}: {e}", path.display()),
+            },
+        }
+    }
+
+    /// A key was stored, or the provider changed: the next turn builds a
+    /// fresh client (and says "no key" again if there still isn't one).
+    async fn key_changed(&self, provider: &str) {
+        if self.reasoning_cfg.lock().unwrap().provider == provider {
+            *self.reasoner.lock().await = None;
+            self.no_key_said.store(false, Ordering::SeqCst);
+        }
+    }
+
+    /// Start a browser sign-in; the URL goes back to the asking client to
+    /// open (only it should: there's an applet per monitor), and the
+    /// outcome arrives as `Event::SignIn`.
+    async fn sign_in_start(&self, provider: &str) -> Response {
+        let Some(login) = cosmo_reason::provider::preset(provider).and_then(|p| p.browser_login)
+        else {
+            return Response::Error {
+                message: format!("{provider} has no browser sign-in; paste an API key instead"),
+            };
+        };
+        let (url, pending) = match cosmo_reason::login::start(&login).await {
+            Ok(started) => started,
+            Err(e) => {
+                return Response::Error {
+                    message: e.to_string(),
+                };
+            }
+        };
+        let events = self.events.clone();
+        let name = provider.to_owned();
+        let task = tokio::spawn(async move {
+            let (ok, detail) = match pending.finish().await {
+                Ok(key) => match cosmo_reason::secret::store_key(&name, &key).await {
+                    Ok(()) => (true, format!("signed in to {name}")),
+                    Err(e) => (false, format!("signed in, but storing the key failed: {e}")),
+                },
+                Err(e) => (false, e.to_string()),
+            };
+            tracing::info!(provider = %name, ok, "browser sign-in finished");
+            let _ = events.send(Event::SignIn {
+                provider: name,
+                ok,
+                detail,
+            });
+        });
+        if let Some(old) = self.sign_in.lock().unwrap().replace(task.abort_handle()) {
+            old.abort();
+        }
+        Response::SignInUrl {
+            provider: provider.to_owned(),
+            url,
         }
     }
 
@@ -666,7 +876,7 @@ impl Engine {
         }
     }
 
-    fn doctor(&self) -> DoctorReport {
+    async fn doctor(&self) -> DoctorReport {
         let cfg_ok = cosmo_config::load().is_ok();
         let socket_ok = std::path::Path::new(&cosmo_ipc::socket_path()).exists();
         let tools = self.tools.lock().unwrap().clone();
@@ -715,7 +925,9 @@ impl Engine {
             ),
         };
         // Key presence: the doctor's third distinct state set (plan §1.4).
-        let provider = &self.cfg.provider;
+        let rcfg = self.reasoning_cfg.lock().unwrap().clone();
+        let provider = &rcfg.provider;
+        let needs_key = cosmo_reason::provider::preset(provider).is_none_or(|p| p.needs_key);
         let env_key = ["COSMO_API_KEY"]
             .into_iter()
             .chain((provider == "openai").then_some("OPENAI_API_KEY"))
@@ -727,7 +939,12 @@ impl Engine {
             .try_lock()
             .map(|slot| slot.is_some())
             .unwrap_or(true);
-        let key_detail = if env_key {
+        let key_detail = if !needs_key {
+            (
+                true,
+                "none needed: the model runs on this computer".to_owned(),
+            )
+        } else if env_key {
             (true, "key present (source: env — dev/CI only)".to_owned())
         } else if key_loaded {
             (
@@ -735,18 +952,45 @@ impl Engine {
                 format!("the {provider} key is loaded (source: keyring)"),
             )
         } else {
-            (
-                false,
-                format!(
-                    "no key in env; the {provider} key is read from the keyring at the first \
-                     turn (`cosmo auth-login` stores one)"
+            // Not loaded yet (it's read at the first turn): ask the keyring
+            // whether one is there, so a stored key isn't reported missing.
+            // The key itself is dropped at once.
+            use cosmo_reason::secret::{ReasonKind, resolve_keyring};
+            let probe =
+                tokio::time::timeout(std::time::Duration::from_secs(3), resolve_keyring(provider))
+                    .await;
+            match probe {
+                Ok(Ok(_)) => (
+                    true,
+                    format!("the {provider} key is stored in the keyring (read at the first turn)"),
                 ),
-            )
+                Ok(Err(ReasonKind::Missing)) => (
+                    false,
+                    match cosmo_reason::provider::preset(provider).and_then(|p| p.browser_login) {
+                        Some(_) => format!(
+                            "not connected to {provider} — run `cosmo auth-login` \
+                             to sign in with your browser"
+                        ),
+                        None => format!(
+                            "no {provider} key stored — run `cosmo auth-login` to paste one, \
+                             or `cosmo auth-login --provider openrouter` to sign in with \
+                             your browser instead"
+                        ),
+                    },
+                ),
+                Ok(Err(ReasonKind::KeyringLocked)) => (
+                    false,
+                    "the keyring is locked — unlock it (log in again, or open Passwords and Keys)"
+                        .to_owned(),
+                ),
+                Ok(Err(e)) => (false, format!("keyring unavailable — {e}")),
+                Err(_) => (false, "the keyring didn't answer within 3 s".to_owned()),
+            }
         };
         // Which service reasoning goes to, and as what.
         let env_base = std::env::var("COSMO_API_BASE").ok();
         let reasoning_detail =
-            match cosmo_reason::provider::Endpoint::resolve(&self.cfg, env_base.as_deref()) {
+            match cosmo_reason::provider::Endpoint::resolve(&rcfg, env_base.as_deref()) {
                 Ok(e) => {
                     let format = match e.format {
                         cosmo_reason::provider::Format::OpenAiChat => "chat completions",
@@ -766,6 +1010,27 @@ impl Engine {
                     )
                 }
                 Err(err) => (false, format!("{err} — fix `provider` in config.ron")),
+            };
+        // A local model: is the server up, and is the model on it?
+        let reasoning_detail =
+            match cosmo_reason::provider::Endpoint::resolve(&rcfg, env_base.as_deref()) {
+                Ok(e) if !needs_key => match local_ready(&e.url, &e.model).await {
+                    Ok(()) if cosmo_reason::provider::runs_remotely(&e.model) => (
+                        true,
+                        format!(
+                            "⚠ {} is one of Ollama's cloud models: it runs on ollama.com, not \
+                             this computer, so what you say leaves the machine. Pick a model \
+                             without :cloud to keep it local",
+                            e.model
+                        ),
+                    ),
+                    Ok(()) => (
+                        true,
+                        format!("{} on the local server at {}", e.model, e.url),
+                    ),
+                    Err(why) => (false, why),
+                },
+                _ => reasoning_detail,
             };
         DoctorReport {
             checks: vec![
@@ -910,8 +1175,9 @@ impl Engine {
         // isn't kept: the next turn tries again.
         let mut slot = self.reasoner.lock().await;
         if slot.is_none() {
-            let key = ProviderKey::reasoning(&self.cfg.provider);
-            match cosmo_reason::Reasoner::new(Arc::new(self.cfg.clone()), &key) {
+            let rcfg = self.reasoning_cfg.lock().unwrap().clone();
+            let key = ProviderKey::reasoning(&rcfg.provider);
+            match cosmo_reason::Reasoner::new(Arc::new(rcfg), &key) {
                 Ok(r) => *slot = Some(r),
                 Err(cosmo_reason::ReasonError::NoKey(msg)) => {
                     self.no_key_hit.store(true, Ordering::SeqCst);

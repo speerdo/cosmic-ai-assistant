@@ -115,7 +115,9 @@ Description: voice front-end for MCP on the COSMIC desktop
  model is in the cloud, with the provider of your choice.
  .
  After installing, run "cosmo models fetch" once (about 1.6 GB of local
- models), then "cosmo doctor". Desktop control needs computer-use-linux:
+ models), "cosmo auth-login --provider openrouter" to sign in with your
+ browser (other providers take an API key), then "cosmo doctor". Desktop
+ control needs computer-use-linux:
  npm install -g @agent-sh/computer-use-linux
 EOF
 # The daemon runs per user, in the graphical session. Enabled for every
@@ -142,6 +144,8 @@ S="$(stage cosmo-applet)"
 install -Dm0755 -t "$S/usr/bin" "$REL/cosmo-applet"
 install -Dm0644 "$PKG/desktop/io.github.speerdo.CosmoApplet.desktop" \
     "$S/usr/share/applications/io.github.speerdo.CosmoApplet.desktop"
+install -Dm0644 "$ROOT/assets/icons/io.github.speerdo.Cosmo.svg" \
+    "$S/usr/share/icons/hicolor/scalable/apps/io.github.speerdo.Cosmo.svg"
 DOC="$S/usr/share/doc/cosmo-applet"
 install -Dm0644 "$OUT/licenses/cosmo-applet.txt" "$DOC/third-party-licenses.txt"
 cat >"$DOC/copyright" <<EOF

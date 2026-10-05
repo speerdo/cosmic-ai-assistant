@@ -55,12 +55,25 @@ enum Cmd {
     /// Print every transcript as it happens (partials update in place on a
     /// terminal; only finals when piped). Ctrl+C stops.
     Transcripts,
-    /// Open the provider's key page, read the key from stdin (echo
-    /// disabled), store it in the Secret Service.
+    /// Connect a reasoning provider. OpenRouter signs in with your
+    /// browser (no key to copy); the others open their key page and you
+    /// paste the key (echo off). Stored in the Secret Service.
     AuthLogin {
-        /// Which provider's key (default: `provider` in config.ron).
+        /// Which provider (default: `provider` in config.ron).
         #[arg(long)]
         provider: Option<String>,
+        /// Paste a key even where browser sign-in exists (e.g. over SSH).
+        #[arg(long)]
+        paste: bool,
+    },
+    /// Reasoning providers: list them with their connection state, or
+    /// switch to one (live, and saved to config.ron).
+    Use {
+        /// The provider to switch to; omit to list them.
+        provider: Option<String>,
+        /// The model (default: the provider's own default).
+        #[arg(long, default_value = "")]
+        model: String,
     },
     /// Delete a provider's stored key from the Secret Service.
     AuthLogout {
@@ -125,7 +138,7 @@ fn main() {
 async fn run(cmd: Cmd) -> i32 {
     // Auth commands are local (Secret Service), not daemon round trips.
     match cmd {
-        Cmd::AuthLogin { provider } => return auth_login(provider).await,
+        Cmd::AuthLogin { provider, paste } => return auth_login(provider, paste).await,
         Cmd::AuthLogout { provider } => {
             let Some(provider) = auth_provider(provider) else {
                 return 1;
@@ -215,6 +228,11 @@ async fn exchange(
             Cmd::Confirm { token } => Command::Confirm { token },
             Cmd::Cancel { token } => Command::Cancel { token },
             Cmd::Toggle => Command::Toggle,
+            Cmd::Use { provider: None, .. } => Command::Reasoning,
+            Cmd::Use {
+                provider: Some(provider),
+                model,
+            } => Command::ReasoningSet { provider, model },
             Cmd::Listen | Cmd::Transcripts => unreachable!("handled by their own loops"),
             Cmd::Voice { cmd } => match cmd {
                 VoiceCmd::List { provider } => Command::VoiceList { provider },
@@ -292,6 +310,7 @@ fn print_event(event: &Event) {
             r#final: true,
             ..
         } => println!("[heard] {text}"),
+        Event::SignIn { detail, .. } => println!("[sign-in] {detail}"),
         Event::Usage { .. }
         | Event::Log { .. }
         | Event::Transcript { .. }
@@ -537,6 +556,41 @@ fn render(response: Response) -> i32 {
             println!("voice set to {provider}/{voice} (saved to {persisted_to})");
             0
         }
+        Response::Reasoning(info) => {
+            for p in &info.providers {
+                let mark = if p.name == info.active { "▸" } else { " " };
+                let how = match (p.connect, p.connected) {
+                    (cosmo_ipc::Connect::Local, true) => format!(
+                        "local server: {} on this computer, {} via Ollama's cloud",
+                        p.models.len(),
+                        p.remote_models.len()
+                    ),
+                    (cosmo_ipc::Connect::Local, false) => "no local server".into(),
+                    (_, true) => "connected".into(),
+                    (cosmo_ipc::Connect::Browser, false) => {
+                        format!("sign in: cosmo auth-login --provider {}", p.name)
+                    }
+                    (cosmo_ipc::Connect::Key, false) => {
+                        format!("add a key: cosmo auth-login --provider {}", p.name)
+                    }
+                };
+                println!("{mark} {:<12} {:<26} {how}", p.name, p.label);
+            }
+            println!("in use: {} · {}", info.active, info.model);
+            0
+        }
+        Response::ReasoningSet { provider, model } => {
+            println!("cosmo now reasons with {provider} · {model}");
+            0
+        }
+        Response::SignInUrl { url, .. } => {
+            println!("{url}");
+            0
+        }
+        Response::KeyStored { provider } => {
+            println!("{provider} key stored");
+            0
+        }
         Response::Error { message } => {
             eprintln!("error: {message}");
             1
@@ -580,48 +634,142 @@ fn auth_provider(named: Option<String>) -> Option<&'static cosmo_reason::provide
 /// `cosmo auth-login`: open the provider's key page, read the key with echo
 /// disabled, store it in the Secret Service under that provider (plan §1.4 —
 /// the whole browser story; there is deliberately no OAuth flow).
-async fn auth_login(named: Option<String>) -> i32 {
+async fn auth_login(named: Option<String>, paste: bool) -> i32 {
     let Some(provider) = auth_provider(named) else {
         return 1;
     };
+    if !provider.needs_key {
+        println!(
+            "{} needs no sign-in: the model runs on this computer. Start a local server \
+             (Ollama: {}), then `cosmo use {}`.",
+            provider.label, provider.key_page, provider.name
+        );
+        return 0;
+    }
     if let Some(note) = provider.note {
         println!("Note: {note}.");
     }
-    println!(
-        "Opening {} — create or copy a {} API key, then paste it here.",
-        provider.key_page, provider.name
-    );
-    let _ = std::process::Command::new("xdg-open")
-        .arg(provider.key_page)
-        .spawn();
-
-    let key = read_line_echo_disabled().expect("read key from stdin");
-    let key = key.trim().to_string();
-    if key.is_empty() {
-        eprintln!("no key entered");
-        return 1;
-    }
-    match cosmo_reason::secret::store_key(provider.name, &key).await {
-        Ok(()) => {
+    let key = match (provider.browser_login, paste) {
+        (Some(login), false) => {
             println!(
-                "key stored in the Secret Service (application=cosmo, provider={})",
+                "Signing in to {} with your browser: approve cosmo there, and \
+                 the key comes back here by itself (nothing to copy).",
                 provider.name
             );
-            let configured = cosmo_config::load().map(|c| c.provider).unwrap_or_default();
-            if configured != provider.name {
+            let signed_in = cosmo_reason::login::browser_login(&login, |url| {
+                println!("If no browser opens, visit:\n  {url}");
+                let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+            })
+            .await;
+            match signed_in {
+                Ok(key) => key,
+                Err(e) => {
+                    eprintln!("{e}");
+                    eprintln!(
+                        "(or paste a key instead: cosmo auth-login --provider {} --paste)",
+                        provider.name
+                    );
+                    return 1;
+                }
+            }
+        }
+        (login, _) => {
+            if login.is_none() {
                 println!(
-                    "cosmo is set to use {configured:?}: set `provider: \"{}\",` in {} to use this key",
-                    provider.name,
-                    cosmo_config::config_path().display()
+                    "{} has no browser sign-in for apps, so this takes an API key.",
+                    provider.name
                 );
             }
-            0
+            println!(
+                "Opening {} — create or copy a {} API key, then paste it here.",
+                provider.key_page, provider.name
+            );
+            let _ = std::process::Command::new("xdg-open")
+                .arg(provider.key_page)
+                .spawn();
+            let key = read_line_echo_disabled().expect("read key from stdin");
+            let key = key.trim().to_string();
+            if key.is_empty() {
+                eprintln!("no key entered");
+                return 1;
+            }
+            key
         }
-        Err(e) => {
-            eprintln!("storing the key failed: {e}");
-            1
+    };
+    if let Err(e) = cosmo_reason::secret::store_key(provider.name, &key).await {
+        eprintln!("storing the key failed: {e}");
+        return 1;
+    }
+    println!(
+        "Connected: the {} key is in the Secret Service (application=cosmo, provider={}).",
+        provider.name, provider.name
+    );
+    let configured = cosmo_config::load().map(|c| c.provider).unwrap_or_default();
+    if configured != provider.name && !use_provider(provider).await {
+        println!(
+            "cosmo still reasons with {configured:?}; `cosmo auth-login --provider {}` again, \
+             or set `provider: \"{}\",` in {}, to switch",
+            provider.name,
+            provider.name,
+            cosmo_config::config_path().display()
+        );
+    }
+    0
+}
+
+/// After connecting a provider cosmo isn't set to use: offer to switch to
+/// it (a terminal only). True when switched.
+#[allow(unsafe_code)]
+async fn use_provider(provider: &cosmo_reason::provider::Preset) -> bool {
+    use std::io::Write;
+    // SAFETY: isatty on fd 0 only reads the descriptor's state.
+    if unsafe { libc::isatty(0) } != 1 {
+        return false;
+    }
+    print!(
+        "Use {} for reasoning now (model: its default, {})? [Y/n] ",
+        provider.name, provider.default_model
+    );
+    let _ = std::io::stdout().flush();
+    let mut answer = String::new();
+    if std::io::stdin().read_line(&mut answer).is_err()
+        || answer.trim().to_lowercase().starts_with('n')
+    {
+        return false;
+    }
+    // Through the daemon when it runs (live, no restart), else the file.
+    let cmd = Command::ReasoningSet {
+        provider: provider.name.to_owned(),
+        model: String::new(),
+    };
+    match cosmo_ipc::client::request(cmd).await {
+        Ok(Response::ReasoningSet { provider, model }) => {
+            println!("cosmo now reasons with {provider} · {model}");
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("couldn't switch: {message}");
+            return false;
+        }
+        _ => {
+            // The daemon isn't running: write the file it'll read at start.
+            let path = cosmo_config::config_path();
+            let fields = [
+                ("provider", provider.name),
+                ("model", ""),
+                ("api_base", ""),
+                ("api_format", ""),
+            ];
+            if let Err(e) = cosmo_config::set_string_fields(&path, &fields) {
+                eprintln!("couldn't update {}: {e}", path.display());
+                return false;
+            }
+            println!(
+                "cosmo will reason with {} when the daemon starts",
+                provider.name
+            );
         }
     }
+    true
 }
 
 /// `cosmo auth-logout`: delete a provider's stored key.
