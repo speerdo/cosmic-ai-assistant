@@ -227,13 +227,28 @@ impl ToolHost for DaemonToolHost {
             }}),
         ));
         schemas.push(function_schema(
+            "news",
+            "The latest headlines from the user's chosen news feeds. Optionally from one \
+             `source` (a feed's name), or only those about a `topic`. Read out a few \
+             headlines, not all of them.",
+            serde_json::json!({"type": "object", "properties": {
+                "source": {"type": "string"},
+                "topic": {"type": "string"},
+                "count": {"type": "integer", "description": "Headlines per feed, default 5"}
+            }}),
+        ));
+        schemas.push(function_schema(
             "update_profile",
             "Save facts about the user that tools use: their name, their home town (for \
              weather), and metric or imperial units. Only when the user states them.",
             serde_json::json!({"type": "object", "properties": {
                 "name": {"type": "string"},
                 "home": {"type": "string", "description": "A place name, e.g. \"Pittsburgh\""},
-                "units": {"type": "string", "enum": ["metric", "imperial"]}
+                "units": {"type": "string", "enum": ["metric", "imperial"]},
+                "add_news": {"type": "string", "description": format!(
+                    "A news feed to add: one of {} (or a feed URL)",
+                    cosmo_tools::news::SUGGESTED.iter().map(|s| s.0).collect::<Vec<_>>().join(", "))},
+                "remove_news": {"type": "string", "description": "A chosen feed's name to remove"}
             }}),
         ));
         if self.desktop.is_some() {
@@ -261,7 +276,7 @@ impl ToolHost for DaemonToolHost {
         }
         // Native defaults (gate may be stricter — its lists decide).
         match tool {
-            "read_terminal" | "recall" | "system_query" | "weather" => Annotations {
+            "read_terminal" | "recall" | "system_query" | "weather" | "news" => Annotations {
                 read_only: true,
                 destructive: false,
             },
@@ -335,6 +350,21 @@ impl ToolHost for DaemonToolHost {
                     let place = args["place"].as_str().unwrap_or_default().trim().to_owned();
                     match weather(&place).await {
                         Ok(text) | Err(text) => text,
+                    }
+                }
+                "news" => {
+                    let feeds = cosmo_config::profile::load().unwrap_or_default().news;
+                    let count = args["count"].as_u64().unwrap_or(5) as usize;
+                    match cosmo_tools::news::latest(
+                        &feeds,
+                        args["source"].as_str(),
+                        args["topic"].as_str().filter(|t| !t.trim().is_empty()),
+                        count,
+                    )
+                    .await
+                    {
+                        Ok(text) => text,
+                        Err(e) => format!("tool error: {e}"),
                     }
                 }
                 "update_profile" => match update_profile(&args).await {
@@ -432,6 +462,47 @@ async fn update_profile(args: &Value) -> Result<String, String> {
             ));
         }
         profile.home = Some(place);
+    }
+    if let Some(add) = args["add_news"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let feed = match cosmo_tools::news::suggested(add) {
+            Some(f) => f,
+            None if add.starts_with("https://") || add.starts_with("http://") => {
+                cosmo_config::profile::Feed {
+                    name: add.to_owned(),
+                    url: add.to_owned(),
+                }
+            }
+            None => {
+                return Err(format!(
+                    "{add:?} isn't a known feed; known: {} (or give a feed URL)",
+                    cosmo_tools::news::SUGGESTED
+                        .iter()
+                        .map(|s| s.1)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+        };
+        if !profile.news.iter().any(|f| f.url == feed.url) {
+            said.push(format!("news: added {}", feed.name));
+            profile.news.push(feed);
+        }
+    }
+    if let Some(drop) = args["remove_news"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let before = profile.news.len();
+        let d = drop.to_lowercase();
+        profile.news.retain(|f| !f.name.to_lowercase().contains(&d));
+        if profile.news.len() < before {
+            said.push(format!("news: removed {drop}"));
+        }
     }
     match args["units"].as_str() {
         Some("metric") => profile.units = Units::Metric,

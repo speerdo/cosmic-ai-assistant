@@ -277,6 +277,9 @@ pub fn ask(question: &str, default: &str) -> String {
 pub async fn setup_profile() -> Result<(), String> {
     use cosmo_config::profile::{self, Units};
     let mut p = profile::load()?;
+    // A first run takes its units from the locale; later runs keep the
+    // user's answer.
+    let first_time = p == profile::Profile::default();
     println!("About you (Enter keeps what's in brackets; nothing here is required).\n");
 
     let name = ask(
@@ -312,9 +315,10 @@ pub async fn setup_profile() -> Result<(), String> {
         }
     }
 
-    let default = match (p.home.is_some() || p.name.is_some(), p.units) {
-        (false, _) => Units::from_locale(),
-        (true, u) => u,
+    let default = if first_time {
+        Units::from_locale()
+    } else {
+        p.units
     };
     let units = ask(
         "Units, metric or imperial",
@@ -328,6 +332,65 @@ pub async fn setup_profile() -> Result<(), String> {
     } else {
         Units::Metric
     };
+
+    // News: pick from the suggestions by number, and/or add feed URLs.
+    println!("\nNews sources, for \"what's in the news?\":");
+    let suggested = cosmo_tools::news::SUGGESTED;
+    for (i, (_, name, _)) in suggested.iter().enumerate() {
+        let mark = if p.news.iter().any(|f| f.name == *name) {
+            "✓"
+        } else {
+            " "
+        };
+        println!("  {mark} {:>2}) {name}", i + 1);
+    }
+    let current: Vec<String> = suggested
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, name, _))| p.news.iter().any(|f| f.name == *name))
+        .map(|(i, _)| (i + 1).to_string())
+        .collect();
+    let picks = ask(
+        "Numbers separated by commas, any other feed URLs too (\"none\" for none)",
+        &current.join(","),
+    );
+    if picks.trim().eq_ignore_ascii_case("none") {
+        p.news.clear();
+    } else if picks != current.join(",") {
+        let mut chosen = Vec::new();
+        for pick in picks
+            .split([',', ' '])
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            match pick.parse::<usize>() {
+                Ok(n) if (1..=suggested.len()).contains(&n) => {
+                    let (_, name, url) = suggested[n - 1];
+                    chosen.push(profile::Feed {
+                        name: name.into(),
+                        url: url.into(),
+                    });
+                }
+                _ if pick.starts_with("https://") || pick.starts_with("http://") => {
+                    chosen.push(profile::Feed {
+                        name: pick.into(),
+                        url: pick.into(),
+                    });
+                }
+                _ => println!("  (skipped {pick:?}: not a number from the list or a URL)"),
+            }
+        }
+        // Feeds added some other way (by voice, by hand) are kept.
+        let others: Vec<_> = p
+            .news
+            .iter()
+            .filter(|f| !suggested.iter().any(|s| s.1 == f.name))
+            .filter(|f| !chosen.iter().any(|c| c.url == f.url))
+            .cloned()
+            .collect();
+        chosen.extend(others);
+        p.news = chosen;
+    }
 
     let path = profile::save(&p)?;
     println!(
@@ -354,6 +417,12 @@ pub fn show_profile() -> i32 {
                 p.home.as_ref().map_or("(not set)", |h| h.name.as_str())
             );
             println!("  units: {:?}", p.units);
+            if p.news.is_empty() {
+                println!("  news:  (none)");
+            }
+            for f in &p.news {
+                println!("  news:  {} <{}>", f.name, f.url);
+            }
             if p.home.is_none() {
                 println!("set it with: cosmo setup");
             }

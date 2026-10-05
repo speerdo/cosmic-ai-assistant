@@ -26,6 +26,8 @@ cosmo-stt.workspace = true
 # Weather and place lookups (weather.rs, geo.rs). Both already in the graph.
 reqwest = { workspace = true, features = ["json", "query"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# RSS/Atom (news.rs). Already in the graph (wayland-scanner), MIT.
+quick-xml = "0.41"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }

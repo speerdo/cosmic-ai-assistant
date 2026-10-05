@@ -19,6 +19,7 @@ pub mod geo;
 pub mod launch;
 pub mod media;
 pub mod memory;
+pub mod news;
 pub mod system;
 pub mod terminal;
 pub mod weather;
@@ -39,6 +40,7 @@ pub mod registry {
         "media_control",
         "open_url",
         "weather",
+        "news",
         "update_profile",
         "launch_app",
         "focus_app",

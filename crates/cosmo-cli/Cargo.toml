@@ -16,7 +16,7 @@ serde_json.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 libc.workspace = true
-cosmo-ipc.workspace = true
+cosmo-ipc = { workspace = true, features = ["client"] }
 cosmo-reason.workspace = true
 cosmo-config.workspace = true
 # Place lookup and weather attribution for `cosmo setup`.

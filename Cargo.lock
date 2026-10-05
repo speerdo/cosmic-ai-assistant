@@ -1559,6 +1559,7 @@ dependencies = [
  "cosmo-config",
  "cosmo-gate",
  "cosmo-stt",
+ "quick-xml",
  "reqwest",
  "serde",
  "serde_json",

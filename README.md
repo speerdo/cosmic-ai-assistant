@@ -47,8 +47,9 @@ Everything that can be local is local: push-to-talk is read straight off `evdev`
 - **Your name**, so cosmo can address you.
 - **Your home town:** "how's the weather today?" needs no place. It's looked up once with OpenStreetMap's Nominatim, and you pick from the matches.
 - **Units:** metric or imperial, defaulting from your locale.
+- **News sources:** RSS or Atom feeds, for "what's in the news?" or "any news about Linux?". Setup offers ten (BBC, NPR, The Guardian, The New York Times, Al Jazeera, BBC Technology, Ars Technica, The Verge, Hacker News, Phoronix), and you can add any feed URL. There's no account and no key: cosmo reads the feeds from your machine, keeps them for 15 minutes, and the model reads out a few headlines.
 
-You can change them by voice too ("I've moved to Leeds", "use metric"), with `cosmo setup` again, or by editing the JSON. `cosmo profile` shows them.
+You can change them by voice too ("I've moved to Leeds", "use metric", "add The Verge to my news"), with `cosmo setup` again, or by editing the JSON. `cosmo profile` shows them.
 
 The reasoning model is told your name and town, never your coordinates. Only the weather service receives coordinates, rounded to its 4-decimal limit. Forecasts come from MET Norway (free, no key, CC BY 4.0) and are cached for as long as the service says they're valid.
 

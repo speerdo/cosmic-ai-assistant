@@ -36,3 +36,8 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+      # Each binary on its own: a workspace build unifies features, which
+      # hid a feature cosmo-cli used without enabling (2026-10-05).
+      - name: Binaries build alone
+        run: cargo check -p cosmo-cli && cargo check -p cosmo-overlay

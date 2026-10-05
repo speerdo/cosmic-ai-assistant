@@ -21,6 +21,16 @@ pub struct Profile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub home: Option<Place>,
     pub units: Units,
+    /// News feeds (RSS or Atom) the `news` tool reads, in order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub news: Vec<Feed>,
+}
+
+/// One news feed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Feed {
+    pub name: String,
+    pub url: String,
 }
 
 /// A place, geocoded once.
@@ -76,6 +86,10 @@ impl Profile {
                 "they live in {} (the weather tool uses this when no place is named)",
                 home.name
             ));
+        }
+        if !self.news.is_empty() {
+            let names: Vec<&str> = self.news.iter().map(|f| f.name.as_str()).collect();
+            parts.push(format!("their news sources are {}", names.join(", ")));
         }
         if self.home.is_some() || self.name.is_some() {
             parts.push(format!(
@@ -156,6 +170,10 @@ mod tests {
                 longitude: -79.9959,
             }),
             units: Units::Imperial,
+            news: vec![Feed {
+                name: "BBC News".into(),
+                url: "https://feeds.bbci.co.uk/news/rss.xml".into(),
+            }],
         };
         save_to(&path, &p).unwrap();
         assert_eq!(load_from(&path).unwrap(), p);
@@ -173,6 +191,7 @@ mod tests {
                 longitude: -1.5492,
             }),
             units: Units::Metric,
+            news: Vec::new(),
         };
         let line = p.prompt_line();
         assert!(

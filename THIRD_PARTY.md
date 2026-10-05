@@ -119,6 +119,14 @@ Only when a feature needs them, from the user's machine, identified by a
 | [MET Norway Locationforecast](https://api.met.no/doc/TermsOfService) | the `weather` tool | CC BY 4.0 data; free, including for apps; respect `Expires`, at most 4 coordinate decimals, no "Yr" branding | "Weather: MET Norway (api.met.no), CC BY 4.0", in the tool's output and `cosmo setup` |
 | [OpenStreetMap Nominatim](https://operations.osmfoundation.org/policies/nominatim/) | place names → coordinates (`cosmo setup`, a place named for the weather) | ODbL; at most 1 request a second, cached, no autocomplete or bulk use | "© OpenStreetMap contributors (ODbL)", in `cosmo setup` |
 
+**News feeds** (the `news` tool) are public RSS/Atom URLs their
+publishers offer for reading. cosmo ships only the addresses of the ten
+it suggests; the feeds themselves are fetched by the user's machine, for
+the user, and are subject to each publisher's terms (several, the BBC's
+and the New York Times' among them, are for personal, non-commercial
+use). The headlines are read out and kept in memory for 15 minutes,
+never stored or redistributed.
+
 ## Data that stays local
 
 The user's own recordings (`scripts/bench-asr`, in
