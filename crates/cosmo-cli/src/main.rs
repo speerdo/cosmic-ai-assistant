@@ -32,6 +32,11 @@ struct Cli {
 enum Cmd {
     /// Daemon status: state, pending holds, version.
     Status,
+    /// First-run setup: about you (name, home town for the weather,
+    /// units), the local models, and a reasoning provider. Safe to re-run.
+    Setup,
+    /// What the profile holds (`cosmo setup` changes it).
+    Profile,
     /// Readiness report: this machine's install, then the daemon's view.
     Doctor,
     /// The local models: which are present. `cosmo models fetch` downloads
@@ -157,6 +162,8 @@ async fn run(cmd: Cmd) -> i32 {
             return 0;
         }
         Cmd::Models { cmd: None } => return setup::models_status(),
+        Cmd::Profile => return setup::show_profile(),
+        Cmd::Setup => return first_run().await,
         Cmd::Models {
             cmd: Some(ModelsCmd::Fetch { args }),
         } => return setup::models_fetch(&args),
@@ -242,7 +249,9 @@ async fn exchange(
             Cmd::AuthLogin { .. }
             | Cmd::AuthLogout { .. }
             | Cmd::AuthStatus { .. }
-            | Cmd::Models { .. } => {
+            | Cmd::Models { .. }
+            | Cmd::Setup
+            | Cmd::Profile => {
                 unreachable!("local subcommands are handled before the daemon connection")
             }
         },
@@ -634,6 +643,83 @@ fn auth_provider(named: Option<String>) -> Option<&'static cosmo_reason::provide
 /// `cosmo auth-login`: open the provider's key page, read the key with echo
 /// disabled, store it in the Secret Service under that provider (plan §1.4 —
 /// the whole browser story; there is deliberately no OAuth flow).
+/// `cosmo setup`: the questions worth asking once, in order.
+async fn first_run() -> i32 {
+    println!("Setting up cosmo.\n\n— 1. About you —");
+    if let Err(e) = setup::setup_profile().await {
+        eprintln!("couldn't save the profile: {e}");
+        return 1;
+    }
+
+    println!("\n— 2. Local models (speech recognition and the voice) —");
+    let root = cosmo_config::models::root().unwrap_or_default();
+    let missing: Vec<_> = cosmo_config::models::default_set(&root)
+        .into_iter()
+        .filter(|m| !m.present)
+        .map(|m| m.name)
+        .collect();
+    if missing.is_empty() {
+        println!("All present.");
+    } else if setup::yes(
+        &format!(
+            "Missing: {}. Download them now (about 1.6 GB)?",
+            missing.join(", ")
+        ),
+        true,
+    ) && setup::models_fetch(&[]) != 0
+    {
+        eprintln!("(re-run `cosmo models fetch` later; verified files are kept)");
+    }
+
+    println!("\n— 3. Reasoning (the model that answers) —");
+    match cosmo_ipc::client::request(Command::Reasoning).await {
+        Ok(Response::Reasoning(info))
+            if info
+                .providers
+                .iter()
+                .any(|p| p.name == info.active && p.connected) =>
+        {
+            println!("Connected: {} · {}.", info.active, info.model);
+        }
+        _ => {
+            println!(
+                "Not connected yet. Choose one (you can change it any time, also from the \
+                 panel applet):\n  1) OpenRouter: sign in with your browser, many models\n  \
+                 2) Another provider, with an API key\n  3) A model on this computer (Ollama)\n  \
+                 4) Later"
+            );
+            match setup::ask("Which", "1").as_str() {
+                "1" => {
+                    auth_login(Some("openrouter".into()), false).await;
+                }
+                "2" => {
+                    let p = setup::ask(
+                        &format!("Which provider ({})", cosmo_reason::provider::names()),
+                        "openai",
+                    );
+                    auth_login(Some(p), false).await;
+                }
+                "3" => {
+                    let cmd = Command::ReasoningSet {
+                        provider: "local".into(),
+                        model: String::new(),
+                    };
+                    match cosmo_ipc::client::request(cmd).await {
+                        Ok(Response::ReasoningSet { model, .. }) => println!(
+                            "cosmo now uses the local model {model}. If Ollama isn't installed: \
+                             https://ollama.com/download, then `ollama pull {model}`."
+                        ),
+                        _ => println!("Start the daemon first, then: cosmo use local"),
+                    }
+                }
+                _ => println!("Later, then: cosmo auth-login, or the applet's Reasoning section."),
+            }
+        }
+    }
+    println!("\nDone. `cosmo doctor` shows what's working; `cosmo setup` again changes any of it.");
+    0
+}
+
 async fn auth_login(named: Option<String>, paste: bool) -> i32 {
     let Some(provider) = auth_provider(named) else {
         return 1;

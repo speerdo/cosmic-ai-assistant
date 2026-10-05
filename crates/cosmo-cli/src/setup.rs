@@ -252,3 +252,130 @@ fn display_check() -> DoctorCheck {
         Err(_) => check("overlay", false, "cosmo-overlay not installed"),
     }
 }
+
+/// One answer from the terminal; Enter keeps `default`.
+pub fn ask(question: &str, default: &str) -> String {
+    use std::io::Write;
+    if default.is_empty() {
+        print!("{question}: ");
+    } else {
+        print!("{question} [{default}]: ");
+    }
+    let _ = std::io::stdout().flush();
+    let mut line = String::new();
+    let _ = std::io::stdin().read_line(&mut line);
+    let line = line.trim();
+    if line.is_empty() {
+        default.to_owned()
+    } else {
+        line.to_owned()
+    }
+}
+
+/// `cosmo setup`, part one: the profile (name, home, units). Saved to
+/// `~/.config/cosmo/profile.json`, owner-only.
+pub async fn setup_profile() -> Result<(), String> {
+    use cosmo_config::profile::{self, Units};
+    let mut p = profile::load()?;
+    println!("About you (Enter keeps what's in brackets; nothing here is required).\n");
+
+    let name = ask(
+        "What should cosmo call you",
+        p.name.as_deref().unwrap_or(""),
+    );
+    p.name = (!name.is_empty()).then_some(name);
+
+    let current = p.home.as_ref().map(|h| h.name.clone()).unwrap_or_default();
+    loop {
+        let town = ask("Your town or city, for the weather", &current);
+        if town.is_empty() || town == current {
+            break;
+        }
+        match cosmo_tools::geo::geocode(&town).await {
+            Ok(found) if found.is_empty() => println!("  Nothing called {town:?} was found."),
+            Ok(found) => {
+                for (i, place) in found.iter().enumerate() {
+                    println!("  {}) {}", i + 1, place.name);
+                }
+                let pick = ask("  Which one (or 0 to type it again)", "1");
+                match pick.parse::<usize>() {
+                    Ok(n) if (1..=found.len()).contains(&n) => {
+                        p.home = Some(found[n - 1].clone());
+                        break;
+                    }
+                    _ => continue,
+                }
+            }
+            Err(e) => {
+                println!("  Couldn't look it up ({e}); try again, or press Enter to skip.");
+            }
+        }
+    }
+
+    let default = match (p.home.is_some() || p.name.is_some(), p.units) {
+        (false, _) => Units::from_locale(),
+        (true, u) => u,
+    };
+    let units = ask(
+        "Units, metric or imperial",
+        match default {
+            Units::Metric => "metric",
+            Units::Imperial => "imperial",
+        },
+    );
+    p.units = if units.to_lowercase().starts_with('i') {
+        Units::Imperial
+    } else {
+        Units::Metric
+    };
+
+    let path = profile::save(&p)?;
+    println!(
+        "\nSaved to {} (only you can read it). The reasoning model is told your name and \
+         town; your coordinates go only to the weather service.\n{}\n{}",
+        path.display(),
+        cosmo_tools::geo::ATTRIBUTION,
+        cosmo_tools::weather::ATTRIBUTION
+    );
+    Ok(())
+}
+
+/// `cosmo profile`: what's saved.
+pub fn show_profile() -> i32 {
+    match cosmo_config::profile::load() {
+        Ok(p) => {
+            println!(
+                "profile: {}",
+                cosmo_config::profile::profile_path().display()
+            );
+            println!("  name:  {}", p.name.as_deref().unwrap_or("(not set)"));
+            println!(
+                "  home:  {}",
+                p.home.as_ref().map_or("(not set)", |h| h.name.as_str())
+            );
+            println!("  units: {:?}", p.units);
+            if p.home.is_none() {
+                println!("set it with: cosmo setup");
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            1
+        }
+    }
+}
+
+/// Ask a yes/no; Enter takes `default`.
+pub fn yes(question: &str, default: bool) -> bool {
+    // The hint is shown, never taken as the answer.
+    let answer = ask(
+        &format!("{question} [{}]", if default { "Y/n" } else { "y/N" }),
+        "",
+    );
+    match answer.to_lowercase().chars().next() {
+        Some('y') => true,
+        Some('n') => false,
+        _ => default,
+    }
+}

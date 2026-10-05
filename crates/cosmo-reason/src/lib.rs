@@ -155,7 +155,19 @@ impl Reasoner {
     /// the turns that follow (phase-5 spec §5.7). Oldest entries give way
     /// when the prompt would pass its budget.
     pub fn set_memory(&mut self, memory: &str) {
-        let (prompt, dropped) = prompt_with_memory(&static_prompt(), memory, PROMPT_BUDGET_BYTES);
+        self.set_context("", memory);
+    }
+
+    /// The prompt for the next turn: the static part, the user's profile
+    /// line (`cosmo_config::profile::Profile::prompt_line`, place names
+    /// only), and what they asked to be remembered.
+    pub fn set_context(&mut self, profile: &str, memory: &str) {
+        let base = if profile.is_empty() {
+            static_prompt()
+        } else {
+            format!("{}\n\n{profile}", static_prompt())
+        };
+        let (prompt, dropped) = prompt_with_memory(&base, memory, PROMPT_BUDGET_BYTES);
         if dropped > 0 {
             tracing::info!(
                 dropped,

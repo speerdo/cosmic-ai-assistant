@@ -14,7 +14,8 @@ Every improvement to [`computer-use-linux`](https://github.com/agent-sh/computer
 
 ```sh
 sudo apt install ./cosmo_0.1.0-1_amd64.deb ./cosmo-applet_0.1.0-1_amd64.deb
-cosmo models fetch          # once per user: ~1.6 GB of local models, checksummed
+cosmo setup                 # once: about you (name, home town for the weather, units),
+                            # the local models (~1.6 GB), and a reasoning provider
 npm install -g @agent-sh/computer-use-linux   # the "hands" (desktop control)
 cosmo auth-login --provider openrouter   # sign in with your browser (or any provider below, with a key)
 cosmo doctor                # what works, what doesn't, and the fix for each
@@ -38,6 +39,18 @@ Cosmo is four cooperating subsystems, each with a hard performance budget:
 | **Overlay** | layer-shell surface with six states (listening/thinking/acting/waiting/speaking/idle) | at most one buffer commit per input event |
 
 Everything that can be local is local: push-to-talk is read straight off `evdev` (no root, no `input` group, thanks to logind `uaccess`), audio capture is a native PipeWire client on the RT data-loop so it doesn't stall while your machine compiles something, both STT models (`nemotron-speech-streaming-en-0.6b` class + a Parakeet-class offline pass) are resident int8 ONNX via `sherpa-onnx`, and the default TTS is Kokoro-82M running on `ort`. The cloud is used for what it's actually good at — the reasoning model — and even then it runs **text-out**, so your chosen voice speaks the reply instead of the API's fixed catalogue.
+
+## Your profile
+
+`cosmo setup` asks a few things once, so you don't have to repeat them. It saves them to `~/.config/cosmo/profile.json`, readable only by you:
+
+- **Your name**, so cosmo can address you.
+- **Your home town:** "how's the weather today?" needs no place. It's looked up once with OpenStreetMap's Nominatim, and you pick from the matches.
+- **Units:** metric or imperial, defaulting from your locale.
+
+You can change them by voice too ("I've moved to Leeds", "use metric"), with `cosmo setup` again, or by editing the JSON. `cosmo profile` shows them.
+
+The reasoning model is told your name and town, never your coordinates. Only the weather service receives coordinates, rounded to its 4-decimal limit. Forecasts come from MET Norway (free, no key, CC BY 4.0) and are cached for as long as the service says they're valid.
 
 ## Reasoning providers
 

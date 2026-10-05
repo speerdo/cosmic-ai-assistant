@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod locate;
 pub mod models;
+pub mod profile;
 pub mod secret;
 
 /// The whole config file. Every field has a default; the file written on

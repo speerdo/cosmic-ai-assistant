@@ -15,11 +15,13 @@
 pub mod announce;
 pub mod browse;
 pub mod clipboard;
+pub mod geo;
 pub mod launch;
 pub mod media;
 pub mod memory;
 pub mod system;
 pub mod terminal;
+pub mod weather;
 
 /// The canonical native-tool names. `cosmo-mcp` registers these alongside
 /// agent tools; the reasoning loop sees one flat namespace.
@@ -36,6 +38,8 @@ pub mod registry {
         "clipboard_set",
         "media_control",
         "open_url",
+        "weather",
+        "update_profile",
         "launch_app",
         "focus_app",
         "switch_workspace",

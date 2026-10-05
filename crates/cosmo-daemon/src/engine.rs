@@ -1264,7 +1264,11 @@ impl Engine {
         let memory = tokio::fs::read_to_string(cosmo_tools::memory::memory_path())
             .await
             .unwrap_or_default();
-        reasoner.set_memory(&memory);
+        // The profile too, fresh each turn (setup may have just run).
+        let profile = cosmo_config::profile::load()
+            .map(|p| p.prompt_line())
+            .unwrap_or_default();
+        reasoner.set_context(&profile, &memory);
 
         self.set_state(State::Thinking);
         let mut history = self.history.lock().unwrap().clone();

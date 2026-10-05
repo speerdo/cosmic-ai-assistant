@@ -19,6 +19,8 @@ libc.workspace = true
 cosmo-ipc.workspace = true
 cosmo-reason.workspace = true
 cosmo-config.workspace = true
+# Place lookup and weather attribution for `cosmo setup`.
+cosmo-tools.workspace = true
 
 [[bin]]
 name = "cosmo"

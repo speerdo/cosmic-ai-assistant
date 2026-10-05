@@ -218,6 +218,24 @@ impl ToolHost for DaemonToolHost {
                 "new_window": {"type": "boolean"}
             }, "required": ["url"]}),
         ));
+        schemas.push(function_schema(
+            "weather",
+            "The weather forecast: now, the rest of today and the next three days. Without \
+             `place` it's for the user's home (from their profile).",
+            serde_json::json!({"type": "object", "properties": {
+                "place": {"type": "string", "description": "Only when the user names somewhere other than home"}
+            }}),
+        ));
+        schemas.push(function_schema(
+            "update_profile",
+            "Save facts about the user that tools use: their name, their home town (for \
+             weather), and metric or imperial units. Only when the user states them.",
+            serde_json::json!({"type": "object", "properties": {
+                "name": {"type": "string"},
+                "home": {"type": "string", "description": "A place name, e.g. \"Pittsburgh\""},
+                "units": {"type": "string", "enum": ["metric", "imperial"]}
+            }}),
+        ));
         if self.desktop.is_some() {
             schemas.extend(desktop_schemas());
         }
@@ -243,7 +261,7 @@ impl ToolHost for DaemonToolHost {
         }
         // Native defaults (gate may be stricter — its lists decide).
         match tool {
-            "read_terminal" | "recall" | "system_query" => Annotations {
+            "read_terminal" | "recall" | "system_query" | "weather" => Annotations {
                 read_only: true,
                 destructive: false,
             },
@@ -261,7 +279,8 @@ impl ToolHost for DaemonToolHost {
             | "switch_workspace"
             | "move_window_to_workspace"
             | "maximize_window"
-            | "minimize_window" => Annotations {
+            | "minimize_window"
+            | "update_profile" => Annotations {
                 read_only: false,
                 destructive: false,
             },
@@ -312,6 +331,16 @@ impl ToolHost for DaemonToolHost {
                     run_tool(cosmo_tools::media::control(&cmd).await)
                 }
                 "clipboard_get" => run_tool(cosmo_tools::clipboard::get().await),
+                "weather" => {
+                    let place = args["place"].as_str().unwrap_or_default().trim().to_owned();
+                    match weather(&place).await {
+                        Ok(text) | Err(text) => text,
+                    }
+                }
+                "update_profile" => match update_profile(&args).await {
+                    Ok(text) => text,
+                    Err(e) => format!("tool error: {e}"),
+                },
                 "open_url" => {
                     let url = args["url"].as_str().unwrap_or_default().to_string();
                     let new_window = args["new_window"].as_bool().unwrap_or(false);
@@ -347,6 +376,76 @@ impl ToolHost for DaemonToolHost {
             }
         })
     }
+}
+
+/// The forecast for `place`, or for home when it's empty. `Err` is a
+/// message for the model (what's missing and how to fix it).
+async fn weather(place: &str) -> Result<String, String> {
+    let profile = cosmo_config::profile::load().unwrap_or_default();
+    let target = if place.is_empty() {
+        profile.home.clone().ok_or(
+            "tool error: no home location is set. Ask the user where they live, then save it \
+             with update_profile (or they can run `cosmo setup`).",
+        )?
+    } else {
+        cosmo_tools::geo::geocode(place)
+            .await
+            .map_err(|e| format!("tool error: {e}"))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| format!("tool error: no place called {place:?} was found"))?
+    };
+    cosmo_tools::weather::forecast(&target, profile.units)
+        .await
+        .map_err(|e| format!("tool error: {e}"))
+}
+
+/// Save what the user said about themselves to their profile.
+async fn update_profile(args: &Value) -> Result<String, String> {
+    use cosmo_config::profile::Units;
+    let mut profile = cosmo_config::profile::load()?;
+    let mut said = Vec::new();
+    if let Some(name) = args["name"]
+        .as_str()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+    {
+        profile.name = Some(name.to_owned());
+        said.push(format!("name: {name}"));
+    }
+    if let Some(home) = args["home"]
+        .as_str()
+        .map(str::trim)
+        .filter(|h| !h.is_empty())
+    {
+        let found = cosmo_tools::geo::geocode(home).await?;
+        let place = found
+            .first()
+            .cloned()
+            .ok_or_else(|| format!("no place called {home:?} was found"))?;
+        said.push(format!("home: {}", place.name));
+        if found.len() > 1 {
+            let others: Vec<&str> = found[1..].iter().map(|p| p.name.as_str()).collect();
+            said.push(format!(
+                "(other matches, if that's wrong: {})",
+                others.join("; ")
+            ));
+        }
+        profile.home = Some(place);
+    }
+    match args["units"].as_str() {
+        Some("metric") => profile.units = Units::Metric,
+        Some("imperial") => profile.units = Units::Imperial,
+        _ => {}
+    }
+    if let Some(u) = args["units"].as_str() {
+        said.push(format!("units: {u}"));
+    }
+    if said.is_empty() {
+        return Err("nothing to save".into());
+    }
+    cosmo_config::profile::save(&profile)?;
+    Ok(format!("saved to the profile: {}", said.join(", ")))
 }
 
 fn run_tool(result: Result<String, cosmo_tools::ToolError>) -> String {
