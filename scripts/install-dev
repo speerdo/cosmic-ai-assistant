@@ -71,7 +71,7 @@ install -m 0755 "$ROOT/scripts/fetch-models" "$LIBEXEC/fetch-models"
 cat <<NEXT
 Installed to $BIN. To start using it:
 
-  cosmo models fetch                       # the local models, ~2 GB, once
+  cosmo models fetch                       # the local models, ~1.6 GB, once
   systemctl --user daemon-reload
   systemctl --user enable --now cosmo      # the daemon
   $BIN/cosmo-overlay &                     # the overlay (starts itself at next login)
