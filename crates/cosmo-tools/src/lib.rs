@@ -20,6 +20,7 @@ pub mod launch;
 pub mod media;
 pub mod memory;
 pub mod news;
+pub mod search;
 pub mod system;
 pub mod terminal;
 pub mod weather;
@@ -41,6 +42,8 @@ pub mod registry {
         "open_url",
         "weather",
         "news",
+        "web_search",
+        "read_page",
         "update_profile",
         "launch_app",
         "focus_app",

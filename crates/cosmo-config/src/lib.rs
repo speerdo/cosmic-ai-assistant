@@ -86,6 +86,9 @@ pub struct Config {
     pub wake_phrase: String,
     /// Log filter string, e.g. `cosmo=debug`. Overridden by `RUST_LOG`.
     pub log_filter: String,
+    /// Where `web_search` looks things up: "wikipedia" (no key), or
+    /// "ollama" / "tavily" (a key in the Secret Service, `cosmo search use`).
+    pub search_provider: String,
 }
 
 impl Default for Config {
@@ -116,6 +119,7 @@ impl Default for Config {
             wake_word: false,
             wake_phrase: "cosmo".into(),
             log_filter: "info".into(),
+            search_provider: "wikipedia".into(),
         }
     }
 }
@@ -409,6 +413,11 @@ pub fn commented_default() -> String {
 
     // Log filter, e.g. "cosmo=debug". RUST_LOG wins when set.
     // log_filter: "{log_filter}",
+
+    // Looking things up ("when does Dune 3 come out?"): "wikipedia" needs
+    // no key; "ollama" (a free Ollama account) and "tavily" search the
+    // whole web with a key (`cosmo search use ollama`).
+    // search_provider: "{search_provider}",
 )
 "#,
         provider = d.provider,
@@ -438,6 +447,7 @@ pub fn commented_default() -> String {
         wake_word = d.wake_word,
         wake_phrase = d.wake_phrase,
         log_filter = d.log_filter,
+        search_provider = d.search_provider,
     )
 }
 

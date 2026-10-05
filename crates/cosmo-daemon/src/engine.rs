@@ -1268,7 +1268,10 @@ impl Engine {
         let profile = cosmo_config::profile::load()
             .map(|p| p.prompt_line())
             .unwrap_or_default();
-        reasoner.set_context(&profile, &memory);
+        // The date: "how long ago…" and "is it out yet?" need it, and a
+        // model's own sense of it is its training cut-off.
+        let context = format!("Today is {}. {profile}", cosmo_tools::search::today());
+        reasoner.set_context(context.trim(), &memory);
 
         self.set_state(State::Thinking);
         let mut history = self.history.lock().unwrap().clone();

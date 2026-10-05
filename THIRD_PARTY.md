@@ -119,6 +119,17 @@ Only when a feature needs them, from the user's machine, identified by a
 | [MET Norway Locationforecast](https://api.met.no/doc/TermsOfService) | the `weather` tool | CC BY 4.0 data; free, including for apps; respect `Expires`, at most 4 coordinate decimals, no "Yr" branding | "Weather: MET Norway (api.met.no), CC BY 4.0", in the tool's output and `cosmo setup` |
 | [OpenStreetMap Nominatim](https://operations.osmfoundation.org/policies/nominatim/) | place names → coordinates (`cosmo setup`, a place named for the weather) | ODbL; at most 1 request a second, cached, no autocomplete or bulk use | "© OpenStreetMap contributors (ODbL)", in `cosmo setup` |
 
+**Looking things up** (`web_search`, `read_page`):
+
+| Service | Terms | Attribution |
+|---|---|---|
+| [Wikipedia / MediaWiki API](https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_User-Agent_Policy) (default) | free; an identifying User-Agent; text CC BY-SA 4.0 | "Text from Wikipedia, CC BY-SA 4.0" in the tool output, with each article's URL |
+| [Ollama web search](https://docs.ollama.com/capabilities/web-search) (opt-in) | the user's own Ollama account and key | — |
+| [Tavily](https://docs.tavily.com) (opt-in) | the user's own key, under Tavily's terms | — |
+
+`read_page` fetches one page the model chose from the results, for the
+user, as a browser would. No search engine's result pages are scraped.
+
 **News feeds** (the `news` tool) are public RSS/Atom URLs their
 publishers offer for reading. cosmo ships only the addresses of the ten
 it suggests; the feeds themselves are fetched by the user's machine, for

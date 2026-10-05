@@ -227,6 +227,23 @@ impl ToolHost for DaemonToolHost {
             }}),
         ));
         schemas.push(function_schema(
+            "web_search",
+            "Look something up: facts, dates, people, places, releases, anything you'd \
+             otherwise guess or that may have changed since your training. Answer from \
+             the results, briefly, and say if they don't settle it.",
+            serde_json::json!({"type": "object", "properties": {
+                "query": {"type": "string", "description": "What to search for, as a search engine query"},
+                "max_results": {"type": "integer"}
+            }, "required": ["query"]}),
+        ));
+        schemas.push(function_schema(
+            "read_page",
+            "Read a web page (a search result's URL) as text, when the snippet isn't enough.",
+            serde_json::json!({"type": "object", "properties": {
+                "url": {"type": "string"}
+            }, "required": ["url"]}),
+        ));
+        schemas.push(function_schema(
             "news",
             "The latest headlines from the user's chosen news feeds. Optionally from one \
              `source` (a feed's name), or only those about a `topic`. Read out a few \
@@ -276,7 +293,8 @@ impl ToolHost for DaemonToolHost {
         }
         // Native defaults (gate may be stricter — its lists decide).
         match tool {
-            "read_terminal" | "recall" | "system_query" | "weather" | "news" => Annotations {
+            "read_terminal" | "recall" | "system_query" | "weather" | "news" | "web_search"
+            | "read_page" => Annotations {
                 read_only: true,
                 destructive: false,
             },
@@ -350,6 +368,21 @@ impl ToolHost for DaemonToolHost {
                     let place = args["place"].as_str().unwrap_or_default().trim().to_owned();
                     match weather(&place).await {
                         Ok(text) | Err(text) => text,
+                    }
+                }
+                "web_search" => {
+                    let query = args["query"].as_str().unwrap_or_default().to_owned();
+                    let max = args["max_results"].as_u64().unwrap_or(5) as usize;
+                    match web_search(&query, max).await {
+                        Ok(text) => text,
+                        Err(e) => format!("tool error: {e}"),
+                    }
+                }
+                "read_page" => {
+                    let url = args["url"].as_str().unwrap_or_default().to_owned();
+                    match cosmo_tools::search::read_page(&url).await {
+                        Ok(text) => text,
+                        Err(e) => format!("tool error: {e}"),
                     }
                 }
                 "news" => {
@@ -428,6 +461,37 @@ async fn weather(place: &str) -> Result<String, String> {
     cosmo_tools::weather::forecast(&target, profile.units)
         .await
         .map_err(|e| format!("tool error: {e}"))
+}
+
+/// Search with the configured backend, its key read from the Secret
+/// Service each time (so `cosmo search use` applies at once).
+async fn web_search(query: &str, max: usize) -> Result<String, String> {
+    let backend = cosmo_config::load()
+        .map(|c| c.search_provider)
+        .unwrap_or_else(|_| "wikipedia".into());
+    let key = match cosmo_tools::search::BACKENDS
+        .iter()
+        .find(|b| b.0 == backend)
+        .and_then(|b| b.2)
+    {
+        Some(_) => tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            cosmo_reason::secret::resolve_keyring(&cosmo_tools::search::key_name(&backend)),
+        )
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .map(|k| k.expose().to_owned()),
+        None => None,
+    };
+    cosmo_tools::search::web_search(
+        &backend,
+        key.as_deref(),
+        query,
+        max,
+        &cosmo_tools::search::today(),
+    )
+    .await
 }
 
 /// Save what the user said about themselves to their profile.

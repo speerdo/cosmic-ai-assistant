@@ -37,6 +37,12 @@ enum Cmd {
     Setup,
     /// What the profile holds (`cosmo setup` changes it).
     Profile,
+    /// Where cosmo looks things up: list the backends, or `use` one
+    /// (asks for its key when it needs one).
+    Search {
+        #[command(subcommand)]
+        cmd: Option<SearchCmd>,
+    },
     /// Readiness report: this machine's install, then the daemon's view.
     Doctor,
     /// The local models: which are present. `cosmo models fetch` downloads
@@ -96,6 +102,12 @@ enum Cmd {
         #[command(subcommand)]
         cmd: VoiceCmd,
     },
+}
+
+#[derive(Subcommand)]
+enum SearchCmd {
+    /// Switch backend: wikipedia, ollama or tavily.
+    Use { backend: String },
 }
 
 #[derive(Subcommand)]
@@ -163,6 +175,10 @@ async fn run(cmd: Cmd) -> i32 {
         }
         Cmd::Models { cmd: None } => return setup::models_status(),
         Cmd::Profile => return setup::show_profile(),
+        Cmd::Search { cmd: None } => return search_list().await,
+        Cmd::Search {
+            cmd: Some(SearchCmd::Use { backend }),
+        } => return search_use(&backend).await,
         Cmd::Setup => return first_run().await,
         Cmd::Models {
             cmd: Some(ModelsCmd::Fetch { args }),
@@ -251,7 +267,8 @@ async fn exchange(
             | Cmd::AuthStatus { .. }
             | Cmd::Models { .. }
             | Cmd::Setup
-            | Cmd::Profile => {
+            | Cmd::Profile
+            | Cmd::Search { .. } => {
                 unreachable!("local subcommands are handled before the daemon connection")
             }
         },
@@ -643,6 +660,79 @@ fn auth_provider(named: Option<String>) -> Option<&'static cosmo_reason::provide
 /// `cosmo auth-login`: open the provider's key page, read the key with echo
 /// disabled, store it in the Secret Service under that provider (plan §1.4 —
 /// the whole browser story; there is deliberately no OAuth flow).
+/// `cosmo search`: the backends, which is in use, which have keys.
+async fn search_list() -> i32 {
+    let active = cosmo_config::load()
+        .map(|c| c.search_provider)
+        .unwrap_or_else(|_| "wikipedia".into());
+    for (name, label, page) in cosmo_tools::search::BACKENDS {
+        let mark = if *name == active { "▸" } else { " " };
+        let key = match page {
+            None => "no key needed".to_owned(),
+            Some(_) => {
+                match cosmo_reason::secret::resolve_keyring(&cosmo_tools::search::key_name(name))
+                    .await
+                {
+                    Ok(_) => "key stored".to_owned(),
+                    Err(_) => format!("needs a key: cosmo search use {name}"),
+                }
+            }
+        };
+        println!("{mark} {name:<10} {label:<44} {key}");
+    }
+    0
+}
+
+/// `cosmo search use <backend>`: store its key if it needs one and has
+/// none, then make it the one `web_search` uses.
+async fn search_use(backend: &str) -> i32 {
+    let Some((name, label, page)) = cosmo_tools::search::BACKENDS
+        .iter()
+        .find(|b| b.0 == backend)
+    else {
+        eprintln!(
+            "unknown backend {backend:?} (known: {})",
+            cosmo_tools::search::BACKENDS
+                .iter()
+                .map(|b| b.0)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        return 1;
+    };
+    if let Some(page) = page {
+        let key_name = cosmo_tools::search::key_name(name);
+        if cosmo_reason::secret::resolve_keyring(&key_name)
+            .await
+            .is_err()
+        {
+            println!("Opening {page}: create a key for {label}, then paste it here.");
+            let _ = std::process::Command::new("xdg-open").arg(page).spawn();
+            let key = read_line_echo_disabled().unwrap_or_default();
+            let key = key.trim();
+            if key.is_empty() {
+                eprintln!("no key entered; still using the previous backend");
+                return 1;
+            }
+            if let Err(e) = cosmo_reason::secret::store_key(&key_name, key).await {
+                eprintln!("storing the key failed: {e}");
+                return 1;
+            }
+        }
+    }
+    let path = cosmo_config::config_path();
+    match cosmo_config::set_string_fields(&path, &[("search_provider", name)]) {
+        Ok(_) => {
+            println!("cosmo now looks things up with {label}.");
+            0
+        }
+        Err(e) => {
+            eprintln!("couldn't update {}: {e}", path.display());
+            1
+        }
+    }
+}
+
 /// `cosmo setup`: the questions worth asking once, in order.
 async fn first_run() -> i32 {
     println!("Setting up cosmo.\n\n— 1. About you —");

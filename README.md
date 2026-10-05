@@ -53,6 +53,18 @@ You can change them by voice too ("I've moved to Leeds", "use metric", "add The 
 
 The reasoning model is told your name and town, never your coordinates. Only the weather service receives coordinates, rounded to its 4-decimal limit. Forecasts come from MET Norway (free, no key, CC BY 4.0) and are cached for as long as the service says they're valid.
 
+## Looking things up
+
+Ask "when does Dune 3 come out?" or "how long ago was Stonehenge built?" and cosmo searches, reads, and answers in a sentence or two. It knows today's date, so "how long ago" and "is it out yet" come out right. Where it looks is `search_provider` in `config.ron`, or `cosmo search` to see the options:
+
+| Backend | Covers | Needs |
+|---|---|---|
+| `wikipedia` (default) | encyclopaedic facts: films, history, people, places | nothing |
+| `ollama` | the whole web | a free Ollama account's key: `cosmo search use ollama` |
+| `tavily` | the whole web | a Tavily key (free monthly searches): `cosmo search use tavily` |
+
+If a keyed backend fails, cosmo falls back to Wikipedia and says so. It can also open a result (`read_page`) when the summary isn't enough. Search engines' own pages are never scraped. Web text reaches the model labelled as data, and the policy gate still decides every action, so a page can't talk cosmo into doing anything.
+
 ## Reasoning providers
 
 The reasoning model is the only part that can use the cloud, and it isn't tied to one company, or to the cloud at all: it can run on your own computer. The simplest way to choose is the panel applet's **Reasoning** section. It lists every provider with a **Sign in** button (OpenRouter), a key field (the other cloud providers), or the models your local server has, and switches on the spot. From a terminal: `cosmo use` lists them, `cosmo use <name>` switches, and `cosmo auth-login --provider <name>` connects one. The key goes into the Secret Service (one per provider, never into a file), and cosmo offers to switch to that provider. Leave `model` empty for the provider's default.
