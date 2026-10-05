@@ -60,6 +60,9 @@ struct Overlay {
     view: View,
     /// The layer surface, while the overlay is on screen.
     surface: Option<window::Id>,
+    /// What the card showed when the user closed it: it stays closed
+    /// until there's something new (another state, other held actions).
+    dismissed: Option<(State, Vec<String>)>,
 }
 
 #[derive(Debug, Clone)]
@@ -68,6 +71,8 @@ enum Message {
     View(Box<View>),
     Confirm(String),
     Cancel(String),
+    /// The card's ✕: close it, cancelling whatever it was waiting on.
+    Dismiss,
     /// A confirm or cancel came back (errors are logged; the daemon's own
     /// events update the view).
     Sent(Result<(), String>),
@@ -93,6 +98,7 @@ impl cosmic::Application for Overlay {
                 core,
                 view: View::default(),
                 surface: None,
+                dismissed: None,
             },
             Task::none(),
         )
@@ -106,7 +112,26 @@ impl cosmic::Application for Overlay {
         match message {
             Message::View(view) => {
                 self.view = *view;
+                if self.dismissed.as_ref() != Some(&dismiss_key(&self.view)) {
+                    self.dismissed = None;
+                }
                 self.sync_surface()
+            }
+            Message::Dismiss => {
+                self.dismissed = Some(dismiss_key(&self.view));
+                // Closing the card is a "no" to what it was asking.
+                let mut tasks: Vec<_> = self
+                    .view
+                    .holds
+                    .iter()
+                    .map(|h| {
+                        send(cosmo_ipc::Command::Cancel {
+                            token: h.token.clone(),
+                        })
+                    })
+                    .collect();
+                tasks.push(self.sync_surface());
+                Task::batch(tasks)
             }
             Message::Confirm(token) => send(cosmo_ipc::Command::Confirm { token }),
             Message::Cancel(token) => send(cosmo_ipc::Command::Cancel { token }),
@@ -137,7 +162,8 @@ impl Overlay {
     /// Create the surface when there's something to show, destroy it when
     /// there isn't.
     fn sync_surface(&mut self) -> Task<cosmic::Action<Message>> {
-        match (self.view.visible(), self.surface) {
+        let showing = self.view.visible() && self.dismissed.is_none();
+        match (showing, self.surface) {
             (true, None) => {
                 let id = window::Id::unique();
                 self.surface = Some(id);
@@ -179,6 +205,11 @@ impl Overlay {
     }
 }
 
+/// What a dismissal remembers: the state and the held actions shown.
+fn dismiss_key(v: &View) -> (State, Vec<String>) {
+    (v.state, v.holds.iter().map(|h| h.token.clone()).collect())
+}
+
 fn autosize_id() -> cosmic::widget::Id {
     static ID: std::sync::LazyLock<cosmic::widget::Id> =
         std::sync::LazyLock::new(|| cosmic::widget::Id::new("cosmo-overlay-card"));
@@ -193,12 +224,28 @@ fn events() -> impl futures::Stream<Item = Message> {
             use futures::SinkExt;
             let mut updates = cosmo_ipc::client::subscribe();
             let mut view = View::default();
-            while let Some(first) = updates.recv().await {
-                let mut burst = vec![first];
-                while let Ok(more) = updates.try_recv() {
-                    burst.push(more);
-                }
-                if apply_burst(&mut view, burst)
+            // While the card is up, check it against the daemon's status
+            // every couple of seconds: a missed event mustn't strand it.
+            let mut check = tokio::time::interval(std::time::Duration::from_secs(2));
+            check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                let changed = tokio::select! {
+                    first = updates.recv() => {
+                        let Some(first) = first else { return };
+                        let mut burst = vec![first];
+                        while let Ok(more) = updates.try_recv() {
+                            burst.push(more);
+                        }
+                        apply_burst(&mut view, burst)
+                    }
+                    _ = check.tick(), if view.visible() => {
+                        match cosmo_ipc::client::request(cosmo_ipc::Command::Status).await {
+                            Ok(cosmo_ipc::Response::Status(s)) => view.reconcile(&s),
+                            _ => false,
+                        }
+                    }
+                };
+                if changed
                     && out
                         .send(Message::View(Box::new(view.clone())))
                         .await
@@ -247,7 +294,9 @@ fn card(v: &View) -> Element<'_, Message> {
     if v.state == State::Listening {
         header = header.push(waveform(&v.levels));
     }
-    header = header.push(text::title4(title));
+    header = header.push(text::title4(title).width(Length::Fill)).push(
+        button::icon(widget::icon::from_name("window-close-symbolic")).on_press(Message::Dismiss),
+    );
     column = column.push(header);
     if !detail.is_empty() {
         column = column.push(text::body(detail).width(Length::Fill));

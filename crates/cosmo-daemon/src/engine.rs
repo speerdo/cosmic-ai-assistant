@@ -118,13 +118,9 @@ struct LogindLock {
 impl LogindLock {
     async fn connect() -> anyhow::Result<Self> {
         let conn = zbus::Connection::system().await?;
-        // The session of this uid: ask logind for sessions and pick ours by
-        // leader being in our session — simpler: use $XDG_SESSION_ID when
-        // present, else the first active graphical session of our uid.
-        let session_path = match std::env::var("XDG_SESSION_ID") {
-            Ok(id) if !id.is_empty() => format!("/org/freedesktop/login1/session/{id}"),
-            _ => anyhow::bail!("XDG_SESSION_ID unset; cannot locate session for LockedHint"),
-        };
+        // $XDG_SESSION_ID, or (as a systemd user service, which lacks it)
+        // logind's display session for this user.
+        let session_path = crate::lock::session_path(&conn).await?;
         Ok(Self { conn, session_path })
     }
 }
@@ -239,6 +235,9 @@ pub struct Engine {
     reasoning_cfg: Mutex<Config>,
     /// A browser sign-in waiting for its browser; a new one replaces it.
     sign_in: Mutex<Option<tokio::task::AbortHandle>>,
+    /// COSMIC's lock state, tracked live (`crate::lock`) once started. It
+    /// sets the gate itself; without it COSMIC stays deny-all.
+    lock_tracker: OnceLock<Arc<Mutex<crate::lock::Tracker>>>,
 }
 
 impl Engine {
@@ -251,6 +250,7 @@ impl Engine {
         Self {
             reasoning_cfg: Mutex::new(cfg.clone()),
             sign_in: Mutex::new(None),
+            lock_tracker: OnceLock::new(),
             cfg,
             gate: Arc::new(Gate::new()),
             state: Arc::new(StateCell::new(events.clone())),
@@ -521,12 +521,19 @@ impl Engine {
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let tmux_session = cosmo_config::load()?.tmux_session;
+        // The reflex path's desktop actions, as tools reasoning can call
+        // too: "open a browser on workspace 2 and…" needs them in sequence.
+        let desktop = self.reflex.get().map(|r| crate::toolhost::DesktopTools {
+            matcher: Arc::clone(&r.matcher),
+            actuator: Arc::clone(&r.actuator),
+        });
         let host = DaemonToolHost::new(
             Arc::new(host),
             &tmux_session,
             cosmo_tools::announce::Announcer::with_delivery(Arc::new(AnnounceDelivery {
                 speech: self.speech.clone(),
             })),
+            desktop,
         );
         let count = host.agent_tool_count();
         self.attach_tools(Arc::new(host), count);
@@ -540,6 +547,24 @@ impl Engine {
         *self.tools.lock().unwrap() = Some(host);
     }
 
+    /// On COSMIC, track the lock from logind's signals and the compositor
+    /// (`crate::lock`), so screen tools work while unlocked. If that can't
+    /// start, COSMIC stays deny-all.
+    pub async fn track_cosmic_lock(&self) {
+        if self.lock_mode != LockMode::CosmicDenyAll {
+            return;
+        }
+        match crate::lock::start(Arc::clone(&self.gate)).await {
+            Ok(tracker) => {
+                let _ = self.lock_tracker.set(tracker);
+                tracing::info!("COSMIC lock state tracked (logind Lock + activated window)");
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "can't track COSMIC's lock; screen tools stay denied")
+            }
+        }
+    }
+
     /// Refresh the gate's lock state according to the active policy and
     /// log (once per call) the decision. Called at startup and before each
     /// turn.
@@ -547,6 +572,8 @@ impl Engine {
         let state = match self.lock_mode {
             // Findings §L: no unprivileged lock source on COSMIC today —
             // sensitive tools are denied outright (gate denies `Unknown`).
+            // Tracked: the tracker keeps the gate current by itself.
+            LockMode::CosmicDenyAll if self.lock_tracker.get().is_some() => self.gate.lock_state(),
             LockMode::CosmicDenyAll => {
                 self.gate.set_lock_state(LockState::Unknown);
                 LockState::Unknown
@@ -581,6 +608,50 @@ impl Engine {
         self.state.get()
     }
 
+    /// Remove a held action without running it, and say so. True when it
+    /// was pending.
+    fn drop_hold(&self, token: &str, why: &str) -> bool {
+        let ok = self.gate.reject(token);
+        if ok {
+            let _ = self.events.send(Event::HoldResolved {
+                token: token.to_owned(),
+                executed: false,
+                summary: why.into(),
+            });
+            // Nothing left to wait on: leave Waiting, or the next turn
+            // starts from a state that is no longer true.
+            if self.gate.pending().is_empty() && self.state() == State::Waiting {
+                self.set_state(State::Idle);
+            }
+        }
+        ok
+    }
+
+    /// Cancel held actions older than `max_age`: a voice request nobody
+    /// confirmed within minutes is stale, and the overlay shouldn't wait
+    /// on it forever. Expiring never runs anything. Returns how many.
+    pub fn expire_holds(&self, max_age: std::time::Duration) -> usize {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let stale: Vec<String> = self
+            .gate
+            .pending()
+            .into_iter()
+            .filter(|p| now.saturating_sub(p.parked_at_ms) > max_age.as_millis() as u64)
+            .map(|p| p.token)
+            .collect();
+        let n = stale
+            .iter()
+            .filter(|t| self.drop_hold(t, "expired: not confirmed in time"))
+            .count();
+        if n > 0 {
+            tracing::info!(expired = n, "unconfirmed held actions expired");
+        }
+        n
+    }
+
     /// Handle one command. This is the single entry point from the socket.
     pub async fn handle(&self, cmd: Command) -> Response {
         tracing::debug!(?cmd, "command");
@@ -590,19 +661,7 @@ impl Engine {
             Command::Say { text } => self.say(text).await,
             Command::Confirm { token } => self.confirm(token).await,
             Command::Cancel { token } => {
-                let ok = self.gate.reject(&token);
-                if ok {
-                    let _ = self.events.send(Event::HoldResolved {
-                        token: token.clone(),
-                        executed: false,
-                        summary: "rejected".into(),
-                    });
-                    // Nothing left to wait on: leave Waiting, or the next
-                    // turn starts from a state that is no longer true.
-                    if self.gate.pending().is_empty() && self.state() == State::Waiting {
-                        self.set_state(State::Idle);
-                    }
-                }
+                let ok = self.drop_hold(&token, "rejected");
                 Response::Cancelled {
                     ok,
                     reason: (!ok).then(|| "no pending hold with that token".to_string()),
@@ -892,8 +951,17 @@ impl Engine {
                     .to_owned(),
             ),
         };
-        let lock_warn = self.lock_mode == LockMode::CosmicDenyAll;
+        let tracked = self.lock_tracker.get();
+        let lock_warn = self.lock_mode == LockMode::CosmicDenyAll
+            && tracked.is_none_or(|_| self.gate.lock_state() != LockState::Unlocked);
         let (lock_ok, lock_detail) = match (self.lock_mode, self.gate.lock_state()) {
+            (LockMode::CosmicDenyAll, _) if tracked.is_some() => (
+                true,
+                format!(
+                    "COSMIC, tracked from logind's Lock signal and the active window: {}",
+                    tracked.expect("checked").lock().unwrap().describe()
+                ),
+            ),
             (LockMode::LogindHint, LockState::Unlocked) => (
                 true,
                 "logind LockedHint says unlocked — screenshot/click/type available".to_owned(),

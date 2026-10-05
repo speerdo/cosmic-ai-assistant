@@ -13,6 +13,7 @@
 //! - `media_control`: MPRIS over `zbus`. Reflex-path candidate.
 
 pub mod announce;
+pub mod browse;
 pub mod clipboard;
 pub mod launch;
 pub mod media;
@@ -34,6 +35,13 @@ pub mod registry {
         "clipboard_get",
         "clipboard_set",
         "media_control",
+        "open_url",
+        "launch_app",
+        "focus_app",
+        "switch_workspace",
+        "move_window_to_workspace",
+        "maximize_window",
+        "minimize_window",
     ];
 }
 

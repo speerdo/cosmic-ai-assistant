@@ -208,6 +208,30 @@ pub fn desktop_app(id: &str) -> Option<DesktopApp> {
     })
 }
 
+/// The `Exec=` of an application's `[Desktop Action <action>]` group
+/// (`new-window` on browsers), unparsed.
+pub fn desktop_action_exec(id: &str, action: &str) -> Option<String> {
+    let header = format!("[Desktop Action {action}]");
+    application_dirs().into_iter().find_map(|dir| {
+        let text = std::fs::read_to_string(dir.join(format!("{id}.desktop"))).ok()?;
+        action_exec(&text, &header)
+    })
+}
+
+fn action_exec(text: &str, header: &str) -> Option<String> {
+    let mut inside = false;
+    for line in text.lines().map(str::trim) {
+        if line.starts_with('[') {
+            inside = line == header;
+            continue;
+        }
+        if inside && let Some(exec) = line.strip_prefix("Exec=") {
+            return Some(exec.to_owned());
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 fn visible_name(text: &str) -> Option<String> {
     parse_entry("test", text).map(|a| a.name)
@@ -322,5 +346,17 @@ mod tests {
         let link = "[Desktop Entry]\nType=Link\nName=Docs\nURL=https://x\n";
         assert_eq!(visible_name(link), None);
         assert_eq!(visible_name("Name=Loose\nType=Application\n"), None);
+    }
+
+    #[test]
+    fn a_desktop_action_s_exec_is_read_from_its_own_group() {
+        let text = "[Desktop Entry]\nName=Firefox\nExec=firefox %u\n\
+                    [Desktop Action new-window]\nName=New Window\nExec=firefox --new-window %u\n\
+                    [Desktop Action private]\nExec=firefox --private-window %u\n";
+        assert_eq!(
+            action_exec(text, "[Desktop Action new-window]").as_deref(),
+            Some("firefox --new-window %u")
+        );
+        assert_eq!(action_exec(text, "[Desktop Action missing]"), None);
     }
 }

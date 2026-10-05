@@ -93,7 +93,7 @@ These are the invariants the codebase is built around. They're the reason Cosmo 
 
 - **Not on GNOME-on-Wayland for the overlay** — layer shell isn't supported there; Cosmo degrades to notifications. (The daemon, hotkey, TTS, and reasoning all still work, and the spine phase explicitly targets GNOME first to prove this.)
 - **US and UK English voices only.** Kokoro ships those two accents. An Australian voice (MeloTTS) was considered and isn't being pursued.
-- **COSMIC exposes no lock state yet**, so screenshots, clicks, typing and clipboard reads are refused outright on COSMIC (fail-closed) until the greeter sets logind's `LockedHint`. `cosmo doctor` shows this as a warning.
+- **COSMIC doesn't publish its lock state**, so cosmo infers it from logind's `Lock` signal and whether any window is active (`docs/phase8-findings.md` §8). Screenshots, clicks and typing refuse while locked, and also while no window is active, for example on an empty workspace: open or activate an app first.
 - **It will not act unprompted.** Jarvis anticipates; Cosmo deliberately doesn't. You get very fast reactive execution and a memory of your projects, not an agent rummaging through your shell while you're away.
 
 ## Prior art and attribution

@@ -97,3 +97,83 @@ Error messages told users to run `cosmo auth login`; the command is
   `install-dev` copy, and installing both would put two `cosmo.service`
   units in play. The clean-account smoke test (plan §8.6) covers this.
 - **No lintian run** (not installed).
+
+## §8. Lock state on COSMIC, measured (2026-10-05)
+
+Clicking, typing and screenshots had been refused outright on COSMIC
+because nothing reported the lock (phase-1 findings §L). Read again,
+then measured with the user locking and unlocking once while
+`cosmo-focus`'s `lock_probe` example and `gdbus monitor` recorded:
+
+- **cosmic-greeter's source** (master, 2026-09-30): it locks on logind's
+  `Session.Lock` signal or `PrepareForSleep`, and unlocks after PAM
+  through the Wayland session-lock protocol alone. No `Unlock` signal, no
+  `LockedHint`, no D-Bus name or file. There is no published unlock signal.
+- **Measured:** `Session.Lock` fired as the lock screen appeared (10:05:35.7).
+  ~0.5 s later **no window was activated**. At unlock (10:07:03.4, PAM),
+  the previous window was activated again ~0.4 s later. No `Unlock`
+  signal arrived.
+
+The tracker (`cosmo-daemon/src/lock.rs`, 6 tests) is fail-closed at every
+step:
+- A `Lock` or sleep signal ⇒ **Locked**, until every window has been seen
+  inactive and then one active again. The activation left over from
+  before the lock doesn't count.
+- Otherwise, a window is active ⇒ **Unlocked**.
+- No window is active ⇒ **Unknown** (refuse). The lock screen and "nothing
+  focused" look the same from here; the cost is that screen tools also
+  refuse on an empty workspace until an app is opened or activated.
+- The window connection fails, or logind's signal stream ends ⇒ Unknown
+  (permanently, for the latter).
+- If the signal subscription can't be made, COSMIC stays deny-all as
+  before.
+
+The gate is set from the tracker the moment either input changes,
+instead of once per turn, so a lock in the middle of a turn counts.
+Live after install: "unlocked (a window is active, and no lock since)".
+**Observed live, 2026-10-05:**
+- The `Lock` signal reached cosmo at 10:39:31.065, and it read **Locked**
+  35 ms *before* the greeter drew its lock surface (10:39:31.100).
+- The user unlocked at 10:48:47.733 (PAM), and cosmo read **Unlocked**
+  0.36 s later.
+- Screen tools were refused for the whole 9 minutes.
+
+**Two older bugs found on the way.**
+- logind's session object path escapes a leading digit: session `3` is
+  `/session/_33`, not `/session/3`. So the GNOME `LockedHint` probe could
+  never have worked, even with `XDG_SESSION_ID` set.
+- A systemd user service has no `XDG_SESSION_ID` anyway. Both now take
+  the path from logind's `User.Display`.
+
+## §9. What reasoning can do on the desktop (2026-10-05)
+
+- **The reflex verbs became reasoning tools:** launch_app, focus_app,
+  switch_workspace, move_window_to_workspace, maximize/minimize_window.
+  They use the same actuator. Before this, "open a browser on workspace 2
+  and search…" had no way to switch workspaces or launch anything.
+- **`open_url`** (http/https only, the URL always its own argument): the
+  default browser, or with `new_window` its `[Desktop Action new-window]`
+  plus `--new-window` (Edge's action line lacks the flag). A web search is
+  the results URL, with no clicking or typing.
+- **The agent allowlist matched computer-use-linux 0.5.0's tools again**:
+  four names had gone, and its AT-SPI tools (`get_app_state`,
+  `perform_action`, `set_value`, `list_apps`) were missing. `get_app_state`
+  is lock-sensitive, since it reads the screen.
+
+## §10. From the user's use (2026-10-05)
+
+- **"Play" after "pause" escalated to reasoning,** which then said Spotify
+  "is already playing" without checking. Three causes:
+  - the matcher's phrasings were narrow ("play some music", "turn the music
+    back on", "play Spotify" all missed);
+  - `playerctld`, a proxy player, was counted as a player of its own;
+  - "play" picked the first paused player on the bus.
+  Now: more phrasings (20 tested, and "start Spotify" still launches);
+  playerctld is ignored; "play" resumes what cosmo paused; and
+  `media_control status` lets the model check.
+- **The overlay could stay up for good.** A client that falls behind on
+  events (the mic level alone is ~20 a second) has some skipped, so a
+  missed "idle" or "resolved" stranded the card. Now:
+  - the overlay checks the daemon's status every 2 s while it shows;
+  - held actions expire after 2 minutes (cancelled, never run);
+  - the card has a ✕ that closes it and cancels what it was waiting on.

@@ -141,9 +141,9 @@ pub fn is_string_bearing(tool: &str) -> bool {
 }
 
 /// Tools that must refuse while the session is locked or when lock state is
-/// unknown (plan §1.2, invariant #10). Read-only window *inspection* tools
-/// (`list_windows`, `get_accessibility_tree`) stay allowed: they read
-/// structure, not user input, and the agent needs them to report state.
+/// unknown (plan §1.2, invariant #10). Window *listing* (`list_windows`,
+/// `list_apps`) stays allowed: titles and app ids, not what's on screen.
+/// `get_app_state` reads the screen's contents as text, so it's here.
 ///
 /// The membership rule is exactly invariant #10's: **a tool belongs here if
 /// it observes or drives the user's own UI surface** — the screen, the
@@ -175,6 +175,7 @@ pub fn is_lock_sensitive(tool: &str) -> bool {
     matches!(
         tool,
         "screenshot"
+            | "get_app_state"
             | "click"
             | "double_click"
             | "right_click"
@@ -1242,7 +1243,13 @@ mod tests {
             Verdict::Deny
         );
         // The UI-facing tools invariant #10 actually names stay fail-closed.
-        for tool in ["screenshot", "click", "type_text", "clipboard_get"] {
+        for tool in [
+            "screenshot",
+            "get_app_state",
+            "click",
+            "type_text",
+            "clipboard_get",
+        ] {
             assert!(is_lock_sensitive(tool));
             assert_eq!(
                 gate.verdict_for_call(tool, &Value::Null, &Annotations::default()),

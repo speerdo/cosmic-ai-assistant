@@ -18,7 +18,7 @@ futures.workspace = true
 # The GNOME fallback (notify.rs): a layer-shell probe and notifications.
 wayland-client.workspace = true
 zbus.workspace = true
-tokio = { workspace = true, features = ["rt", "macros"] }
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
 cosmo-ipc = { workspace = true, features = ["client"] }
 serde_json.workspace = true
 

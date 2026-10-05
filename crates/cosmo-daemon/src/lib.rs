@@ -22,7 +22,11 @@
 
 #[cfg(feature = "ears")]
 pub mod ears;
+/// How long a held action waits for its confirm before it's cancelled.
+pub const HOLD_LIFETIME: std::time::Duration = std::time::Duration::from_secs(120);
+
 pub mod engine;
+pub mod lock;
 pub mod reflex;
 pub mod speech;
 pub mod toolhost;
@@ -56,6 +60,7 @@ pub async fn run() -> anyhow::Result<()> {
         Err(e) => tracing::warn!(error = %e, "reflex unavailable; turns go to reasoning"),
     }
     engine.warm_speech();
+    engine.track_cosmic_lock().await;
     engine.refresh_lock();
     // Agent connection: failure is not fatal (graceful absence; doctor
     // reports it and `say` errors per turn).
@@ -63,6 +68,17 @@ pub async fn run() -> anyhow::Result<()> {
         tracing::warn!(error = %e, "agent connect failed; native tools still available");
     }
     engine.set_state(State::Idle);
+    // Held actions nobody confirmed expire (cancelled, never run).
+    {
+        let engine = Arc::clone(&engine);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(10));
+            loop {
+                tick.tick().await;
+                engine.expire_holds(HOLD_LIFETIME);
+            }
+        });
+    }
 
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;

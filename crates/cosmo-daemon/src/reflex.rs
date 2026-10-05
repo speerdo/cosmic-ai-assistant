@@ -21,13 +21,17 @@ pub trait Actuator: Send + Sync {
 
 /// The matcher and whatever acts on its matches.
 pub struct Reflex {
-    pub matcher: Matcher,
+    /// Shared with the reasoning tools, which resolve app names with it.
+    pub matcher: Arc<Matcher>,
     pub actuator: Arc<dyn Actuator>,
 }
 
 impl Reflex {
     pub fn new(matcher: Matcher, actuator: Arc<dyn Actuator>) -> Self {
-        Self { matcher, actuator }
+        Self {
+            matcher: Arc::new(matcher),
+            actuator,
+        }
     }
 
     /// The real desktop: installed apps for the matcher, and a window

@@ -147,3 +147,44 @@ fn a_misheard_workspace_number_is_read_as_the_number() {
     );
     assert_eq!(acted("switch to workspace"), None, "no number, no move");
 }
+
+/// Ways people ask for the music back (the user's report, 2026-10-05:
+/// pausing worked, playing again didn't).
+#[test]
+fn every_way_of_asking_for_the_music_back() {
+    let play = Some(Intent::Media(MediaCommand::Play));
+    for said in [
+        "play",
+        "play the music",
+        "play some music",
+        "play my music",
+        "play music again",
+        "play it again",
+        "play Spotify",
+        "resume",
+        "resume the music",
+        "resume playing",
+        "unpause",
+        "unpause the music",
+        "continue playing",
+        "keep playing",
+        "start the music",
+        "start playing",
+        "turn the music back on",
+        "turn on the music",
+        "turn it back on",
+        "Cosmo, play the music please.",
+    ] {
+        assert_eq!(acted(said), play, "{said:?}");
+    }
+    assert_eq!(
+        acted("turn the music off"),
+        Some(Intent::Media(MediaCommand::Pause))
+    );
+    assert_eq!(
+        acted("pause Spotify"),
+        Some(Intent::Media(MediaCommand::Pause))
+    );
+    // "Start Spotify" still launches it.
+    assert_eq!(app("Start Spotify"), Some((true, "Spotify".into())));
+}

@@ -225,3 +225,34 @@ async fn typed_confirm_still_resolves_a_hold() {
     }
     assert!(gate.pending().is_empty());
 }
+
+/// A hold nobody confirms expires: cancelled (never run), announced so the
+/// overlay can let go of it, and only once it's old enough.
+#[tokio::test]
+async fn unconfirmed_holds_expire_without_running() {
+    let (events, mut rx) = tokio::sync::broadcast::channel::<Event>(64);
+    let engine = Engine::new(cosmo_config::Config::default(), events).await;
+    let gate = engine.gate();
+    gate.begin_turn();
+    let token = gate.park(
+        "run_in_terminal",
+        json!({"command": "systemctl poweroff"}),
+        "shut the machine down".to_owned(),
+    );
+    assert_eq!(
+        engine.expire_holds(std::time::Duration::from_secs(120)),
+        0,
+        "fresh: kept"
+    );
+    assert_eq!(gate.pending().len(), 1);
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    assert_eq!(engine.expire_holds(std::time::Duration::ZERO), 1);
+    assert!(gate.pending().is_empty());
+    let resolved = std::iter::from_fn(|| rx.try_recv().ok()).find_map(|e| match e {
+        Event::HoldResolved {
+            token: t, executed, ..
+        } => Some((t, executed)),
+        _ => None,
+    });
+    assert_eq!(resolved, Some((token, false)), "announced, not executed");
+}

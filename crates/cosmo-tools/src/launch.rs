@@ -23,6 +23,13 @@ fn failed(msg: impl Into<String>) -> ToolError {
 /// URLs), `%c` replaced with the app's name, `%%` a literal `%`. An
 /// unterminated quote or a stray escape is an error, not a guess.
 pub fn split_exec(exec: &str, name: &str) -> Result<Vec<String>, String> {
+    split_exec_url(exec, name, None)
+}
+
+/// [`split_exec`], with `url` put where `%u`/`%U` stand (one whole
+/// argument, never re-split), or appended when neither does.
+pub fn split_exec_url(exec: &str, name: &str, url: Option<&str>) -> Result<Vec<String>, String> {
+    let mut placed = false;
     let mut args: Vec<String> = Vec::new();
     let mut arg = String::new();
     let mut started = false; // an empty quoted arg ("") is still an arg
@@ -52,6 +59,14 @@ pub fn split_exec(exec: &str, name: &str) -> Result<Vec<String>, String> {
             '%' => match chars.next() {
                 Some('%') => arg.push('%'),
                 Some('c') => arg.push_str(name),
+                Some('u' | 'U') if url.is_some() => {
+                    if !arg.is_empty() {
+                        args.push(std::mem::take(&mut arg));
+                    }
+                    args.push(url.unwrap_or_default().to_owned());
+                    placed = true;
+                    started = false;
+                }
                 // Files, URLs, icon, desktop file, deprecated codes: dropped.
                 Some('f' | 'F' | 'u' | 'U' | 'i' | 'k' | 'd' | 'D' | 'n' | 'N' | 'v' | 'm') => {
                     started = started || !arg.is_empty();
@@ -69,6 +84,9 @@ pub fn split_exec(exec: &str, name: &str) -> Result<Vec<String>, String> {
     if args.is_empty() {
         return Err("empty Exec".into());
     }
+    if let (Some(url), false) = (url, placed) {
+        args.push(url.to_owned());
+    }
     Ok(args)
 }
 
@@ -85,29 +103,34 @@ pub fn launch(id: &str) -> ToolOutput {
         .as_deref()
         .ok_or_else(|| failed(format!("{} has no Exec line", app.name)))?;
     let argv = split_exec(exec, &app.name).map_err(|e| failed(format!("{}: {e}", app.name)))?;
+    spawn_detached(&argv, app.path.as_deref()).map_err(|e| failed(format!("{}: {e}", app.name)))?;
+    Ok(format!("started {}", app.name))
+}
+
+/// Start `argv` detached from cosmo: its own process group, no stdio, and
+/// reaped by a thread so it never lingers as cosmo's zombie.
+pub(crate) fn spawn_detached(argv: &[String], dir: Option<&str>) -> Result<(), String> {
     let mut cmd = Command::new(&argv[0]);
     cmd.args(&argv[1..])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    if let Some(dir) = &app.path {
+    if let Some(dir) = dir {
         cmd.current_dir(dir);
     }
     {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| failed(format!("{}: {e}", app.name)))?;
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
     // Reap it when it exits, so it never lingers as a zombie of cosmo's.
     std::thread::Builder::new()
         .name("cosmo-launch-reap".into())
         .spawn(move || {
             let _ = child.wait();
         })
-        .map_err(|e| failed(e.to_string()))?;
-    Ok(format!("started {}", app.name))
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[cfg(test)]

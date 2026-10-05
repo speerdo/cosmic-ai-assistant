@@ -104,11 +104,29 @@ fn strip_articles<'a>(w: &[&'a str]) -> Vec<&'a str> {
 
 fn media(w: &[&str]) -> Option<MediaCommand> {
     const THING: &[&str] = &["music", "song", "track", "playback", "video", "it", "this"];
+    // Players by name: "play Spotify" resumes it. Only after play/resume/
+    // pause, never after "start" ("start Spotify" launches it).
+    const PLAYER: &[&str] = &["spotify", "rhythmbox", "vlc", "youtube", "podcast"];
+    // "play some music again", "turn the music back on": the extra words
+    // don't change the command.
+    let w: Vec<&str> = w
+        .iter()
+        .copied()
+        .filter(|w| !matches!(*w, "some" | "again" | "back"))
+        .collect();
+    let w = w.as_slice();
     let thing = |rest: &[&str]| rest.is_empty() || (rest.len() == 1 && THING.contains(&rest[0]));
+    let named = |rest: &[&str]| thing(rest) || (rest.len() == 1 && PLAYER.contains(&rest[0]));
     Some(match w {
-        ["pause", rest @ ..] if thing(rest) => MediaCommand::Pause,
+        ["pause", rest @ ..] if named(rest) => MediaCommand::Pause,
         ["stop", rest @ ..] if rest.len() == 1 && THING.contains(&rest[0]) => MediaCommand::Stop,
-        ["play" | "resume" | "unpause", rest @ ..] if thing(rest) => MediaCommand::Play,
+        ["play" | "resume" | "unpause", rest @ ..] if named(rest) => MediaCommand::Play,
+        ["play" | "resume", "playing" | "playback"] => MediaCommand::Play,
+        ["continue" | "keep" | "start", "playing"] => MediaCommand::Play,
+        ["continue" | "start", rest @ ..] if !rest.is_empty() && thing(rest) => MediaCommand::Play,
+        // "turn the music on", "turn on the music", "turn it back on".
+        ["turn", "on", t] | ["turn", t, "on"] if THING.contains(t) => MediaCommand::Play,
+        ["turn", "off", t] | ["turn", t, "off"] if THING.contains(t) => MediaCommand::Pause,
         ["next" | "skip", rest @ ..] if thing(rest) => MediaCommand::Next,
         ["skip", "this", rest @ ..] if thing(rest) => MediaCommand::Next,
         ["previous" | "last", rest @ ..] if !rest.is_empty() && thing(rest) => {

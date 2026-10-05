@@ -126,6 +126,32 @@ impl View {
         *self != before
     }
 
+    /// Correct the view from the daemon's own status: events can be
+    /// missed (a client that falls behind has some skipped), and a missed
+    /// "idle" or "resolved" would leave the card up for good. Returns
+    /// whether anything visible changed.
+    pub fn reconcile(&mut self, status: &cosmo_ipc::StatusInfo) -> bool {
+        let before = self.clone();
+        // Mid-listen the events are authoritative (and ~20 a second).
+        if self.state != State::Listening || status.state != State::Idle {
+            self.state = status.state;
+        }
+        self.holds
+            .retain(|h| status.pending_holds.iter().any(|p| p.token == h.token));
+        for p in &status.pending_holds {
+            if !self.holds.iter().any(|h| h.token == p.token) {
+                self.holds.push(Hold {
+                    token: p.token.clone(),
+                    action: p.action.clone(),
+                });
+            }
+        }
+        if self.state == State::Idle {
+            self.action = None;
+        }
+        self.visible_part() != before.visible_part()
+    }
+
     /// Everything but the waveform, for the check above.
     fn visible_part(&self) -> (State, &str, &Option<String>, &[Hold], &str, bool) {
         (
@@ -412,5 +438,46 @@ mod tests {
         assert_eq!(level(0.001), 0.0); // −60 dBFS
         assert!((level(0.316) - 1.0).abs() < 0.01); // −10 dBFS
         assert!(level(0.03) > 0.3 && level(0.03) < 0.6); // quiet speech
+    }
+
+    fn status(state: State, holds: &[&str]) -> cosmo_ipc::StatusInfo {
+        cosmo_ipc::StatusInfo {
+            state,
+            paused: false,
+            version: "0".into(),
+            pending_holds: holds
+                .iter()
+                .map(|t| cosmo_ipc::PendingHold {
+                    token: (*t).into(),
+                    action: "run a command".into(),
+                    parked_at_ms: 0,
+                })
+                .collect(),
+        }
+    }
+
+    /// The bug the user hit: a missed "idle" (or "resolved") left the card
+    /// on screen. The daemon's status puts it right.
+    #[test]
+    fn a_missed_idle_or_resolution_is_put_right() {
+        let mut v = View::default();
+        v.set_connected(true);
+        v.apply(&Event::State {
+            state: State::Thinking,
+        });
+        v.apply(&Event::Held {
+            token: "t1".into(),
+            action: "click".into(),
+        });
+        assert!(v.visible());
+        assert!(v.reconcile(&status(State::Idle, &[])));
+        assert!(!v.visible(), "nothing pending, idle: the card goes");
+        assert!(
+            !v.reconcile(&status(State::Idle, &[])),
+            "no change, no redraw"
+        );
+        // A hold the overlay never heard about appears.
+        assert!(v.reconcile(&status(State::Waiting, &["t2"])));
+        assert_eq!(v.holds.len(), 1);
     }
 }

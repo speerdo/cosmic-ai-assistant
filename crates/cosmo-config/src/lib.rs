@@ -119,24 +119,30 @@ impl Default for Config {
     }
 }
 
-/// The ~a dozen agent tools cosmo will accept (plan §1.3). `run_shell` is
-/// deliberately absent.
+/// The agent tools cosmo will accept (plan §1.3), as computer-use-linux
+/// 0.5.0 names them (checked 2026-10-05 against its `tools/list`).
+/// Deliberately absent: `run_shell` (invariant #2); `focused_window`
+/// (broken on COSMIC, invariant #9); `setup_accessibility` and
+/// `setup_window_targeting` (they change system settings); `doctor`.
 pub fn default_allowed_tools() -> Vec<String> {
     [
+        // Reading: windows, apps, and the screen as text (AT-SPI).
         "list_windows",
-        "focus_window",
+        "list_apps",
+        "get_app_state",
+        "screenshot",
+        // Windows.
         "activate_window",
         "move_window",
         "resize_window",
-        "screenshot",
+        // Acting on what's on screen.
         "click",
-        "double_click",
-        "right_click",
-        "type_text",
-        "press_key",
         "scroll",
         "drag",
-        "get_accessibility_tree",
+        "type_text",
+        "press_key",
+        "perform_action",
+        "set_value",
     ]
     .into_iter()
     .map(String::from)

@@ -17,6 +17,96 @@ pub struct DaemonToolHost {
     agent: Arc<McpHost>,
     terminal: Terminal,
     announcer: cosmo_tools::announce::Announcer,
+    desktop: Option<DesktopTools>,
+}
+
+/// The reflex path's desktop actions (launch, focus, workspaces, window
+/// state), offered to reasoning as tools. They run through the very same
+/// actuator, so a reasoning call and a reflex command behave identically.
+pub struct DesktopTools {
+    pub matcher: Arc<cosmo_reflex::Matcher>,
+    pub actuator: Arc<dyn crate::reflex::Actuator>,
+}
+
+/// How sure an app-name match must be to act on it (a reasoning model
+/// passes names like "firefox" or "the files app").
+const APP_MATCH: f32 = 0.6;
+
+impl DesktopTools {
+    fn app(&self, name: &str) -> Result<cosmo_reflex::AppRef, String> {
+        match self.matcher.apps().find(name) {
+            Some(m) if m.score >= APP_MATCH => Ok(m.app),
+            Some(m) => Err(format!(
+                "no installed application clearly matches {name:?} (closest: {})",
+                m.app.name
+            )),
+            None => Err(format!("no installed application matches {name:?}")),
+        }
+    }
+
+    /// The tool call as a reflex intent, if it is one.
+    fn intent(&self, tool: &str, args: &Value) -> Option<Result<cosmo_reflex::Intent, String>> {
+        use cosmo_reflex::Intent;
+        let app = || self.app(args["app"].as_str().unwrap_or_default());
+        let workspace = || {
+            args["workspace"]
+                .as_u64()
+                .filter(|n| (1..=99).contains(n))
+                .map(|n| n as u32)
+                .ok_or_else(|| "workspace must be a number from 1".to_owned())
+        };
+        Some(match tool {
+            "launch_app" => app().map(Intent::Launch),
+            "focus_app" => app().map(Intent::Focus),
+            "switch_workspace" => workspace().map(Intent::SwitchWorkspace),
+            "move_window_to_workspace" => workspace().map(Intent::MoveToWorkspace),
+            "maximize_window" => Ok(Intent::Maximize),
+            "minimize_window" => Ok(Intent::Minimize),
+            _ => return None,
+        })
+    }
+}
+
+/// The desktop tools' schemas.
+fn desktop_schemas() -> Vec<Value> {
+    use serde_json::json;
+    let app = json!({"type": "object", "properties": {"app": {"type": "string",
+        "description": "The application's name, as the user said it (\"firefox\", \"files\")"}},
+        "required": ["app"]});
+    let workspace = json!({"type": "object", "properties": {"workspace": {"type": "integer",
+        "description": "Workspace number, from 1"}}, "required": ["workspace"]});
+    vec![
+        function_schema(
+            "launch_app",
+            "Start an installed application. Its window opens on the current workspace.",
+            app.clone(),
+        ),
+        function_schema(
+            "focus_app",
+            "Bring a running application's window to the front (switching to its workspace).",
+            app,
+        ),
+        function_schema(
+            "switch_workspace",
+            "Show workspace N. Windows opened afterwards appear there.",
+            workspace.clone(),
+        ),
+        function_schema(
+            "move_window_to_workspace",
+            "Move the focused window to workspace N.",
+            workspace,
+        ),
+        function_schema(
+            "maximize_window",
+            "Maximize the focused window.",
+            json!({"type": "object", "properties": {}}),
+        ),
+        function_schema(
+            "minimize_window",
+            "Minimize the focused window.",
+            json!({"type": "object", "properties": {}}),
+        ),
+    ]
 }
 
 impl DaemonToolHost {
@@ -29,11 +119,13 @@ impl DaemonToolHost {
         agent: Arc<McpHost>,
         tmux_session: &str,
         announcer: cosmo_tools::announce::Announcer,
+        desktop: Option<DesktopTools>,
     ) -> Self {
         Self {
             agent,
             terminal: Terminal::new(tmux_session.to_string()),
             announcer,
+            desktop,
         }
     }
 }
@@ -104,7 +196,9 @@ impl ToolHost for DaemonToolHost {
         ));
         schemas.push(function_schema(
             "media_control",
-            "MPRIS media control: play, pause, play_pause, next, previous, stop.",
+            "Media players (MPRIS): play, pause, play_pause, next, previous, stop, or \
+             status (what each player is doing; check it before saying what's playing). \
+             play resumes what was paused.",
             serde_json::json!({"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}),
         ));
         schemas.push(function_schema(
@@ -113,6 +207,20 @@ impl ToolHost for DaemonToolHost {
              contents leave the machine.",
             serde_json::json!({"type": "object", "properties": {}}),
         ));
+        schemas.push(function_schema(
+            "open_url",
+            "Open a web address in the user's default browser. To search the web, open the \
+             search engine's results URL directly (e.g. \
+             https://www.google.com/search?q=cosmic+desktop) rather than clicking and typing. \
+             new_window: true opens a fresh window on the current workspace.",
+            serde_json::json!({"type": "object", "properties": {
+                "url": {"type": "string", "description": "A full http(s) URL, query encoded"},
+                "new_window": {"type": "boolean"}
+            }, "required": ["url"]}),
+        ));
+        if self.desktop.is_some() {
+            schemas.extend(desktop_schemas());
+        }
         schemas.push(function_schema(
             "clipboard_set",
             "Replace the user's clipboard contents with the given text.",
@@ -139,8 +247,21 @@ impl ToolHost for DaemonToolHost {
                 read_only: true,
                 destructive: false,
             },
-            "run_in_terminal" | "watch_terminal" | "announce" | "remember" | "media_control"
-            | "clipboard_get" | "clipboard_set" => Annotations {
+            // The desktop tools are the reflex verbs: Allow, as there.
+            "run_in_terminal"
+            | "watch_terminal"
+            | "announce"
+            | "remember"
+            | "media_control"
+            | "clipboard_get"
+            | "clipboard_set"
+            | "open_url"
+            | "launch_app"
+            | "focus_app"
+            | "switch_workspace"
+            | "move_window_to_workspace"
+            | "maximize_window"
+            | "minimize_window" => Annotations {
                 read_only: false,
                 destructive: false,
             },
@@ -191,6 +312,26 @@ impl ToolHost for DaemonToolHost {
                     run_tool(cosmo_tools::media::control(&cmd).await)
                 }
                 "clipboard_get" => run_tool(cosmo_tools::clipboard::get().await),
+                "open_url" => {
+                    let url = args["url"].as_str().unwrap_or_default().to_string();
+                    let new_window = args["new_window"].as_bool().unwrap_or(false);
+                    run_tool(cosmo_tools::browse::open_url(&url, new_window))
+                }
+                desktop
+                    if self
+                        .desktop
+                        .as_ref()
+                        .is_some_and(|d| d.intent(desktop, &args).is_some()) =>
+                {
+                    let tools = self.desktop.as_ref().expect("checked");
+                    match tools.intent(desktop, &args).expect("checked") {
+                        Ok(intent) => match tools.actuator.act(&intent).await {
+                            Ok(done) => done,
+                            Err(e) => format!("tool error: {e}"),
+                        },
+                        Err(e) => format!("tool error: {e}"),
+                    }
+                }
                 "clipboard_set" => {
                     let text = args["text"].as_str().unwrap_or_default().to_string();
                     run_tool(cosmo_tools::clipboard::set(&text).await)
