@@ -727,7 +727,7 @@ impl Engine {
     /// Every provider, whether it's connected, and what's in use.
     async fn reasoning_info(&self) -> cosmo_ipc::ReasoningInfo {
         use cosmo_ipc::{Connect, ProviderInfo};
-        use cosmo_reason::provider::{Endpoint, PRESETS, local_models, runs_remotely};
+        use cosmo_reason::provider::{Endpoint, PRESETS, list_models, local_models, runs_remotely};
         let rcfg = self.reasoning_cfg.lock().unwrap().clone();
         let model = Endpoint::resolve(&rcfg, None)
             .map(|e| e.model)
@@ -742,7 +742,17 @@ impl Engine {
                     )
                     .await;
                     match stored {
-                        Ok(Ok(_)) => (true, Vec::new(), None),
+                        Ok(Ok(key)) => {
+                            // A cloud provider's own model list; failing to
+                            // fetch it leaves just the default to choose.
+                            let models = match p.chat_url.filter(|_| p.lists_models) {
+                                Some(url) => list_models(url, Some(key.expose()))
+                                    .await
+                                    .unwrap_or_default(),
+                                None => Vec::new(),
+                            };
+                            (true, models, None)
+                        }
                         Ok(Err(e)) => (false, Vec::new(), Some(e.to_string())),
                         Err(_) => (false, Vec::new(), Some("the keyring didn't answer".into())),
                     }

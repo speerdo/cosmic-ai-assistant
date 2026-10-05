@@ -55,6 +55,11 @@ struct Applet {
     /// Reasoning providers and their connection state.
     reasoning: Option<ReasoningInfo>,
     reasoning_open: bool,
+    /// The provider whose models are listed. `None` follows the one in use;
+    /// an empty name means all are folded.
+    provider_open: Option<String>,
+    /// The not-yet-connected providers, folded until asked for.
+    add_open: bool,
     /// The provider whose key is being typed, and the key so far.
     key_entry: Option<String>,
     key_text: Redacted,
@@ -81,6 +86,8 @@ enum Message {
     ToggleVoices,
     ToggleStatus,
     ToggleReasoning,
+    ToggleProvider(String),
+    ToggleAdd,
     /// Reason with this provider and model ("" = its default).
     UseProvider(String, String),
     SignIn(String),
@@ -202,6 +209,18 @@ impl cosmic::Application for Applet {
                     return request(Command::Reasoning);
                 }
             }
+            Message::ToggleProvider(name) => {
+                let shown = self
+                    .provider_open
+                    .as_deref()
+                    .or(self.reasoning.as_ref().map(|r| r.active.as_str()));
+                self.provider_open = Some(if shown == Some(name.as_str()) {
+                    String::new()
+                } else {
+                    name
+                });
+            }
+            Message::ToggleAdd => self.add_open = !self.add_open,
             Message::UseProvider(provider, model) => {
                 self.reasoning_note = None;
                 return request(Command::ReasoningSet { provider, model });
@@ -452,51 +471,155 @@ impl Applet {
         if !self.reasoning_open {
             return col.into();
         }
-        let mut rows = Column::new().spacing(10);
-        for p in &info.providers {
-            rows = rows.push(self.provider_row(info, p));
+        // Connected providers first, each its own card with its models; the
+        // rest are one fold away, so the list isn't a wall of sign-ins.
+        let (connected, others): (Vec<_>, Vec<_>) =
+            info.providers.iter().partition(|p| p.connected);
+        let shown = self.provider_open.as_deref().unwrap_or(&info.active);
+        let mut rows = Column::new().spacing(12);
+        if connected.is_empty() {
+            rows = rows.push(text::caption(
+                "Nothing connected yet. Add a provider below.",
+            ));
         }
-        col = col.push(widget::scrollable(rows).height(Length::Fixed(260.0)));
+        for p in connected {
+            rows = rows.push(card(self.connected_card(info, p, shown == p.name)));
+        }
+        if !others.is_empty() {
+            let chevron = if self.add_open {
+                "pan-down-symbolic"
+            } else {
+                "pan-end-symbolic"
+            };
+            rows = rows.push(
+                cosmic::applet::menu_button(
+                    Row::new()
+                        .spacing(8)
+                        .align_y(Alignment::Center)
+                        .push(text::body("Add a provider").width(Length::Fill))
+                        .push(widget::icon::from_name(chevron).size(16).icon()),
+                )
+                .on_press(Message::ToggleAdd),
+            );
+            if self.add_open {
+                for p in others {
+                    rows = rows.push(card(self.connect_card(p)));
+                }
+            }
+        }
+        col =
+            col.push(widget::scrollable(rows.padding([0, 12, 0, 0])).height(Length::Fixed(320.0)));
         if let Some(note) = &self.reasoning_note {
             col = col.push(text::caption(note.clone()));
         }
         col.into()
     }
 
-    fn provider_row<'a>(
+    /// A connected provider: its name and state on one row (a click folds
+    /// its models), then every model it offers, any of them usable. All the
+    /// connected providers are switchable at any time; one is in use.
+    fn connected_card<'a>(
         &'a self,
         info: &'a ReasoningInfo,
         p: &'a ProviderInfo,
+        open: bool,
     ) -> Element<'a, Message> {
         let active = p.name == info.active;
-        let status = match (p.connect, p.connected) {
-            (_, true) if active => format!("In use · {}", info.model),
-            (Connect::Local, true) => format!(
-                "Server running · {} on this computer",
-                plural(p.models.len(), "model", "models")
+        let count = p.models.len() + p.remote_models.len();
+        let status = match (active, p.connect) {
+            (true, _) => format!("In use · {}", info.model),
+            (false, Connect::Local) => format!(
+                "Running on this computer · {}",
+                plural(count, "model", "models")
             ),
-            (Connect::Local, false) => "No local server found".into(),
-            (_, true) => "Connected".into(),
-            (Connect::Browser, false) => "Sign in with your browser".into(),
-            (Connect::Key, false) => "Needs an API key".into(),
+            (false, _) if count > 0 => format!("Connected · {}", plural(count, "model", "models")),
+            (false, _) => "Connected".into(),
         };
-        let action: Element<'a, Message> = match (p.connect, p.connected) {
-            _ if active && p.connected => text::body("✓").into(),
-            (Connect::Local, true) => widget::Space::new().into(),
-            (_, true) => button::text("Use")
-                .on_press(Message::UseProvider(p.name.clone(), String::new()))
-                .into(),
-            (Connect::Browser, false) => button::suggested("Sign in")
-                .on_press(Message::SignIn(p.name.clone()))
-                .into(),
-            (Connect::Key, false) => button::text("Add key")
-                .on_press(Message::AddKey(p.name.clone()))
-                .into(),
-            (Connect::Local, false) => button::text("Get Ollama")
-                .on_press(Message::OpenUrl(p.key_page.clone()))
-                .into(),
+        let chevron = if open {
+            "pan-down-symbolic"
+        } else {
+            "pan-end-symbolic"
         };
-        let mut col = Column::new().spacing(6).push(
+        let mut col = Column::new().spacing(8).push(
+            cosmic::applet::menu_button(
+                Row::new()
+                    .spacing(8)
+                    .align_y(Alignment::Center)
+                    .push(
+                        Column::new()
+                            .spacing(2)
+                            .width(Length::Fill)
+                            .push(text::body(p.label.clone()))
+                            .push(text::caption(status)),
+                    )
+                    .push(widget::icon::from_name(chevron).size(16).icon()),
+            )
+            .on_press(Message::ToggleProvider(p.name.clone())),
+        );
+        if !open {
+            return col.into();
+        }
+        let mut models = Column::new().spacing(4);
+        if p.connect == Connect::Local && count == 0 {
+            models = models.push(text::caption(format!(
+                "No models on this computer yet: `ollama pull {}`",
+                p.default_model
+            )));
+        }
+        // Where the provider lists none, its default is the one choice.
+        if p.connect != Connect::Local && count == 0 {
+            models = models.push(model_row(info, p, &p.default_model));
+        }
+        for m in &p.models {
+            models = models.push(model_row(info, p, m));
+        }
+        // A local server's models that run on a cloud, said plainly.
+        if !p.remote_models.is_empty() {
+            models = models
+                .push(widget::divider::horizontal::light())
+                .push(text::caption(
+                    "Through Ollama's cloud (runs on ollama.com, not private):",
+                ));
+            for m in &p.remote_models {
+                models = models.push(model_row(info, p, m));
+            }
+        }
+        col = col.push(widget::divider::horizontal::light()).push(models);
+        if p.connect != Connect::Local {
+            col = col.push(button::text("Replace key").on_press(Message::AddKey(p.name.clone())));
+            col = self.key_form(col, p);
+        }
+        if let Some(note) = &p.note
+            && p.connect != Connect::Local
+        {
+            col = col.push(text::caption(note.clone()));
+        }
+        col.into()
+    }
+
+    /// A provider that isn't connected yet, and the one step that connects it.
+    fn connect_card<'a>(&'a self, p: &'a ProviderInfo) -> Element<'a, Message> {
+        let (status, action): (&str, Element<'a, Message>) = match p.connect {
+            Connect::Browser => (
+                "Sign in with your browser",
+                button::suggested("Sign in")
+                    .on_press(Message::SignIn(p.name.clone()))
+                    .into(),
+            ),
+            Connect::Key => (
+                "Needs an API key",
+                button::text("Add key")
+                    .on_press(Message::AddKey(p.name.clone()))
+                    .into(),
+            ),
+            Connect::Local => (
+                "No local server found",
+                button::text("Get Ollama")
+                    .on_press(Message::OpenUrl(p.key_page.clone()))
+                    .into(),
+            ),
+        };
+        let col = Column::new().spacing(8).push(
             Row::new()
                 .spacing(8)
                 .align_y(Alignment::Center)
@@ -509,57 +632,35 @@ impl Applet {
                 )
                 .push(action),
         );
-        // A connected cloud provider can still take a new key.
-        if p.connect == Connect::Key && p.connected && !active {
-            col = col.push(button::text("Replace key").on_press(Message::AddKey(p.name.clone())));
+        let col = self.key_form(col, p);
+        match &p.note {
+            Some(note) => col.push(text::caption(note.clone())),
+            None => col,
         }
-        if self.key_entry.as_deref() == Some(p.name.as_str()) {
-            col = col
-                .push(
-                    widget::secure_input("Paste the API key", self.key_text.0.as_str(), None, true)
-                        .on_input(|k| Message::KeyInput(Redacted(k)))
-                        .on_submit(|_| Message::SaveKey),
-                )
-                .push(
-                    Row::new()
-                        .spacing(8)
-                        .push(
-                            button::text("Get a key")
-                                .on_press(Message::OpenUrl(p.key_page.clone())),
-                        )
-                        .push(widget::Space::new().width(Length::Fill))
-                        .push(button::suggested("Save").on_press(Message::SaveKey)),
-                );
+        .into()
+    }
+
+    /// The key field under a provider, while its key is being typed.
+    fn key_form<'a>(
+        &'a self,
+        col: Column<'a, Message, cosmic::Theme>,
+        p: &'a ProviderInfo,
+    ) -> Column<'a, Message, cosmic::Theme> {
+        if self.key_entry.as_deref() != Some(p.name.as_str()) {
+            return col;
         }
-        // A local server's models, each usable: first those that run on
-        // this computer, then those it forwards to a cloud, said plainly.
-        if p.connect == Connect::Local && p.connected {
-            if p.models.is_empty() {
-                col = col.push(text::caption(format!(
-                    "No models on this computer yet: `ollama pull {}`",
-                    p.default_model
-                )));
-            }
-            for m in &p.models {
-                col = col.push(model_row(info, p, m));
-            }
-            if !p.remote_models.is_empty() {
-                col = col.push(text::caption(
-                    "Through Ollama's cloud (runs on ollama.com, not private):",
-                ));
-                for m in &p.remote_models {
-                    col = col.push(model_row(info, p, m));
-                }
-            }
-        }
-        // The note is a terms caution for a connected cloud provider, or
-        // why a local server wasn't reached.
-        if let Some(note) = &p.note
-            && (p.connected != (p.connect == Connect::Local))
-        {
-            col = col.push(text::caption(note.clone()));
-        }
-        col.into()
+        col.push(
+            widget::secure_input("Paste the API key", self.key_text.0.as_str(), None, true)
+                .on_input(|k| Message::KeyInput(Redacted(k)))
+                .on_submit(|_| Message::SaveKey),
+        )
+        .push(
+            Row::new()
+                .spacing(8)
+                .push(button::text("Get a key").on_press(Message::OpenUrl(p.key_page.clone())))
+                .push(widget::Space::new().width(Length::Fill))
+                .push(button::suggested("Save").on_press(Message::SaveKey)),
+        )
     }
 
     /// Readiness (the daemon's `doctor`): one row saying whether all is
@@ -752,6 +853,15 @@ fn model_row<'a>(info: &ReasoningInfo, p: &ProviderInfo, m: &str) -> Element<'a,
         .align_y(Alignment::Center)
         .push(text::caption(m.to_owned()).width(Length::Fill))
         .push(pick)
+        .into()
+}
+
+/// A bordered, padded block: what separates one provider from the next.
+fn card<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    widget::container(content)
+        .padding(12)
+        .width(Length::Fill)
+        .class(cosmic::theme::Container::Card)
         .into()
 }
 

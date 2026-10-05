@@ -71,6 +71,10 @@ pub struct Preset {
     pub browser_login: Option<crate::login::BrowserLogin>,
     /// The model used when `model` is empty.
     pub default_model: &'static str,
+    /// Whether `/v1/models` lists models worth choosing from. False where
+    /// the list is hundreds long or mixes in non-chat models (OpenAI,
+    /// OpenRouter), so only the default is offered there.
+    pub lists_models: bool,
     /// A caution `cosmo auth-login` and `doctor` show (terms of use).
     pub note: Option<&'static str>,
 }
@@ -88,6 +92,7 @@ pub const PRESETS: &[Preset] = &[
         key_page: "https://platform.openai.com/api-keys",
         browser_login: None,
         default_model: "gpt-4o-mini",
+        lists_models: false,
         note: None,
     },
     Preset {
@@ -101,6 +106,7 @@ pub const PRESETS: &[Preset] = &[
         key_page: "https://platform.claude.com/settings/keys",
         browser_login: None,
         default_model: "claude-haiku-4-5",
+        lists_models: false,
         note: Some(
             "needs an API key from the Claude Console; a Claude Pro/Max subscription is not one",
         ),
@@ -116,6 +122,7 @@ pub const PRESETS: &[Preset] = &[
         key_page: "https://openrouter.ai/settings/keys",
         browser_login: Some(crate::login::OPENROUTER),
         default_model: "anthropic/claude-haiku-4.5",
+        lists_models: false,
         note: None,
     },
     Preset {
@@ -129,6 +136,7 @@ pub const PRESETS: &[Preset] = &[
         key_page: "https://opencode.ai/auth",
         browser_login: None,
         default_model: "glm-5.3-flash",
+        lists_models: true,
         note: Some(
             "OpenCode Go's terms say it is designed for coding agents; voice-assistant \
              traffic may not be what they allow. Your account, your call",
@@ -145,6 +153,7 @@ pub const PRESETS: &[Preset] = &[
         key_page: "https://ollama.com/settings/keys",
         browser_login: None,
         default_model: "gpt-oss:120b",
+        lists_models: true,
         note: None,
     },
     Preset {
@@ -158,6 +167,7 @@ pub const PRESETS: &[Preset] = &[
         key_page: "https://z.ai/manage-apikey/apikey-list",
         browser_login: None,
         default_model: "glm-5.3-flash",
+        lists_models: false,
         note: None,
     },
     // A model on this machine, through any OpenAI-compatible local server.
@@ -176,6 +186,7 @@ pub const PRESETS: &[Preset] = &[
         key_page: "https://ollama.com/download",
         browser_login: None,
         default_model: "granite4.1:8b",
+        lists_models: false,
         note: None,
     },
 ];
@@ -188,22 +199,25 @@ pub fn models_url(chat_url: &str) -> Option<String> {
         .map(|base| format!("{base}/models"))
 }
 
-/// The model ids a local server offers. A short timeout: it's on this
-/// machine, or it isn't running.
-pub async fn local_models(chat_url: &str) -> Result<Vec<String>, String> {
+/// The model ids a server offers, sending `key` when there is one. A
+/// short timeout: a local server is on this machine or isn't running, and
+/// a cloud list is a nicety the panel must not wait long for.
+pub async fn list_models(chat_url: &str, key: Option<&str>) -> Result<Vec<String>, String> {
     let url = models_url(chat_url).ok_or("api_base doesn't end in /chat/completions")?;
-    let resp = reqwest::Client::new()
+    let mut req = reqwest::Client::new()
         .get(&url)
-        .timeout(std::time::Duration::from_secs(2))
-        .send()
-        .await
-        .map_err(|e| {
-            if e.is_connect() {
-                format!("no server at {url}")
-            } else {
-                e.to_string()
-            }
-        })?;
+        .header("User-Agent", user_agent())
+        .timeout(std::time::Duration::from_secs(3));
+    if let Some(key) = key {
+        req = req.bearer_auth(key);
+    }
+    let resp = req.send().await.map_err(|e| {
+        if e.is_connect() {
+            format!("no server at {url}")
+        } else {
+            e.to_string()
+        }
+    })?;
     if !resp.status().is_success() {
         return Err(format!("{url}: {}", resp.status()));
     }
@@ -216,6 +230,11 @@ pub async fn local_models(chat_url: &str) -> Result<Vec<String>, String> {
         .collect();
     ids.sort();
     Ok(ids)
+}
+
+/// The model ids a local server offers.
+pub async fn local_models(chat_url: &str) -> Result<Vec<String>, String> {
+    list_models(chat_url, None).await
 }
 
 /// Whether a model a local server lists actually runs elsewhere: Ollama's
@@ -332,6 +351,14 @@ mod tests {
             };
             assert!(e.url.starts_with(scheme), "{}", p.name);
             assert_eq!(e.format, p.format, "{}", p.name);
+        }
+    }
+
+    #[test]
+    fn a_model_list_is_only_asked_of_a_chat_endpoint_that_has_one() {
+        for p in PRESETS.iter().filter(|p| p.lists_models) {
+            let url = p.chat_url.expect(p.name);
+            assert!(models_url(url).is_some(), "{}", p.name);
         }
     }
 

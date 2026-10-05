@@ -250,8 +250,9 @@ pub struct ProviderInfo {
     /// Where keys are made (or, for local, where to get a server).
     pub key_page: String,
     pub default_model: String,
-    /// Models a local server runs on this computer (empty for cloud
-    /// providers).
+    /// The models offered: those a local server runs on this computer, or a
+    /// cloud provider's own list (empty where it has none worth choosing
+    /// from, and only its default is offered).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub models: Vec<String>,
     /// Models the local server lists but forwards to a cloud (Ollama's
