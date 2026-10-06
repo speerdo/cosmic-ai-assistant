@@ -151,6 +151,9 @@ pub struct DesktopApp {
     /// `StartupWMClass=`: what its windows call themselves when that isn't
     /// the file's id (`com.spotify.Client` → `spotify`).
     pub wm_class: Option<String>,
+    /// `GenericName=` and `Keywords=` (untranslated): what the app is
+    /// rather than what it's called ("Web Browser", "Internet").
+    pub aliases: Vec<String>,
 }
 
 /// Every visible application in the XDG data dirs, deduplicated by id with
@@ -243,6 +246,7 @@ fn parse_entry(id: &str, text: &str) -> Option<DesktopApp> {
     let mut in_entry = false;
     let (mut name, mut app, mut hidden) = (None, false, false);
     let (mut exec, mut path, mut terminal, mut wm_class) = (None, None, false, None);
+    let mut aliases: Vec<String> = Vec::new();
     for line in text.lines().map(str::trim) {
         if line.starts_with('[') {
             // Only the main group counts; actions come after it.
@@ -266,6 +270,13 @@ fn parse_entry(id: &str, text: &str) -> Option<DesktopApp> {
             ("Path", v) if !v.is_empty() => path = Some(v.to_owned()),
             ("Terminal", v) => terminal = v == "true",
             ("StartupWMClass", v) if !v.is_empty() => wm_class = Some(v.to_owned()),
+            ("GenericName", v) if !v.is_empty() => aliases.push(v.to_owned()),
+            ("Keywords", v) => aliases.extend(
+                v.split(';')
+                    .map(str::trim)
+                    .filter(|k| !k.is_empty())
+                    .map(str::to_owned),
+            ),
             _ => {}
         }
     }
@@ -276,6 +287,7 @@ fn parse_entry(id: &str, text: &str) -> Option<DesktopApp> {
         path,
         terminal,
         wm_class,
+        aliases,
     })
 }
 

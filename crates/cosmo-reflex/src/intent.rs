@@ -104,9 +104,10 @@ impl Intent {
             Self::Ask(Ask::Time) => ("tell_time", json!({})),
             Self::Ask(Ask::Date) => ("tell_date", json!({})),
             Self::Launch(app) => ("launch_app", json!({ "app": app.id })),
-            Self::LaunchOnNewWorkspace(app) => {
-                ("launch_app", json!({ "app": app.id, "new_workspace": true }))
-            }
+            Self::LaunchOnNewWorkspace(app) => (
+                "launch_app",
+                json!({ "app": app.id, "new_workspace": true }),
+            ),
             Self::Focus(app) => ("focus_app", json!({ "app": app.id })),
             Self::SwitchWorkspace(n) => ("switch_workspace", json!({ "workspace": n })),
             Self::MoveToWorkspace(n) => ("move_window_to_workspace", json!({ "workspace": n })),

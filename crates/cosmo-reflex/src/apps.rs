@@ -29,7 +29,14 @@ struct Entry {
     /// Spoken forms: the name's words, and the id's last dotted part
     /// (`org.mozilla.firefox` → `firefox`).
     keys: Vec<Vec<String>>,
+    /// What the app is ("web browser"), from its generic name and
+    /// keywords: a weaker claim than its name (see [`ALIAS_WEIGHT`]).
+    aliases: Vec<Vec<String>>,
 }
+
+/// An alias match counts for less than a name match, so "open Firefox"
+/// never loses to an app that merely lists "firefox" as a keyword.
+const ALIAS_WEIGHT: f32 = 0.9;
 
 #[derive(Default)]
 pub struct AppIndex {
@@ -38,9 +45,14 @@ pub struct AppIndex {
 
 impl AppIndex {
     pub fn new(apps: impl IntoIterator<Item = AppRef>) -> Self {
+        Self::with_aliases(apps.into_iter().map(|app| (app, Vec::new())))
+    }
+
+    /// As [`new`](Self::new), with each app's generic names and keywords.
+    pub fn with_aliases(apps: impl IntoIterator<Item = (AppRef, Vec<String>)>) -> Self {
         let entries = apps
             .into_iter()
-            .map(|app| {
+            .map(|(app, aliases)| {
                 let mut keys = vec![words(&app.name)];
                 let tail = app.id.rsplit('.').next().unwrap_or(&app.id);
                 let tail = words(&tail.replace(['-', '_'], " "));
@@ -48,7 +60,18 @@ impl AppIndex {
                     keys.push(tail);
                 }
                 keys.retain(|k| !k.is_empty());
-                Entry { app, keys }
+                let mut alias_keys: Vec<Vec<String>> = Vec::new();
+                for alias in aliases {
+                    let key = words(&alias);
+                    if !key.is_empty() && !keys.contains(&key) && !alias_keys.contains(&key) {
+                        alias_keys.push(key);
+                    }
+                }
+                Entry {
+                    app,
+                    keys,
+                    aliases: alias_keys,
+                }
             })
             .collect();
         Self { entries }
@@ -56,14 +79,15 @@ impl AppIndex {
 
     /// The installed applications (see `cosmo_stt::hotwords::desktop_apps`).
     pub fn installed() -> Self {
-        Self::new(
-            cosmo_stt::hotwords::desktop_apps()
-                .into_iter()
-                .map(|a| AppRef {
+        Self::with_aliases(cosmo_stt::hotwords::desktop_apps().into_iter().map(|a| {
+            (
+                AppRef {
                     id: a.id,
                     name: a.name,
-                }),
-        )
+                },
+                a.aliases,
+            )
+        }))
     }
 
     pub fn len(&self) -> usize {
@@ -86,11 +110,17 @@ impl AppIndex {
             .entries
             .iter()
             .map(|e| {
-                let s = e
+                let by_name = e
                     .keys
                     .iter()
                     .map(|k| similarity(&query, k))
                     .fold(0.0, f32::max);
+                let by_alias = e
+                    .aliases
+                    .iter()
+                    .map(|k| similarity(&query, k) * ALIAS_WEIGHT)
+                    .fold(0.0, f32::max);
+                let s = by_name.max(by_alias);
                 (s, e)
             })
             .filter(|(s, _)| *s > 0.0)
@@ -218,6 +248,39 @@ mod tests {
         let (name, score) = found("key pass x c").unwrap();
         assert_eq!(name, "KeePassXC");
         assert!(score >= 0.8, "{score}");
+    }
+
+    fn aliased() -> AppIndex {
+        let app = |id: &str, name: &str| AppRef {
+            id: id.into(),
+            name: name.into(),
+        };
+        AppIndex::with_aliases([
+            (
+                app("firefox", "Firefox"),
+                vec!["Web Browser".into(), "Internet".into()],
+            ),
+            (app("chromium", "Chromium"), vec!["Web Browser".into()]),
+            (
+                app("org.gnome.Evince", "Document Viewer"),
+                vec!["PDF Reader".into()],
+            ),
+        ])
+    }
+
+    #[test]
+    fn generic_names_resolve_when_unique_and_are_doubtful_when_shared() {
+        let idx = aliased();
+        let m = idx.find("pdf reader").unwrap();
+        assert_eq!(
+            (m.app.name.as_str(), m.score >= crate::THRESHOLD),
+            ("Document Viewer", true)
+        );
+        // Two browsers: the reflex must not pick one.
+        let m = idx.find("web browser").unwrap();
+        assert!(m.score < crate::THRESHOLD, "{}", m.score);
+        // A name still beats an alias.
+        assert_eq!(idx.find("chromium").unwrap().app.name, "Chromium");
     }
 
     #[test]

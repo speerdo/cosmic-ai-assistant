@@ -93,8 +93,7 @@ impl Matcher {
         let mut rest = strip_articles(rest);
         // "open Chromium in a new workspace": a trailing placement phrase.
         let mut new_workspace = false;
-        if launch
-            && let [head @ .., "in" | "on", "new", "workspace" | "desktop"] = rest.as_slice()
+        if launch && let [head @ .., "in" | "on", "new", "workspace" | "desktop"] = rest.as_slice()
         {
             rest = head.to_vec();
             new_workspace = true;
