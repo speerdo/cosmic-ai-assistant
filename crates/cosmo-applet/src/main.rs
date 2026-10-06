@@ -68,6 +68,8 @@ struct Applet {
     render: Option<(String, u32, u32)>,
     doctor: Option<DoctorReport>,
     error: Option<String>,
+    /// Whether the daemon starts at login (`None` until asked).
+    autostart: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +101,15 @@ enum Message {
     Preview(String),
     UseVoice(String),
     Reply(Result<Response, String>),
+    /// Stop the daemon (`systemctl --user stop`).
+    Quit,
+    /// Start it again.
+    StartDaemon,
+    SetAutostart(bool),
+    /// Whether it starts at login.
+    Autostart(Option<bool>),
+    /// What a `systemctl` call returned.
+    Systemctl(Result<(), String>),
 }
 
 impl cosmic::Application for Applet {
@@ -121,7 +132,7 @@ impl cosmic::Application for Applet {
                 core,
                 ..Self::default()
             },
-            Task::none(),
+            query_autostart(),
         )
     }
 
@@ -184,8 +195,12 @@ impl cosmic::Application for Applet {
             Message::Surface(a) => {
                 let surface = cosmic::task::message(cosmic::Action::Surface(a));
                 // Opening the popup: readiness may have changed since.
-                if self.popup.is_none() && self.connected {
-                    return Task::batch([surface, request(Command::Doctor)]);
+                if self.popup.is_none() {
+                    let mut tasks = vec![surface, query_autostart()];
+                    if self.connected {
+                        tasks.push(request(Command::Doctor));
+                    }
+                    return Task::batch(tasks);
                 }
                 return surface;
             }
@@ -315,6 +330,18 @@ impl cosmic::Application for Applet {
                 }
             }
             Message::Reply(Err(e)) => self.error = Some(e),
+            Message::Quit => return systemctl("stop"),
+            Message::StartDaemon => return systemctl("start"),
+            Message::SetAutostart(on) => {
+                self.autostart = Some(on);
+                return Task::batch([
+                    systemctl(if on { "enable" } else { "disable" }),
+                    query_autostart(),
+                ]);
+            }
+            Message::Autostart(on) => self.autostart = on,
+            Message::Systemctl(Ok(())) => self.error = None,
+            Message::Systemctl(Err(e)) => self.error = Some(e),
         }
         Task::none()
     }
@@ -812,10 +839,13 @@ impl Applet {
             .width(Length::Fixed(360.0));
         col = col.push(self.header());
         if !self.connected {
-            col = col.push(text::body(
-                "Start it with `systemctl --user start cosmo`, or run `cosmod`.",
-            ));
-            return col.into();
+            col = col.push(text::body("Cosmo isn't running."));
+            col = col.push(button::standard("Start cosmo").on_press(Message::StartDaemon));
+            if let Some(err) = &self.error {
+                col = col.push(text::caption(err.clone()));
+            }
+            col = col.push(widget::divider::horizontal::default());
+            return col.push(self.power_section()).into();
         }
         col = col.push(
             Row::new()
@@ -834,6 +864,26 @@ impl Applet {
         col = col.push(widget::divider::horizontal::default());
 
         col = col.push(self.status_section());
+        col = col.push(widget::divider::horizontal::default());
+        col.push(self.power_section()).into()
+    }
+}
+
+impl Applet {
+    /// Start at login, and quit now.
+    fn power_section(&self) -> Element<'_, Message> {
+        let mut col = Column::new().spacing(8);
+        if let Some(on) = self.autostart {
+            col = col.push(
+                Row::new()
+                    .align_y(Alignment::Center)
+                    .push(text::body("Start at login").width(Length::Fill))
+                    .push(toggler(on).on_toggle(Message::SetAutostart)),
+            );
+        }
+        if self.connected {
+            col = col.push(button::destructive("Quit cosmo").on_press(Message::Quit));
+        }
         col.into()
     }
 }
@@ -924,6 +974,59 @@ fn updates() -> impl futures::Stream<Item = Message> {
             }
         },
     )
+}
+
+/// Run `systemctl --user <verb> cosmo.service` off the UI thread.
+fn systemctl(verb: &'static str) -> Task<Message> {
+    Task::perform(
+        run_blocking(move || {
+            let out = std::process::Command::new("systemctl")
+                .arg("--user")
+                .arg(verb)
+                .arg("cosmo.service")
+                .output()
+                .map_err(|e| format!("couldn't run systemctl: {e}"))?;
+            if out.status.success() {
+                Ok(())
+            } else {
+                let err = String::from_utf8_lossy(&out.stderr);
+                Err(format!(
+                    "systemctl {} failed: {}",
+                    verb,
+                    err.lines().next().unwrap_or("no output")
+                ))
+            }
+        }),
+        |r| {
+            cosmic::Action::App(Message::Systemctl(
+                r.unwrap_or_else(|| Err("systemctl didn't answer".into())),
+            ))
+        },
+    )
+}
+
+/// Whether the daemon starts at login, from `systemctl --user is-enabled`.
+fn query_autostart() -> Task<Message> {
+    Task::perform(
+        run_blocking(|| {
+            std::process::Command::new("systemctl")
+                .args(["--user", "is-enabled", "cosmo.service"])
+                .output()
+                .ok()
+                .map(|o| o.status.success())
+        }),
+        |on| cosmic::Action::App(Message::Autostart(on.flatten())),
+    )
+}
+
+/// A blocking call on its own thread, awaited without stopping the UI.
+/// `None` if the thread died before answering.
+async fn run_blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    let (tx, rx) = futures::channel::oneshot::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    rx.await.ok()
 }
 
 fn request(cmd: Command) -> Task<Message> {
