@@ -977,7 +977,7 @@ impl Engine {
             None => (
                 false,
                 "agent not connected — is computer-use-linux installed? \
-                 (`npm install -g @agent-sh/computer-use-linux`)"
+                 (`npm install -g @agent-sh/computer-use-linux@0.5.0`)"
                     .to_owned(),
             ),
         };

@@ -49,12 +49,33 @@ For COPR, point a project at `rpm/cosmo.spec` with networking on. The
 build runs `fetch-native`, installs `cargo-about` into the build root,
 and needs a Fedora `rust` at least as new as `rust-toolchain.toml`'s.
 **The spec hasn't been built yet:** no Fedora machine or container was
-available when it was written.
+available when it was written. A read-through on 2026-10-06 found and
+fixed one bug that would have failed the build (a stray path in
+`%install`); expect more until it has been through COPR once.
+
+### Testing on Fedora (COSMIC spin)
+
+Before inviting users, on a Fedora machine running COSMIC:
+
+1. `sudo dnf install rpm-build rpmdevtools` then `rpmlint packaging/rpm/cosmo.spec`.
+2. Build locally: `rpmbuild -ba packaging/rpm/cosmo.spec` (or `mock`), with
+   the source tarball from `git archive --prefix=cosmic-ai-assistant-0.1.0/ -o ~/rpmbuild/SOURCES/cosmic-ai-assistant-0.1.0.tar.gz HEAD`
+   (the spec expects the `v0.1.0` archive name; tag the release first for COPR).
+   If `rust` is older than 1.94, use `rustup` or a newer Fedora.
+3. `sudo dnf install ./cosmo-*.rpm ./cosmo-applet-*.rpm`, then
+   `cosmo setup`, `cosmo doctor`.
+4. Check, in this order, because each one needs the last: `systemctl --user
+   status cosmo` (running), Right Ctrl hold (trigger attached: logind
+   `uaccess` on Fedora), "pause the music", "open Firefox", a spoken
+   confirm during a key hold, the lock behaviour (lock, then "take a
+   screenshot" must refuse), and "type hello" into a text field.
+5. `packaging/check-deps target/release` must still say "as audited"
+   against Fedora's libraries.
 
 ## After install
 
 Each user runs `cosmo models fetch` once (Kokoro, Silero VAD, two NeMo
 speech models: about 1.6 GB, each file SHA-256 checked), then
 `cosmo doctor`. The MCP agent is an npm package and isn't packaged:
-`npm install -g @agent-sh/computer-use-linux`. The daemon finds it under
+`npm install -g @agent-sh/computer-use-linux@0.5.0`. The daemon finds it under
 nvm or a user npm prefix even though the unit's PATH has neither.

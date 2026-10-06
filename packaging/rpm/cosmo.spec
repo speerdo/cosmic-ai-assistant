@@ -62,7 +62,7 @@ After installing, run `cosmo models fetch` once (about 1.6 GB of local
 models), `cosmo auth-login --provider openrouter` to sign in with your
 browser (other providers take an API key), then `cosmo doctor`. Desktop
 control needs computer-use-linux:
-npm install -g @agent-sh/computer-use-linux
+npm install -g @agent-sh/computer-use-linux@0.5.0
 
 %package -n cosmo-applet
 Summary:        COSMIC panel applet for cosmo
@@ -106,7 +106,6 @@ install -Dm0644 packaging/desktop/%{appid}.CosmoOverlay.desktop \
     %{buildroot}%{_sysconfdir}/xdg/autostart/%{appid}.CosmoOverlay.desktop
 install -Dm0644 packaging/desktop/%{appid}.CosmoApplet.desktop \
     %{buildroot}%{_datadir}/applications/%{appid}.CosmoApplet.desktop
-%{_datadir}/icons/hicolor/scalable/apps/%{appid}.Cosmo.svg
 install -Dm0644 assets/icons/%{appid}.Cosmo.svg \
     %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/%{appid}.Cosmo.svg
 

@@ -118,7 +118,7 @@ Description: voice front-end for MCP on the COSMIC desktop
  models), "cosmo auth-login --provider openrouter" to sign in with your
  browser (other providers take an API key), then "cosmo doctor". Desktop
  control needs computer-use-linux:
- npm install -g @agent-sh/computer-use-linux
+ npm install -g @agent-sh/computer-use-linux@0.5.0
 EOF
 # The daemon runs per user, in the graphical session. Enabled for every
 # user, as a user unit; each user's session starts it at the next login.

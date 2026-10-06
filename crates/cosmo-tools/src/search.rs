@@ -244,14 +244,96 @@ fn hits(results: &serde_json::Value, text_field: &str) -> Vec<Hit> {
         .collect()
 }
 
+/// Whether an address is one only this machine or its own network can
+/// reach: loopback, private, link-local (cloud metadata), CGNAT, ULA,
+/// multicast, unspecified. `read_page` refuses these.
+fn is_local_address(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || (o[0] == 100 && (64..128).contains(&o[1]))
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_local_address(IpAddr::V4(v4));
+            }
+            let first = v6.segments()[0];
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (first & 0xfe00) == 0xfc00
+                || (first & 0xffc0) == 0xfe80
+        }
+    }
+}
+
+/// Refuse a URL whose host is, or resolves to, a local address. The model
+/// reads what a page says, so a page that sends it to `localhost` or the
+/// router's admin page would be reading the user's own network back to it.
+async fn check_public(url: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| format!("{url}: {e}"))?;
+    let host = parsed.host_str().ok_or("the address has no host")?;
+    let refuse = || format!("{host} is on this computer or its network, not the web");
+    if host.eq_ignore_ascii_case("localhost") || host.ends_with(".localhost") {
+        return Err(refuse());
+    }
+    let port = parsed.port_or_known_default().unwrap_or(443);
+    let addrs = tokio::net::lookup_host((host.trim_matches(['[', ']']), port))
+        .await
+        .map_err(|e| format!("couldn't find {host}: {e}"))?;
+    let mut any = false;
+    for addr in addrs {
+        any = true;
+        if is_local_address(addr.ip()) {
+            return Err(refuse());
+        }
+    }
+    any.then_some(())
+        .ok_or_else(|| format!("couldn't find {host}"))
+}
+
 /// `read_page`: a web page as plain text, for the model to read in full.
 pub async fn read_page(url: &str) -> Result<String, String> {
-    let url = crate::browse::check_url(url)?;
-    let resp = client()
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| format!("couldn't open {url}: {e}"))?;
+    let mut url = crate::browse::check_url(url)?.to_owned();
+    // Redirects are followed here, one hop at a time, so each target is
+    // checked as the first was: a public page can't bounce to a local one.
+    let http = reqwest::Client::builder()
+        .user_agent(user_agent())
+        .timeout(Duration::from_secs(12))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap_or_default();
+    let mut hops = 0;
+    let resp = loop {
+        check_public(&url).await?;
+        let resp = http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("couldn't open {url}: {e}"))?;
+        if !resp.status().is_redirection() {
+            break resp;
+        }
+        hops += 1;
+        let next = resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|l| resp.url().join(l).ok())
+            .ok_or_else(|| format!("{url}: a redirect with nowhere to go"))?;
+        if hops > 5 {
+            return Err(format!("{url}: too many redirects"));
+        }
+        url = crate::browse::check_url(next.as_str())?.to_owned();
+    };
+    let url = url.as_str();
     if !resp.status().is_success() {
         return Err(format!("{url}: {}", resp.status()));
     }
@@ -489,5 +571,24 @@ mod tests {
     async fn read_page_refuses_what_isnt_a_web_address() {
         assert!(read_page("file:///etc/passwd").await.is_err());
         assert!(read_page("javascript:alert(1)").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn read_page_refuses_this_computer_and_its_network() {
+        for url in [
+            "http://localhost:11434/api/tags",
+            "http://127.0.0.1/",
+            "http://[::1]/",
+            "http://192.168.1.1/",
+            "http://10.0.0.5:8080/",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://100.64.0.1/",
+            "http://[::ffff:127.0.0.1]/",
+            "http://[fd00::1]/",
+            "http://0.0.0.0/",
+        ] {
+            let err = read_page(url).await.unwrap_err();
+            assert!(err.contains("not the web"), "{url}: {err}");
+        }
     }
 }

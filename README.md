@@ -16,7 +16,7 @@ Every improvement to [`computer-use-linux`](https://github.com/agent-sh/computer
 sudo apt install ./cosmo_0.1.0-1_amd64.deb ./cosmo-applet_0.1.0-1_amd64.deb
 cosmo setup                 # once: about you (name, home town for the weather, units),
                             # the local models (~1.6 GB), and a reasoning provider
-npm install -g @agent-sh/computer-use-linux   # the "hands" (desktop control)
+npm install -g @agent-sh/computer-use-linux@0.5.0   # the "hands" (desktop control)
 cosmo auth-login --provider openrouter   # sign in with your browser (or any provider below, with a key)
 cosmo doctor                # what works, what doesn't, and the fix for each
 ```
@@ -26,6 +26,25 @@ The daemon is a systemd user unit that the package enables for every user. It st
 **From source:** `scripts/fetch-native` (once), then `scripts/install-dev`, which installs into `~/.local`.
 
 The goal is not another chatbot with a mic glued on. The goal is a Jarvis: fast enough that commands feel like reflexes, honest enough that it never runs anything scary without asking, and polished enough that it looks like it belongs on COSMIC. It speaks in a voice *you* picked, including an actual accent rather than the five voices an API decided to offer.
+
+## What you can ask it
+
+Hold Right Ctrl and speak, or say "Cosmo, ..." with the wake word on.
+
+| You say | What happens | How |
+|---|---|---|
+| "Pause the music", "next track", "volume up", "mute" | Controls the player or the volume | instant, local |
+| "What time is it?", "what's the date?" | Answered from your clock | instant, local |
+| "Open Firefox", "open the PDF reader", "open Chromium in a new workspace" | Launches any installed app, by name or by what it is (a web browser, a PDF reader) | instant, local |
+| "Focus Discord", "switch to workspace 2", "move this window to workspace 3", "maximize this window" | Drives your windows and workspaces | instant, local |
+| "How's the weather?", "what's in the news?" | Reads your forecast and chosen feeds | reasoning model |
+| "When does Dune 3 come out?" | Searches, reads a page if needed, answers in a sentence or two | reasoning model |
+| "Search for COSMIC themes", "open the Arch wiki" | Opens the results or page in your browser | reasoning model |
+| "Type thanks, see you at 3", "write a reply saying I'll be late" | Types into the window you're working in. It never presses Enter, so nothing is sent or run until you do | reasoning model |
+| "Run htop in a terminal", "what's using my disk?" | Runs commands in cosmo's own tmux session and reads the result back | reasoning model, risky commands wait for you |
+| "Click Save", "scroll down" | Drives the screen through the MCP desktop agent | reasoning model, held for your confirmation |
+
+Anything that could do harm waits for you. See [Security](#security).
 
 ## What it is
 
@@ -113,6 +132,16 @@ With `provider: "local"`, reasoning runs on your own machine: no account, no key
 
 `api_base` points any of these at another endpoint (a local server, an unlisted provider), and `api_format` picks the wire. Tool calling has to work for cosmo to be useful, and it varies by model, so try a model with a few commands before relying on it. Voice output stays local (Kokoro) whatever is chosen here.
 
+## Security
+
+cosmo listens to a microphone and can act on your desktop, so it is built to distrust its own inputs. The short version, with the full model and how to report a problem in [`SECURITY.md`](SECURITY.md):
+
+- **Speech recognition and the voice run on your computer.** What you say is transcribed locally. The *text* of a request goes to the reasoning provider you chose (or nowhere, with a local model). Audio never leaves the machine.
+- **API keys live in the Secret Service**, not in a file, and are never logged. The daemon's socket is yours alone (`0600`).
+- **Nothing risky runs on a voice command alone.** Destructive or irreversible actions are held until you confirm with a click, `cosmo confirm`, or by voice *while holding the key*. Your speakers, a video or another person can't confirm.
+- **Web pages are data, not instructions.** `read_page` refuses `localhost` and private network addresses, including after redirects, so a page can't point cosmo at your router or local services.
+- **Typing never presses Enter**, and screen, click and typing tools refuse while the session is locked.
+
 ## Hard rules (the interesting part)
 
 These are the invariants the codebase is built around. They're the reason Cosmo can have a wake word without becoming a liability:
@@ -130,6 +159,8 @@ These are the invariants the codebase is built around. They're the reason Cosmo 
 - **No overlay on GNOME-on-Wayland.** Layer shell isn't supported there, so Cosmo degrades to notifications. The daemon, hotkey, TTS and reasoning all still work.
 - **US and UK English voices only.** Kokoro ships those two accents. An Australian voice (MeloTTS) was considered and isn't being pursued.
 - **COSMIC doesn't publish its lock state**, so cosmo infers it from logind's `Lock` signal and whether any window is active (`docs/phase8-findings.md` §8). Screenshots, clicks and typing refuse while locked, and also while no window is active, for example on an empty workspace: open or activate an app first.
+- **Fedora packages are new.** The `.deb` is built and tested on Pop!_OS. The Fedora `.rpm` spec is written but hasn't yet been through COPR, so expect rough edges and please report them.
+- **The reasoning model sees what you say, and what tools return.** A cloud provider gets the text of your requests, page text and tool results. Use a local model (`cosmo use local`) if that matters to you.
 - **It will not act unprompted.** Jarvis anticipates; Cosmo deliberately doesn't. You get very fast reactive execution and a memory of your projects, not an agent rummaging through your shell while you're away.
 
 ## Prior art and attribution

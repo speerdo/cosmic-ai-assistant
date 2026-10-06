@@ -223,7 +223,7 @@ fn agent_check(command: &str) -> DoctorCheck {
             "agent install",
             false,
             format!(
-                "`{command}` not found — `npm install -g @agent-sh/computer-use-linux` \
+                "`{command}` not found — `npm install -g @agent-sh/computer-use-linux@0.5.0` \
                  (cosmo works without it, but can't drive windows)"
             ),
         ),
