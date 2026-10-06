@@ -64,6 +64,9 @@ impl DesktopTools {
             .ok_or_else(|| {
                 "volume needs an action (up, down, set with an amount, mute, unmute)".to_owned()
             }),
+            "launch_app" if args["new_workspace"].as_bool() == Some(true) => {
+                app().map(Intent::LaunchOnNewWorkspace)
+            }
             "launch_app" => app().map(Intent::Launch),
             "focus_app" => app().map(Intent::Focus),
             "switch_workspace" => workspace().map(Intent::SwitchWorkspace),
@@ -96,8 +99,14 @@ fn desktop_schemas() -> Vec<Value> {
         ),
         function_schema(
             "launch_app",
-            "Start an installed application. Its window opens on the current workspace.",
-            app.clone(),
+            "Start an installed application. Its window opens on the current workspace, \
+             or with new_workspace: true on an empty one it switches to first (for \
+             \"open X in a new workspace\").",
+            {
+                let mut schema = app.clone();
+                schema["properties"]["new_workspace"] = json!({"type": "boolean"});
+                schema
+            },
         ),
         function_schema(
             "focus_app",

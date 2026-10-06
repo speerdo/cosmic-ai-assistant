@@ -91,6 +91,14 @@ impl Matcher {
             _ => return None,
         };
         let mut rest = strip_articles(rest);
+        // "open Chromium in a new workspace": a trailing placement phrase.
+        let mut new_workspace = false;
+        if launch
+            && let [head @ .., "in" | "on", "new", "workspace" | "desktop"] = rest.as_slice()
+        {
+            rest = head.to_vec();
+            new_workspace = true;
+        }
         // "open up a new terminal": launching is already a new window, so
         // the particle and "new" say nothing more. Only for launching:
         // "focus the new one" isn't a reflex command.
@@ -107,7 +115,9 @@ impl Matcher {
             return None;
         }
         let AppMatch { app, score } = self.apps.find(&rest.join(" "))?;
-        let intent = if launch {
+        let intent = if launch && new_workspace {
+            Intent::LaunchOnNewWorkspace(app)
+        } else if launch {
             Intent::Launch(app)
         } else {
             Intent::Focus(app)

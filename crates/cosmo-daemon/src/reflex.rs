@@ -99,6 +99,10 @@ impl Actuator for Desktop {
                 Intent::Launch(app) => {
                     cosmo_tools::launch::launch(&app.id).map_err(|e| e.to_string())
                 }
+                Intent::LaunchOnNewWorkspace(app) => {
+                    self.windows()?.switch_new_workspace().map_err(e)?;
+                    cosmo_tools::launch::launch(&app.id).map_err(|e| e.to_string())
+                }
                 Intent::Focus(app) => self
                     .windows()?
                     .focus_app(&window_ids(&app.id))

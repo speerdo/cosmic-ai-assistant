@@ -27,6 +27,7 @@ fn every_intent() -> Vec<Intent> {
         Intent::Volume(VolumeCommand::Mute),
         Intent::Volume(VolumeCommand::Unmute),
         Intent::Launch(app.clone()),
+        Intent::LaunchOnNewWorkspace(app.clone()),
         Intent::Focus(app),
         Intent::SwitchWorkspace(2),
         Intent::MoveToWorkspace(3),
@@ -39,6 +40,7 @@ fn every_intent() -> Vec<Intent> {
             | Intent::Volume(_)
             | Intent::Ask(_)
             | Intent::Launch(_)
+            | Intent::LaunchOnNewWorkspace(_)
             | Intent::Focus(_)
             | Intent::SwitchWorkspace(_)
             | Intent::MoveToWorkspace(_)

@@ -79,6 +79,8 @@ pub enum Intent {
     Ask(Ask),
     /// Start an installed application.
     Launch(AppRef),
+    /// Start an application on an empty workspace.
+    LaunchOnNewWorkspace(AppRef),
     /// Bring a running application's window forward.
     Focus(AppRef),
     SwitchWorkspace(u32),
@@ -102,6 +104,9 @@ impl Intent {
             Self::Ask(Ask::Time) => ("tell_time", json!({})),
             Self::Ask(Ask::Date) => ("tell_date", json!({})),
             Self::Launch(app) => ("launch_app", json!({ "app": app.id })),
+            Self::LaunchOnNewWorkspace(app) => {
+                ("launch_app", json!({ "app": app.id, "new_workspace": true }))
+            }
             Self::Focus(app) => ("focus_app", json!({ "app": app.id })),
             Self::SwitchWorkspace(n) => ("switch_workspace", json!({ "workspace": n })),
             Self::MoveToWorkspace(n) => ("move_window_to_workspace", json!({ "workspace": n })),
@@ -121,6 +126,7 @@ impl Intent {
                 (action, None) => format!("volume {action}"),
             },
             Self::Launch(app) => format!("launch {}", app.name),
+            Self::LaunchOnNewWorkspace(app) => format!("launch {} on a new workspace", app.name),
             Self::Focus(app) => format!("focus {}", app.name),
             Self::SwitchWorkspace(n) => format!("switch to workspace {n}"),
             Self::MoveToWorkspace(n) => format!("move this window to workspace {n}"),
@@ -146,7 +152,7 @@ impl Intent {
         match self {
             // Media and volume answer for themselves: you hear the change.
             Self::Media(_) | Self::Volume(_) | Self::Ask(_) => None,
-            Self::Launch(_) => Some("ack-launching"),
+            Self::Launch(_) | Self::LaunchOnNewWorkspace(_) => Some("ack-launching"),
             Self::Focus(_) | Self::SwitchWorkspace(_) | Self::Maximize | Self::Minimize => {
                 Some("ack-focused")
             }

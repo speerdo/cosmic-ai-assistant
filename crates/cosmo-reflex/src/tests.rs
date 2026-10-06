@@ -266,3 +266,17 @@ fn the_clock_questions() {
         assert_eq!(asked(t), None, "`{t}` isn't a clock question");
     }
 }
+
+#[test]
+fn launching_in_a_new_workspace() {
+    for said in [
+        "Open Firefox in a new workspace",
+        "open up Firefox on a new workspace",
+        "Launch Firefox in a new desktop",
+    ] {
+        match acted(said) {
+            Some(Intent::LaunchOnNewWorkspace(a)) => assert_eq!(a.name, "Firefox", "{said}"),
+            other => panic!("`{said}` → {other:?}"),
+        }
+    }
+}

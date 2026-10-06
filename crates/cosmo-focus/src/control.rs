@@ -130,6 +130,31 @@ pub fn find_workspace(snap: &Snapshot, n: u32) -> Option<usize> {
     in_group.get((n as usize).checked_sub(1)?).copied()
 }
 
+/// The workspace "a new workspace" means: in the same group as
+/// [`find_workspace`] anchors on, the first (by position) holding no
+/// windows, else the last. COSMIC keeps a spare empty workspace at the end,
+/// so the fallback only matters with dynamic workspaces off.
+pub fn find_new_workspace(snap: &Snapshot) -> Option<usize> {
+    let from_focus = snap
+        .focused()
+        .and_then(|w| snap.windows[w].workspaces.first().copied());
+    let anchor = from_focus.or_else(|| snap.workspaces.iter().position(|w| w.active))?;
+    let group = snap.workspaces[anchor].group;
+    let mut in_group: Vec<usize> = (0..snap.workspaces.len())
+        .filter(|&i| snap.workspaces[i].group == group)
+        .collect();
+    in_group.sort_by(|&a, &b| {
+        snap.workspaces[a]
+            .coordinates
+            .cmp(&snap.workspaces[b].coordinates)
+    });
+    in_group
+        .iter()
+        .copied()
+        .find(|&i| !snap.windows.iter().any(|w| w.workspaces.contains(&i)))
+        .or_else(|| in_group.last().copied())
+}
+
 // ---- the Wayland side ------------------------------------------------------
 
 struct Top {
@@ -339,6 +364,18 @@ impl WindowControl {
         self.finish()
     }
 
+    /// Show an empty workspace (see [`find_new_workspace`]).
+    fn switch_new_workspace(&mut self) -> anyhow::Result<()> {
+        let manager = self
+            .ws_manager
+            .clone()
+            .context("compositor lacks ext_workspace_manager_v1")?;
+        let ws = find_new_workspace(&self.snapshot()).context("no workspace to switch to")?;
+        self.state.workspaces[ws].handle.activate();
+        manager.commit();
+        self.finish()
+    }
+
     /// The output workspace `ws` is on: its group's, else the window's.
     fn output_for(&self, ws: usize, window: usize) -> Option<wl_output::WlOutput> {
         let id = self.state.workspaces[ws].handle.id();
@@ -487,6 +524,11 @@ impl WindowService {
     /// Show workspace `n`.
     pub fn switch_workspace(&self, n: u32) -> anyhow::Result<()> {
         self.call(move |c| c.switch_workspace(n))?
+    }
+
+    /// Show an empty workspace, so what opens next lands alone.
+    pub fn switch_new_workspace(&self) -> anyhow::Result<()> {
+        self.call(|c| c.switch_new_workspace())?
     }
 }
 
@@ -797,6 +839,16 @@ mod tests {
 
     fn ids(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_new_workspace_is_the_first_empty_one() {
+        // snap(): windows on workspaces 1 and 2, so 3 is the spare.
+        assert_eq!(find_new_workspace(&snap()), Some(2));
+        let mut full = snap();
+        full.windows[0].workspaces = vec![2];
+        // Now 1 is empty, and it's the first.
+        assert_eq!(find_new_workspace(&full), Some(0));
     }
 
     #[test]
