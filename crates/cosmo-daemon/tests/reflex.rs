@@ -106,15 +106,36 @@ async fn a_failed_reflex_action_escalates_to_reasoning() {
 async fn anything_else_goes_straight_to_reasoning() {
     let (engine, rec, _rx) = engine(false).await;
     for text in [
-        "What time is it",
+        "What time is it in Tokyo",
         "Close this window",
         "Open Photoshop",
-        "Mute",
+        "Set a timer for ten minutes",
     ] {
         let result = engine.utterance(text.into(), UtteranceSource::Typed).await;
         assert!(escalated(&result), "`{text}`: {result:?}");
     }
     assert!(rec.acted.lock().unwrap().is_empty(), "reflex never acted");
+}
+
+/// Volume and the clock are answered here, never by the model.
+#[tokio::test]
+async fn volume_and_clock_questions_are_reflex() {
+    let (engine, rec, _rx) = engine(false).await;
+    for text in ["Mute", "What time is it", "Turn the volume up 5%"] {
+        let result = engine.utterance(text.into(), UtteranceSource::Typed).await;
+        assert!(
+            matches!(result, TurnResult::Reflexed { .. }),
+            "`{text}`: {result:?}"
+        );
+    }
+    assert_eq!(
+        *rec.acted.lock().unwrap(),
+        [
+            Intent::Volume(cosmo_reflex::VolumeCommand::Mute),
+            Intent::Ask(cosmo_reflex::Ask::Time),
+            Intent::Volume(cosmo_reflex::VolumeCommand::Up(5)),
+        ]
+    );
 }
 
 /// Safe verbs don't need the key: "pause" from `cosmo listen` just pauses.

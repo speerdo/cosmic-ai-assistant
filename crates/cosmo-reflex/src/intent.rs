@@ -26,9 +26,57 @@ impl MediaCommand {
     }
 }
 
+/// A change to the output volume. Amounts are percentage points (or, for
+/// `Set`, the level), 0 to 100.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VolumeCommand {
+    Up(u8),
+    Down(u8),
+    Set(u8),
+    Mute,
+    Unmute,
+}
+
+impl VolumeCommand {
+    /// The `volume` tool's `action` word and its `amount`, if it has one.
+    pub fn parts(self) -> (&'static str, Option<u8>) {
+        match self {
+            Self::Up(n) => ("up", Some(n)),
+            Self::Down(n) => ("down", Some(n)),
+            Self::Set(n) => ("set", Some(n)),
+            Self::Mute => ("mute", None),
+            Self::Unmute => ("unmute", None),
+        }
+    }
+
+    /// The inverse of [`parts`](Self::parts), for the tool's arguments.
+    /// Up and down default to a step of 10; a level needs a number.
+    pub fn parse(action: &str, amount: Option<u64>) -> Option<Self> {
+        let n = amount.map(|n| n.min(100) as u8);
+        Some(match action {
+            "up" => Self::Up(n.unwrap_or(10)),
+            "down" => Self::Down(n.unwrap_or(10)),
+            "set" => Self::Set(n?),
+            "mute" => Self::Mute,
+            "unmute" => Self::Unmute,
+            _ => return None,
+        })
+    }
+}
+
+/// What a spoken question asks for, answered from this machine's clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ask {
+    Time,
+    Date,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Intent {
     Media(MediaCommand),
+    Volume(VolumeCommand),
+    /// "What time is it?": the answer is spoken (`speaks`).
+    Ask(Ask),
     /// Start an installed application.
     Launch(AppRef),
     /// Bring a running application's window forward.
@@ -47,6 +95,12 @@ impl Intent {
         use serde_json::json;
         match self {
             Self::Media(c) => ("media_control", json!({ "command": c.as_str() })),
+            Self::Volume(c) => {
+                let (action, amount) = c.parts();
+                ("volume", json!({ "action": action, "amount": amount }))
+            }
+            Self::Ask(Ask::Time) => ("tell_time", json!({})),
+            Self::Ask(Ask::Date) => ("tell_date", json!({})),
             Self::Launch(app) => ("launch_app", json!({ "app": app.id })),
             Self::Focus(app) => ("focus_app", json!({ "app": app.id })),
             Self::SwitchWorkspace(n) => ("switch_workspace", json!({ "workspace": n })),
@@ -60,6 +114,12 @@ impl Intent {
     pub fn describe(&self) -> String {
         match self {
             Self::Media(c) => format!("{} media", c.as_str()),
+            Self::Ask(Ask::Time) => "tell the time".into(),
+            Self::Ask(Ask::Date) => "tell the date".into(),
+            Self::Volume(c) => match c.parts() {
+                (action, Some(n)) => format!("volume {action} {n}"),
+                (action, None) => format!("volume {action}"),
+            },
             Self::Launch(app) => format!("launch {}", app.name),
             Self::Focus(app) => format!("focus {}", app.name),
             Self::SwitchWorkspace(n) => format!("switch to workspace {n}"),
@@ -75,11 +135,17 @@ impl Intent {
     pub const READ_ONLY: bool = false;
     pub const DESTRUCTIVE: bool = false;
 
+    /// Whether what the actuator returns is the answer, to be spoken.
+    pub fn speaks(&self) -> bool {
+        matches!(self, Self::Ask(_))
+    }
+
     /// The cached phrase acknowledging it, if any. Media commands answer for
     /// themselves: the music stopping is the ack.
     pub fn ack(&self) -> Option<&'static str> {
         match self {
-            Self::Media(_) => None,
+            // Media and volume answer for themselves: you hear the change.
+            Self::Media(_) | Self::Volume(_) | Self::Ask(_) => None,
             Self::Launch(_) => Some("ack-launching"),
             Self::Focus(_) | Self::SwitchWorkspace(_) | Self::Maximize | Self::Minimize => {
                 Some("ack-focused")

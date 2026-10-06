@@ -86,6 +86,16 @@ impl Actuator for Desktop {
                 Intent::Media(cmd) => cosmo_tools::media::control(cmd.as_str())
                     .await
                     .map_err(|e| e.to_string()),
+                Intent::Ask(cosmo_reflex::Ask::Time) => Ok(cosmo_tools::clock::time_line()),
+                Intent::Ask(cosmo_reflex::Ask::Date) => Ok(cosmo_tools::clock::date_line()),
+                Intent::Volume(cmd) => {
+                    let (action, amount) = cmd.parts();
+                    let change = cosmo_tools::volume::Change::parse(action, amount.map(u64::from))
+                        .ok_or("not a volume change")?;
+                    cosmo_tools::volume::apply(change)
+                        .await
+                        .map_err(|e| e.to_string())
+                }
                 Intent::Launch(app) => {
                     cosmo_tools::launch::launch(&app.id).map_err(|e| e.to_string())
                 }

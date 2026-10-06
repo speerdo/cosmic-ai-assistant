@@ -267,8 +267,9 @@ impl Speech {
         let provider = self.provider(&voice).await.map_err(|e| e.to_string())?;
         // Providers own the `speak/synthesize` span (they know their id and
         // resolved voice); wrapping it again here would nest a duplicate.
+        let text = speakable(text);
         let pcm = provider
-            .synthesize(text, &voice.voice)
+            .synthesize(&text, &voice.voice)
             .await
             .map_err(|e| e.to_string())?;
         let clip = Clip::new(pcm.sample_rate, pcm.data).map_err(|e| e.to_string())?;
@@ -324,6 +325,10 @@ impl Speech {
                 for sentence in parts {
                     if this.generation.load(Ordering::SeqCst) != generation {
                         return; // a newer turn took over
+                    }
+                    let sentence = speakable(&sentence);
+                    if sentence.is_empty() {
+                        continue; // all markup: nothing to say
                     }
                     match this
                         .queue_sentence(&sentence, generation, first, started)
@@ -751,8 +756,82 @@ impl SpeechStream {
     }
 }
 
+/// A reply's text as it should be *said*: models write markdown (`**bold**`,
+/// backticks, headings, bullets, `[links](url)`), and a voice would read
+/// the symbols out. What's left is the words.
+pub fn speakable(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        let line = line.trim_start();
+        // Heading, quote and bullet markers at the start of a line.
+        let line = line.trim_start_matches(['#', '>']).trim_start();
+        let line = line
+            .strip_prefix("- ")
+            .or_else(|| line.strip_prefix("* "))
+            .or_else(|| line.strip_prefix("• "))
+            .unwrap_or(line);
+        if !out.is_empty() && !line.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(line);
+    }
+    // `[text](url)` is its text.
+    let mut plain = String::with_capacity(out.len());
+    let mut rest = out.as_str();
+    while let Some(open) = rest.find('[') {
+        let after = &rest[open + 1..];
+        match after
+            .find("](")
+            .and_then(|mid| after[mid + 2..].find(')').map(|end| (mid, mid + 2 + end)))
+        {
+            Some((mid, end)) => {
+                plain.push_str(&rest[..open]);
+                plain.push_str(&after[..mid]);
+                rest = &after[end + 1..];
+            }
+            None => {
+                plain.push_str(&rest[..=open]);
+                rest = after;
+            }
+        }
+    }
+    plain.push_str(rest);
+    plain
+        .replace(['*', '`'], "")
+        .replace("~~", "")
+        .trim()
+        .to_owned()
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn markdown_is_not_read_out() {
+        for (said, heard) in [
+            (
+                "Seventeen times twenty-three is **391**.",
+                "Seventeen times twenty-three is 391.",
+            ),
+            ("On the `/` partition.", "On the / partition."),
+            (
+                "## Disk\n- 572 GB free\n- 36% used",
+                "Disk 572 GB free 36% used",
+            ),
+            (
+                "See [the docs](https://example.com/a) now.",
+                "See the docs now.",
+            ),
+            ("A [bracket that stays.", "A [bracket that stays."),
+            (
+                "Plain words, snake_case stays.",
+                "Plain words, snake_case stays.",
+            ),
+            ("**", ""),
+        ] {
+            assert_eq!(speakable(said), heard, "{said}");
+        }
+    }
+
     /// How many phrases the cache renders: the tests follow the phrase list
     /// rather than hardcoding its length, so adding a phrase doesn't leave
     /// the fake synthesizer waiting on permits nobody grants.

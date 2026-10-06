@@ -219,7 +219,20 @@ impl Reasoner {
         history.push(json!({"role": "user", "content": user_text}));
 
         let tools = host.tool_schemas();
+        // A model can call tools forever (checking the same disk again and
+        // again). Two guards: a round cap, and no running the identical
+        // call a fourth time.
+        let mut rounds = 0;
+        let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         loop {
+            rounds += 1;
+            if rounds > MAX_ROUNDS {
+                tracing::warn!(
+                    rounds = MAX_ROUNDS,
+                    "tool loop cut off: the model never answered"
+                );
+                return Ok(ToolOutcome::Reply(give_up(history, on_text)));
+            }
             let done = self.chat(history, &tools, on_text).await?;
             let message = done.message;
             let finish = done.finish_reason.as_str();
@@ -304,6 +317,21 @@ impl Reasoner {
                                     token,
                                     tool: name.clone(),
                                 });
+                            }
+                            Verdict::Allow
+                                if {
+                                    let n = seen.entry(format!("{name} {args}")).or_insert(0);
+                                    *n += 1;
+                                    *n > MAX_REPEATS
+                                } =>
+                            {
+                                tracing::warn!(tool = %name, "identical tool call refused");
+                                history.push(tool_result(
+                                    &call_id,
+                                    "NOT RUN: you have already made this exact call several \
+                                     times. Answer from the earlier results, or say you \
+                                     couldn't find out.",
+                                ));
                             }
                             Verdict::Allow => {
                                 let result = {
@@ -531,6 +559,24 @@ fn parse_header(headers: &reqwest::header::HeaderMap, names: &[&str]) -> Option<
         .map(str::to_owned)
 }
 
+/// Model round trips one turn may take. Real work (read the screen, click,
+/// type, check) takes a handful; past this the model is going in circles.
+const MAX_ROUNDS: usize = 12;
+
+/// How many times one exact tool call (same tool, same arguments) runs in
+/// a turn. Reading the same thing a fourth time won't tell it anything new.
+const MAX_REPEATS: usize = 3;
+
+/// End a runaway turn: say so, and keep the history well-formed (it ends
+/// on tool results, and the next turn starts with the user's message).
+fn give_up(history: &mut Vec<Value>, on_text: &(dyn Fn(&str) + Send + Sync)) -> String {
+    let reply = "Sorry, I got stuck going in circles on that, so I stopped. \
+                 Try asking another way.";
+    on_text(reply);
+    history.push(json!({"role": "assistant", "content": reply}));
+    reply.to_owned()
+}
+
 /// The static prompt's budget: 3,000 tokens (token discipline), at a
 /// conservative 4 bytes per token.
 pub const PROMPT_BUDGET_BYTES: usize = 3_000 * 4;
@@ -586,7 +632,8 @@ get_app_state. Run commands in a cosmo-owned tmux session \
 terminals only when the user asks for an action. Destructive or irreversible actions will be held for an explicit \
 local confirmation by cosmo's gate — that is expected behaviour, do not \
 attempt to talk the user out of it or re-request the action. Never claim \
-you ran something unless a tool result says so. Keep replies short: one \
+you ran something unless a tool result says so. Your replies are spoken \
+aloud: plain sentences, no markdown, lists or symbols. Keep replies short: one \
 or two sentences. If a command is long-running, run it and report the \
 transcript so far."
         .to_string()

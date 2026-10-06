@@ -346,6 +346,12 @@ impl Engine {
                 }
                 tracing::info!(%action, latency_ms, "reflex");
                 self.set_state(State::Idle);
+                // A question's answer is the action's result.
+                if intent.speaks()
+                    && let Some(speech) = &self.speech
+                {
+                    speech.speak(summary.clone());
+                }
                 Some(TurnResult::Reflexed { action, summary })
             }
             Err(why) => {
@@ -727,13 +733,15 @@ impl Engine {
     /// Every provider, whether it's connected, and what's in use.
     async fn reasoning_info(&self) -> cosmo_ipc::ReasoningInfo {
         use cosmo_ipc::{Connect, ProviderInfo};
-        use cosmo_reason::provider::{Endpoint, PRESETS, list_models, local_models, runs_remotely};
+        use cosmo_reason::provider::{
+            Endpoint, PRESETS, choices, list_models, local_models, runs_remotely,
+        };
         let rcfg = self.reasoning_cfg.lock().unwrap().clone();
         let model = Endpoint::resolve(&rcfg, None)
             .map(|e| e.model)
             .unwrap_or_default();
         let probes = PRESETS.iter().map(|p| {
-            let rcfg = &rcfg;
+            let (rcfg, model) = (&rcfg, &model);
             async move {
                 let (connected, models, why) = if p.needs_key {
                     let stored = tokio::time::timeout(
@@ -784,15 +792,20 @@ impl Engine {
                         .filter(|m| runs_remotely(m))
                         .cloned()
                         .collect(),
-                    models: models.into_iter().filter(|m| !runs_remotely(m)).collect(),
+                    models: choices(
+                        p,
+                        models.into_iter().filter(|m| !runs_remotely(m)).collect(),
+                        (rcfg.provider == p.name && p.needs_key).then_some(model.as_str()),
+                    ),
                     note: why.or(p.note.map(str::to_owned)),
                 }
             }
         });
+        let providers = futures::future::join_all(probes).await;
         cosmo_ipc::ReasoningInfo {
             active: rcfg.provider.clone(),
             model,
-            providers: futures::future::join_all(probes).await,
+            providers,
         }
     }
 

@@ -294,6 +294,11 @@ fn card(v: &View) -> Element<'_, Message> {
     if v.state == State::Listening {
         header = header.push(waveform(&v.levels));
     }
+    // Waiting on the model or a tool: a spinner says it's working, not
+    // stuck. It animates itself, so nothing else redraws the card.
+    if matches!(v.state, State::Thinking | State::Acting) {
+        header = header.push(widget::progress_bar::indeterminate_circular().size(24.0));
+    }
     header = header.push(text::title4(title).width(Length::Fill)).push(
         button::icon(widget::icon::from_name("window-close-symbolic")).on_press(Message::Dismiss),
     );

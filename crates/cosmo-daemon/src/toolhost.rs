@@ -56,6 +56,14 @@ impl DesktopTools {
                 .ok_or_else(|| "workspace must be a number from 1".to_owned())
         };
         Some(match tool {
+            "volume" => cosmo_reflex::VolumeCommand::parse(
+                args["action"].as_str().unwrap_or_default(),
+                args["amount"].as_u64(),
+            )
+            .map(Intent::Volume)
+            .ok_or_else(|| {
+                "volume needs an action (up, down, set with an amount, mute, unmute)".to_owned()
+            }),
             "launch_app" => app().map(Intent::Launch),
             "focus_app" => app().map(Intent::Focus),
             "switch_workspace" => workspace().map(Intent::SwitchWorkspace),
@@ -76,6 +84,16 @@ fn desktop_schemas() -> Vec<Value> {
     let workspace = json!({"type": "object", "properties": {"workspace": {"type": "integer",
         "description": "Workspace number, from 1"}}, "required": ["workspace"]});
     vec![
+        function_schema(
+            "volume",
+            "The output volume (never above 100%): up or down by `amount` percentage \
+             points (default 10), set to a level, mute or unmute. For what it's at now, \
+             use `status`.",
+            json!({"type": "object", "properties": {
+                "action": {"type": "string", "enum": ["up", "down", "set", "mute", "unmute", "status"]},
+                "amount": {"type": "integer", "description": "Percent: the step, or for `set` the level"}
+            }, "required": ["action"]}),
+        ),
         function_schema(
             "launch_app",
             "Start an installed application. Its window opens on the current workspace.",
@@ -304,6 +322,7 @@ impl ToolHost for DaemonToolHost {
             | "announce"
             | "remember"
             | "media_control"
+            | "volume"
             | "clipboard_get"
             | "clipboard_set"
             | "open_url"
@@ -362,6 +381,9 @@ impl ToolHost for DaemonToolHost {
                 "media_control" => {
                     let cmd = args["command"].as_str().unwrap_or_default().to_string();
                     run_tool(cosmo_tools::media::control(&cmd).await)
+                }
+                "volume" if args["action"] == "status" => {
+                    run_tool(cosmo_tools::volume::status().await)
                 }
                 "clipboard_get" => run_tool(cosmo_tools::clipboard::get().await),
                 "weather" => {

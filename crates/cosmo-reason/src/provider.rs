@@ -75,6 +75,10 @@ pub struct Preset {
     /// the list is hundreds long or mixes in non-chat models (OpenAI,
     /// OpenRouter), so only the default is offered there.
     pub lists_models: bool,
+    /// A short list worth choosing from, for a provider whose own list is
+    /// too long to browse (and `lists_models` is false): fast models that
+    /// call tools well. Checked against the provider's catalogue.
+    pub suggested_models: &'static [&'static str],
     /// A caution `cosmo auth-login` and `doctor` show (terms of use).
     pub note: Option<&'static str>,
 }
@@ -93,6 +97,7 @@ pub const PRESETS: &[Preset] = &[
         browser_login: None,
         default_model: "gpt-4o-mini",
         lists_models: false,
+        suggested_models: &[],
         note: None,
     },
     Preset {
@@ -107,6 +112,7 @@ pub const PRESETS: &[Preset] = &[
         browser_login: None,
         default_model: "claude-haiku-4-5",
         lists_models: false,
+        suggested_models: &[],
         note: Some(
             "needs an API key from the Claude Console; a Claude Pro/Max subscription is not one",
         ),
@@ -123,6 +129,22 @@ pub const PRESETS: &[Preset] = &[
         browser_login: Some(crate::login::OPENROUTER),
         default_model: "anthropic/claude-haiku-4.5",
         lists_models: false,
+        suggested_models: &[
+            "anthropic/claude-haiku-4.5",
+            "anthropic/claude-sonnet-5.5",
+            "openai/gpt-4.1-mini",
+            "openai/gpt-4.1",
+            "openai/gpt-5.4-mini",
+            "openai/gpt-oss-120b",
+            "google/gemini-3.1-flash-lite",
+            "google/gemini-3.8-flash",
+            "deepseek/deepseek-v4.1-flash",
+            "z-ai/glm-5.3-flash",
+            "qwen/qwen3.7-flash",
+            "meta-llama/llama-4-maverick",
+            "mistralai/mistral-small-2603",
+            "minimax/minimax-m3",
+        ],
         note: None,
     },
     Preset {
@@ -137,6 +159,7 @@ pub const PRESETS: &[Preset] = &[
         browser_login: None,
         default_model: "glm-5.3-flash",
         lists_models: true,
+        suggested_models: &[],
         note: Some(
             "OpenCode Go's terms say it is designed for coding agents; voice-assistant \
              traffic may not be what they allow. Your account, your call",
@@ -154,6 +177,7 @@ pub const PRESETS: &[Preset] = &[
         browser_login: None,
         default_model: "gpt-oss:120b",
         lists_models: true,
+        suggested_models: &[],
         note: None,
     },
     Preset {
@@ -168,6 +192,7 @@ pub const PRESETS: &[Preset] = &[
         browser_login: None,
         default_model: "glm-5.3-flash",
         lists_models: false,
+        suggested_models: &[],
         note: None,
     },
     // A model on this machine, through any OpenAI-compatible local server.
@@ -187,9 +212,28 @@ pub const PRESETS: &[Preset] = &[
         browser_login: None,
         default_model: "granite4.1:8b",
         lists_models: false,
+        suggested_models: &[],
         note: None,
     },
 ];
+
+/// Every provider's own model list or shortlist, in the order shown, with
+/// the model in use first if it isn't on it.
+pub fn choices(preset: &Preset, listed: Vec<String>, in_use: Option<&str>) -> Vec<String> {
+    let mut models = if listed.is_empty() {
+        preset
+            .suggested_models
+            .iter()
+            .map(|m| (*m).to_owned())
+            .collect()
+    } else {
+        listed
+    };
+    if let Some(m) = in_use.filter(|m| !m.is_empty() && !models.iter().any(|x| x == m)) {
+        models.insert(0, m.to_owned());
+    }
+    models
+}
 
 /// Where a chat-completions URL lists its models (`/v1/models`), for local
 /// servers: Ollama, LM Studio and llama.cpp all serve it.
@@ -352,6 +396,20 @@ mod tests {
             assert!(e.url.starts_with(scheme), "{}", p.name);
             assert_eq!(e.format, p.format, "{}", p.name);
         }
+    }
+
+    #[test]
+    fn a_shortlist_stands_in_for_a_list_and_keeps_the_model_in_use() {
+        let or = preset("openrouter").unwrap();
+        assert!(or.suggested_models.len() > 5);
+        assert!(or.suggested_models.contains(&or.default_model));
+        let c = choices(or, vec![], Some("vendor/custom"));
+        assert_eq!(c[0], "vendor/custom");
+        assert_eq!(c.len(), or.suggested_models.len() + 1);
+        // A provider's own list wins, and nothing is added twice.
+        let own = vec!["a".to_owned(), "b".to_owned()];
+        assert_eq!(choices(or, own.clone(), Some("b")), own);
+        assert!(choices(preset("zai").unwrap(), vec![], None).is_empty());
     }
 
     #[test]

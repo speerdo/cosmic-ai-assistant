@@ -93,10 +93,6 @@ fn everything_else_escalates() {
     for text in [
         // The user's non-reflex lines: not safe verbs, or not verbs at all.
         "Close this window",
-        "Mute",
-        "Set the volume to thirty percent",
-        "Turn it up",
-        "What time is it",
         "Open Blender and move it to workspace four",
         "Restart PipeWire, then play something on Spotify",
         "Find the PDF I downloaded yesterday and open it in the document viewer",
@@ -194,4 +190,79 @@ fn every_way_of_asking_for_the_music_back() {
     );
     // "Start Spotify" still launches it.
     assert_eq!(app("Start Spotify"), Some((true, "Spotify".into())));
+}
+
+#[test]
+fn volume_verbs() {
+    use crate::VolumeCommand::*;
+    let said = |t: &str| match acted(t) {
+        Some(Intent::Volume(c)) => Some(c),
+        _ => None,
+    };
+    for (t, c) in [
+        ("Volume up", Up(10)),
+        ("Turn the volume up.", Up(10)),
+        ("Turn it up", Up(10)),
+        ("Turn it up a bit", Up(5)),
+        ("Turn up the volume", Up(10)),
+        ("Louder", Up(10)),
+        ("Make it quieter", Down(10)),
+        ("Turn the volume down by 15 percent", Down(15)),
+        ("Turn the volume up 5%", Up(5)),
+        ("Lower the volume", Down(10)),
+        ("Increase the volume by twenty", Up(20)),
+        ("Set the volume to forty percent", Set(40)),
+        ("Set volume to 70", Set(70)),
+        ("Mute", Mute),
+        ("Mute the sound", Mute),
+        ("Unmute", Unmute),
+        ("Turn the sound back on", Unmute),
+    ] {
+        assert_eq!(said(t), Some(c), "{t}");
+    }
+}
+
+/// What isn't a volume command stays out of the fast path.
+#[test]
+fn volume_lookalikes_escalate() {
+    for t in [
+        "Set the volume to a hundred and fifty",
+        "Turn the volume up and play some jazz",
+        "What's the volume of a sphere",
+        "Turn it up to eleven",
+        "Set the volume to loud",
+    ] {
+        assert!(
+            !matches!(acted(t), Some(Intent::Volume(_))),
+            "`{t}` is not a volume command"
+        );
+    }
+}
+
+#[test]
+fn the_clock_questions() {
+    use crate::Ask::*;
+    let asked = |t: &str| match acted(t) {
+        Some(Intent::Ask(a)) => Some(a),
+        _ => None,
+    };
+    for (t, a) in [
+        ("What time is it?", Time),
+        ("What time is it now", Time),
+        ("What's the time", Time),
+        ("Tell me the time", Time),
+        ("What's the date today", Date),
+        ("What day is it", Date),
+        ("What's today's date", Date),
+    ] {
+        assert_eq!(asked(t), Some(a), "{t}");
+    }
+    for t in [
+        "What time is it in Tokyo",
+        "What time does the store close",
+        "What day is Christmas this year",
+        "Set a timer for ten minutes",
+    ] {
+        assert_eq!(asked(t), None, "`{t}` isn't a clock question");
+    }
 }

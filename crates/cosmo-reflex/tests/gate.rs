@@ -3,7 +3,7 @@
 //! reachable without the model.
 
 use cosmo_gate::{Annotations, Gate, LockState, Verdict, is_lock_sensitive, is_string_bearing};
-use cosmo_reflex::{AppRef, Intent, MediaCommand};
+use cosmo_reflex::{AppRef, Ask, Intent, MediaCommand, VolumeCommand};
 
 /// One of every intent. The `match` is exhaustive on purpose: adding a
 /// variant to `Intent` fails to compile here until it's listed, so no new
@@ -19,6 +19,13 @@ fn every_intent() -> Vec<Intent> {
         Intent::Media(MediaCommand::Stop),
         Intent::Media(MediaCommand::Next),
         Intent::Media(MediaCommand::Previous),
+        Intent::Ask(Ask::Time),
+        Intent::Ask(Ask::Date),
+        Intent::Volume(VolumeCommand::Up(10)),
+        Intent::Volume(VolumeCommand::Down(5)),
+        Intent::Volume(VolumeCommand::Set(40)),
+        Intent::Volume(VolumeCommand::Mute),
+        Intent::Volume(VolumeCommand::Unmute),
         Intent::Launch(app.clone()),
         Intent::Focus(app),
         Intent::SwitchWorkspace(2),
@@ -29,6 +36,8 @@ fn every_intent() -> Vec<Intent> {
     for i in &all {
         match i {
             Intent::Media(_)
+            | Intent::Volume(_)
+            | Intent::Ask(_)
             | Intent::Launch(_)
             | Intent::Focus(_)
             | Intent::SwitchWorkspace(_)

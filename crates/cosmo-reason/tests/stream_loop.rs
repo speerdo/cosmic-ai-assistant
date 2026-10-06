@@ -311,3 +311,105 @@ async fn a_cut_off_stream_runs_nothing() {
     assert!(err.to_string().contains("cut off"), "{err}");
     assert!(host.ran.lock().unwrap().is_empty());
 }
+
+/// A model that never stops calling tools (the disk again, and again) is cut
+/// off: the turn ends with an apology, after a bounded number of requests.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_model_that_never_answers_is_cut_off() {
+    let _turn = exclusive().await;
+    let scripts: Vec<Script> = (0..14)
+        .map(|i| Script {
+            payloads: vec![
+                // A different command each round, so only the round cap
+                // (not the repeat guard) can stop it.
+                call_chunk(
+                    0,
+                    Some("c"),
+                    Some("list_windows"),
+                    &format!("{{\"n\":{i}}}"),
+                ),
+                finish("tool_calls"),
+            ],
+            gap: Duration::ZERO,
+            cut: None,
+        })
+        .collect();
+    let (base, bodies) = fake_api(scripts).await;
+    let mut r = reasoner(&base);
+    let host = Host::default();
+    let spoken: Arc<Mutex<String>> = Arc::default();
+    let sink = {
+        let spoken = Arc::clone(&spoken);
+        move |t: &str| spoken.lock().unwrap().push_str(t)
+    };
+    let mut history = Vec::new();
+    let outcome = r
+        .turn_streaming("check", &Gate::new(), &host, &mut history, &sink)
+        .await
+        .unwrap();
+    let ToolOutcome::Reply(reply) = outcome else {
+        panic!("{outcome:?}")
+    };
+    assert!(reply.contains("stuck"), "{reply}");
+    assert_eq!(*spoken.lock().unwrap(), reply, "the apology is spoken");
+    assert_eq!(
+        bodies.lock().unwrap().len(),
+        12,
+        "a bounded number of requests"
+    );
+    assert_eq!(
+        history.last().unwrap()["role"],
+        "assistant",
+        "history stays well-formed"
+    );
+}
+
+/// The identical call a fourth time isn't run: the model is told to answer
+/// from what it has, and does.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_same_call_is_not_run_a_fourth_time() {
+    let _turn = exclusive().await;
+    let same = || Script {
+        payloads: vec![
+            call_chunk(0, Some("c"), Some("list_windows"), "{}"),
+            finish("tool_calls"),
+        ],
+        gap: Duration::ZERO,
+        cut: None,
+    };
+    let (base, bodies) = fake_api(vec![
+        same(),
+        same(),
+        same(),
+        same(),
+        Script {
+            payloads: vec![text_chunk("Firefox is open."), finish("stop")],
+            gap: Duration::ZERO,
+            cut: None,
+        },
+    ])
+    .await;
+    let mut r = reasoner(&base);
+    let host = Host::default();
+    let outcome = r
+        .turn_streaming(
+            "what's open?",
+            &Gate::new(),
+            &host,
+            &mut Vec::new(),
+            &|_| {},
+        )
+        .await
+        .unwrap();
+    assert!(matches!(outcome, ToolOutcome::Reply(ref t) if t == "Firefox is open."));
+    assert_eq!(
+        host.ran.lock().unwrap().len(),
+        3,
+        "run three times, refused the fourth"
+    );
+    let last = bodies.lock().unwrap()[4].to_string();
+    assert!(
+        last.contains("NOT RUN: you have already made this exact call"),
+        "{last}"
+    );
+}

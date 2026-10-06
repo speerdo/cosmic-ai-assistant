@@ -8,7 +8,7 @@
 //! That is the safe direction to be wrong in.
 
 use crate::apps::{AppIndex, AppMatch};
-use crate::intent::{Intent, MediaCommand};
+use crate::intent::{Ask, Intent, MediaCommand, VolumeCommand};
 use crate::normalize::words;
 
 /// Below this, reflex doesn't act: the transcript goes to reasoning.
@@ -64,6 +64,18 @@ impl Matcher {
             .map(|cmd| Match {
                 intent: Intent::Media(cmd),
                 confidence: 1.0,
+            })
+            .or_else(|| {
+                volume(&w).map(|cmd| Match {
+                    intent: Intent::Volume(cmd),
+                    confidence: 1.0,
+                })
+            })
+            .or_else(|| {
+                ask(&w).map(|a| Match {
+                    intent: Intent::Ask(a),
+                    confidence: 1.0,
+                })
             })
             .or_else(|| workspaces(&w, workspace))
             .or_else(|| window(&w))
@@ -147,6 +159,102 @@ fn media(w: &[&str]) -> Option<MediaCommand> {
         ["previous"] => MediaCommand::Previous,
         ["go" | "skip", "back", rest @ ..] if rest.is_empty() || thing(rest) => {
             MediaCommand::Previous
+        }
+        _ => return None,
+    })
+}
+
+/// "What time is it", "what's the date", "what day is it": questions the
+/// clock answers. Nothing else (a question about *another* time or place,
+/// "what time is it in Tokyo", is the model's).
+fn ask(w: &[&str]) -> Option<Ask> {
+    // "what's" is one word; "what is" is two.
+    let w: Vec<&str> = match w {
+        ["what's" | "whats", rest @ ..] => std::iter::once("what")
+            .chain(std::iter::once("is"))
+            .chain(rest.iter().copied())
+            .collect(),
+        w => w.to_vec(),
+    };
+    Some(match w.as_slice() {
+        ["what", "time", "is", "it"]
+        | ["what", "is", "time"]
+        | ["what", "is", "current", "time"] => Ask::Time,
+        ["tell", "time"] | ["tell", "me", "time"] | ["current", "time"] | ["time"] => Ask::Time,
+        ["what", "is", "date"]
+        | ["what", "is", "today's", "date"]
+        | ["what", "is", "date", "today"]
+        | ["what", "day", "is", "it"]
+        | ["what", "day", "is", "it", "today"]
+        | ["what", "is", "today"]
+        | ["what", "is", "the", "day"]
+        | ["today's", "date"]
+        | ["what", "date", "is", "it"]
+        | ["what", "is", "the", "date"] => Ask::Date,
+        _ => return None,
+    })
+}
+
+/// The volume verbs: "volume up", "turn it down", "louder", "turn the
+/// volume up by 5 percent", "set the volume to 40", "mute", "unmute".
+/// Anything left over (a word nobody accounted for) is no match.
+fn volume(w: &[&str]) -> Option<VolumeCommand> {
+    // "turn the sound back on": the extra word doesn't change the command.
+    let w: Vec<&str> = w.iter().copied().filter(|w| *w != "back").collect();
+    let w = w.as_slice();
+    // The amount: nothing (a step), "a bit" (a small one), or a number of
+    // percent, with or without "by" and "percent".
+    let amount = |rest: &[&str]| -> Option<Option<u8>> {
+        let rest = match rest {
+            ["by", r @ ..] => r,
+            r => r,
+        };
+        match rest {
+            [] => Some(None),
+            ["bit" | "little" | "notch"] => Some(Some(5)),
+            [n] | [n, "percent"] => n.parse().ok().filter(|n| *n <= 100).map(Some),
+            _ => None,
+        }
+    };
+    let up = |w: &str| matches!(w, "up" | "louder" | "higher");
+    let down = |w: &str| matches!(w, "down" | "quieter" | "softer" | "lower");
+    let step = |dir_up: bool, amount: Option<u8>| {
+        let n = amount.unwrap_or(10);
+        if dir_up {
+            VolumeCommand::Up(n)
+        } else {
+            VolumeCommand::Down(n)
+        }
+    };
+    let sound = |w: &str| matches!(w, "volume" | "sound" | "audio");
+    Some(match w {
+        ["mute"] | ["mute", "it" | "this" | "everything"] => VolumeCommand::Mute,
+        ["mute", s] if sound(s) => VolumeCommand::Mute,
+        ["unmute"] | ["unmute", "it" | "this" | "everything"] => VolumeCommand::Unmute,
+        ["unmute", s] if sound(s) => VolumeCommand::Unmute,
+        ["turn", s, "off"] | ["turn", "off", s] if sound(s) => VolumeCommand::Mute,
+        ["turn", s, "on"] | ["turn", "on", s] if sound(s) => VolumeCommand::Unmute,
+        // "louder", "make it quieter".
+        [d] if matches!(*d, "louder" | "quieter" | "softer") => step(up(d), None),
+        ["make", "it", d] if matches!(*d, "louder" | "quieter" | "softer") => step(up(d), None),
+        // "volume up (by 5 percent)".
+        ["volume", d, rest @ ..] if up(d) || down(d) => step(up(d), amount(rest)?),
+        // "turn (the volume | it) up (a bit)", "turn up the volume".
+        ["turn" | "bring" | "put", s, d, rest @ ..]
+            if (sound(s) || *s == "it") && (up(d) || down(d)) =>
+        {
+            step(up(d), amount(rest)?)
+        }
+        ["turn", d, s, rest @ ..] if sound(s) && (up(d) || down(d)) => step(up(d), amount(rest)?),
+        // "raise / increase / lower / decrease / reduce the volume".
+        ["raise" | "increase", s, rest @ ..] if sound(s) => step(true, amount(rest)?),
+        ["lower" | "decrease" | "reduce", s, rest @ ..] if sound(s) => step(false, amount(rest)?),
+        // "set the volume to 40 (percent)".
+        ["set" | "turn" | "put" | "change", s, "to", n]
+        | ["set" | "turn" | "put" | "change", s, "to", n, "percent"]
+            if sound(s) =>
+        {
+            VolumeCommand::Set(n.parse().ok().filter(|n| *n <= 100)?)
         }
         _ => return None,
     })

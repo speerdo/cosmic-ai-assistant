@@ -15,6 +15,7 @@
 pub mod announce;
 pub mod browse;
 pub mod clipboard;
+pub mod clock;
 pub mod geo;
 pub mod launch;
 pub mod media;
@@ -23,6 +24,7 @@ pub mod news;
 pub mod search;
 pub mod system;
 pub mod terminal;
+pub mod volume;
 pub mod weather;
 
 /// The canonical native-tool names. `cosmo-mcp` registers these alongside
@@ -39,6 +41,7 @@ pub mod registry {
         "clipboard_get",
         "clipboard_set",
         "media_control",
+        "volume",
         "open_url",
         "weather",
         "news",
