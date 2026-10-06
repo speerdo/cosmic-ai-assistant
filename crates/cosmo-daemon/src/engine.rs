@@ -57,11 +57,18 @@ impl cosmo_tools::announce::Delivery for AnnounceDelivery {
     }
 }
 
-/// `org.freedesktop.Notifications.Notify` on the session bus.
+/// `org.freedesktop.Notifications.Notify` on the session bus. Never a
+/// ping: no sound (`suppress-sound`), low urgency, and it doesn't pile up
+/// in the notification history (`transient`). Cosmo makes no noise the user
+/// didn't ask for.
 async fn notify(body: &str) -> zbus::Result<()> {
+    use zbus::zvariant::Value;
     let conn = zbus::Connection::session().await?;
-    let hints: std::collections::HashMap<&str, zbus::zvariant::Value<'_>> =
-        std::collections::HashMap::new();
+    let hints: std::collections::HashMap<&str, Value<'_>> = std::collections::HashMap::from([
+        ("suppress-sound", Value::from(true)),
+        ("urgency", Value::from(0u8)),
+        ("transient", Value::from(true)),
+    ]);
     conn.call_method(
         Some("org.freedesktop.Notifications"),
         "/org/freedesktop/Notifications",
@@ -75,7 +82,7 @@ async fn notify(body: &str) -> zbus::Result<()> {
             body,
             Vec::<&str>::new(),
             hints,
-            -1i32,
+            8_000i32,
         ),
     )
     .await?;
