@@ -38,6 +38,13 @@ fn the_reflex_lines_of_the_users_command_list() {
         Some((true, "COSMIC Terminal".into()))
     );
     assert_eq!(app("Focus Discord"), Some((false, "Discord".into())));
+    for said in [
+        "Open up a new terminal",
+        "Open a new terminal",
+        "Open up the terminal",
+    ] {
+        assert_eq!(app(said), Some((true, "COSMIC Terminal".into())), "{said}");
+    }
 
     assert_eq!(acted("Pause"), Some(Intent::Media(MediaCommand::Pause)));
     assert_eq!(acted("Next track"), Some(Intent::Media(MediaCommand::Next)));

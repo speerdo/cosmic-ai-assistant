@@ -78,7 +78,19 @@ impl Matcher {
             ["switch" | "go", "to", rest @ ..] => (false, rest),
             _ => return None,
         };
-        let rest = strip_articles(rest);
+        let mut rest = strip_articles(rest);
+        // "open up a new terminal": launching is already a new window, so
+        // the particle and "new" say nothing more. Only for launching:
+        // "focus the new one" isn't a reflex command.
+        if launch {
+            if rest.first() == Some(&"up") {
+                rest.remove(0);
+            }
+            rest = strip_articles(&rest);
+            if rest.first() == Some(&"new") {
+                rest.remove(0);
+            }
+        }
         if rest.is_empty() {
             return None;
         }
