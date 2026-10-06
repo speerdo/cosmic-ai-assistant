@@ -295,6 +295,15 @@ impl ToolHost for DaemonToolHost {
                 "remove_news": {"type": "string", "description": "A chosen feed's name to remove"}
             }}),
         ));
+        schemas.push(function_schema(
+            "dictate",
+            "Type text, exactly as given, into the window that has focus (a browser page, \
+             a document, a terminal prompt). It never presses Enter, so nothing is \
+             submitted or run; say the text is typed and ready. One line only.",
+            serde_json::json!({"type": "object", "properties": {
+                "text": {"type": "string", "description": "The text to type, one line"}
+            }, "required": ["text"]}),
+        ));
         if self.desktop.is_some() {
             schemas.extend(desktop_schemas());
         }
@@ -334,6 +343,7 @@ impl ToolHost for DaemonToolHost {
             | "volume"
             | "clipboard_get"
             | "clipboard_set"
+            | "dictate"
             | "open_url"
             | "launch_app"
             | "focus_app"
@@ -395,6 +405,18 @@ impl ToolHost for DaemonToolHost {
                     run_tool(cosmo_tools::volume::status().await)
                 }
                 "clipboard_get" => run_tool(cosmo_tools::clipboard::get().await),
+                "dictate" => {
+                    let text = args["text"].as_str().unwrap_or_default().to_owned();
+                    let typed = tokio::task::spawn_blocking(move || {
+                        cosmo_type::Keyboard::connect()?.type_text(&text)
+                    })
+                    .await;
+                    match typed {
+                        Ok(Ok(())) => "typed".into(),
+                        Ok(Err(e)) => format!("tool error: {e}"),
+                        Err(e) => format!("tool error: {e}"),
+                    }
+                }
                 "weather" => {
                     let place = args["place"].as_str().unwrap_or_default().trim().to_owned();
                     match weather(&place).await {

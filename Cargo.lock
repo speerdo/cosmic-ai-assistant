@@ -1427,6 +1427,7 @@ dependencies = [
  "cosmo-stt",
  "cosmo-tools",
  "cosmo-tts",
+ "cosmo-type",
  "futures",
  "hound",
  "serde",

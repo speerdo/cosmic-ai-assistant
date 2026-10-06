@@ -111,6 +111,7 @@ fn held_and_denied_tools_are_not_reflex_tools() {
         "clipboard_get",
         "clipboard_set",
         "type_text",
+        "dictate",
         "press_key",
         "click",
         "screenshot",

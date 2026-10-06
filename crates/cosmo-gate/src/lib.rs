@@ -137,7 +137,10 @@ impl LockState {
 /// without one — `string_tools_all_route_through_matcher` fails until
 /// [`Gate::verdict_for_call`] grows the arm.
 pub fn is_string_bearing(tool: &str) -> bool {
-    matches!(tool, "run_in_terminal" | "cosmo_type_into_terminal")
+    matches!(
+        tool,
+        "run_in_terminal" | "cosmo_type_into_terminal" | "dictate"
+    )
 }
 
 /// Tools that must refuse while the session is locked or when lock state is
@@ -180,6 +183,7 @@ pub fn is_lock_sensitive(tool: &str) -> bool {
             | "double_click"
             | "right_click"
             | "type_text"
+            | "dictate"
             | "press_key"
             | "scroll"
             | "drag"
@@ -382,6 +386,19 @@ impl Gate {
                 let Some(text) = args.get("text").and_then(Value::as_str) else {
                     return Verdict::Deny;
                 };
+                Verdict::command(text)
+            }
+            // `dictate` types into whatever is focused, which may be a
+            // terminal: the same matcher. A control character (Enter, Tab,
+            // Esc) is refused outright, so dictation can never submit,
+            // execute or navigate; that stays with the held `press_key`.
+            "dictate" => {
+                let Some(text) = args.get("text").and_then(Value::as_str) else {
+                    return Verdict::Deny;
+                };
+                if text.chars().any(char::is_control) {
+                    return Verdict::Deny;
+                }
                 Verdict::command(text)
             }
             // Clipboard content must not silently become model context.
@@ -1259,6 +1276,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn dictate_types_prose_but_never_a_control_character() {
+        let gate = Gate::new();
+        gate.set_lock_state(LockState::Unlocked);
+        let a = Annotations {
+            read_only: false,
+            destructive: false,
+        };
+        let say = |t: &str| gate.verdict_for_call("dictate", &serde_json::json!({ "text": t }), &a);
+        assert_eq!(say("Thanks, see you at 3pm!"), Verdict::Allow);
+        for bad in ["ls\n", "hello\r", "a\tb", "\u{1b}[A"] {
+            assert_eq!(say(bad), Verdict::Deny, "{bad:?}");
+        }
+        gate.set_lock_state(LockState::Locked);
+        assert_eq!(say("hello"), Verdict::Deny);
+    }
+
     // ---- invariant #10: lock-screen fail-closed ----
 
     #[test]
@@ -1347,6 +1381,7 @@ mod tests {
     const STRING_TOOL_ARGS: &[(&str, &str)] = &[
         ("run_in_terminal", "command"),
         ("cosmo_type_into_terminal", "text"),
+        ("dictate", "text"),
     ];
 
     #[test]
@@ -1383,7 +1418,7 @@ mod tests {
         }
 
         // And the two registries agree exactly.
-        for tool in ["run_in_terminal", "cosmo_type_into_terminal"] {
+        for tool in ["run_in_terminal", "cosmo_type_into_terminal", "dictate"] {
             assert!(is_string_bearing(tool));
         }
     }

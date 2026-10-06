@@ -230,7 +230,7 @@ pub fn plain_words(tool: &str, args: &str) -> String {
         }
         "screenshot" => "Taking a screenshot".into(),
         "click" | "double_click" | "right_click" => "Clicking".into(),
-        "type_text" => "Typing".into(),
+        "type_text" | "dictate" => "Typing".into(),
         "press_key" => "Pressing a key".into(),
         "scroll" => "Scrolling".into(),
         "system_query" => "Checking the system".into(),
