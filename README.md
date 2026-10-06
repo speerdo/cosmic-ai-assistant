@@ -6,14 +6,15 @@ A personal voice assistant for the [COSMIC](https://system76.com/cosmic/) deskto
 
 Every improvement to [`computer-use-linux`](https://github.com/agent-sh/computer-use-linux) makes cosmo better, and a second MCP server is config, not code.
 
-**Status:** phases 0 to 7 are built, and phase 8 (packages) is in progress. Hold Right Ctrl and speak, or say "Cosmo, ..." with the wake word on. About thirty common commands ("pause the music", "open Firefox") run locally in well under a second, with no tokens spent. Anything else goes to the reasoning model, which drives the desktop through MCP tools, looks things up, checks the weather and the news, and answers aloud, sentence by sentence, in a local Kokoro voice. Anything risky waits for your confirmation: a click on the overlay, `cosmo confirm`, or saying so *while holding the key*. An open mic (the wake word, or your own speakers) can never confirm. The overlay and the panel applet show what it's doing. What each phase measured is in [`docs/`](docs/), and third-party terms are in [`THIRD_PARTY.md`](THIRD_PARTY.md).
+**Status: early access (v0.1.0).** It works day to day on Pop!_OS with COSMIC, where it is built and tested. Fedora packaging is written but not yet tested. There are no published releases yet, so you build the packages yourself (below). Expect rough edges, and please report them. What each development phase measured is in [`docs/`](docs/), third-party terms are in [`THIRD_PARTY.md`](THIRD_PARTY.md), and security notes are in [`SECURITY.md`](SECURITY.md).
 
 ## Install
 
-**From a package** (Pop!_OS / Ubuntu `.deb`, Fedora COPR `.rpm`; see [`packaging/`](packaging/README.md)):
+**From a package.** There is no download page yet, so build the Pop!_OS / Ubuntu `.deb`s from a checkout (`cargo-about` and `scripts/fetch-native` are needed once, see [`packaging/`](packaging/README.md)), then install them:
 
 ```sh
-sudo apt install ./cosmo_0.1.0-1_amd64.deb ./cosmo-applet_0.1.0-1_amd64.deb
+packaging/build-deb         # writes packaging/out/*.deb
+sudo apt install ./packaging/out/cosmo_0.1.0-1_amd64.deb ./packaging/out/cosmo-applet_0.1.0-1_amd64.deb
 cosmo setup                 # once: about you (name, home town for the weather, units),
                             # the local models (~1.6 GB), and a reasoning provider
 npm install -g @agent-sh/computer-use-linux@0.5.0   # the "hands" (desktop control)
@@ -21,7 +22,11 @@ cosmo auth-login --provider openrouter   # sign in with your browser (or any pro
 cosmo doctor                # what works, what doesn't, and the fix for each
 ```
 
+Fedora has an `.rpm` spec for COPR in the same folder, which hasn't been built yet.
+
 The daemon is a systemd user unit that the package enables for every user. It starts with your graphical session, or right away with `systemctl --user start cosmo`. The overlay starts at login. Add the applet in Settings → Desktop → Panel → Applets. No root, and no `input` group: the trigger key is read through logind's `uaccess` ACL.
+
+The applet's popup also lets you pause listening, quit cosmo (**Quit cosmo**) and bring it back (**Start cosmo**), and choose whether it starts at login (**Start at login**), so you never need a terminal to stop it.
 
 **From source:** `scripts/fetch-native` (once), then `scripts/install-dev`, which installs into `~/.local`.
 
