@@ -9,6 +9,7 @@ downloads, so the packages stay small and nobody redistributes a model.
 | `systemd/cosmo.service` | The daemon, as a **user** unit (`WantedBy=graphical-session.target`). |
 | `desktop/…CosmoOverlay.desktop` | The overlay, started at login (`/etc/xdg/autostart`). |
 | `desktop/…CosmoApplet.desktop` | The panel applet's entry (`X-CosmicApplet`). The user adds it in the panel settings. |
+| `udev/70-cosmo-trigger.rules` | Tags keyboards `uaccess` so the active seat's user can read the trigger key (Fedora doesn't by default). Trade-off in `SECURITY.md`. |
 | `build-deb` | Builds `cosmo` and `cosmo-applet` `.deb`s for Pop!_OS / Ubuntu into `out/`. |
 | `rpm/cosmo.spec` | The Fedora spec, for COPR (networking enabled for builds). |
 | `check-deps` | Fails if a binary gains a shared-library dependency beyond the audited set. |

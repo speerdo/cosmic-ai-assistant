@@ -24,11 +24,11 @@ cosmo doctor                # what works, what doesn't, and the fix for each
 
 Fedora has an `.rpm` spec for COPR in the same folder, which hasn't been built yet.
 
-The daemon is a systemd user unit that the package enables for every user. It starts with your graphical session, or right away with `systemctl --user start cosmo`. The overlay starts at login. Add the applet in Settings → Desktop → Panel → Applets. No root, and no `input` group: the trigger key is read through logind's `uaccess` ACL.
+The daemon is a systemd user unit that the package enables for every user. It starts with your graphical session, or right away with `systemctl --user start cosmo`. The overlay starts at login. Add the applet in Settings → Desktop → Panel → Applets. The daemon runs without root and without the `input` group: the trigger key is read through logind's `uaccess` ACL, which the package's udev rule grants on keyboards for whoever is at the active local seat (Pop!_OS does this already; Fedora doesn't).
 
 The applet's popup also lets you pause listening, quit cosmo (**Quit cosmo**) and bring it back (**Start cosmo**), and choose whether it starts at login (**Start at login**), so you never need a terminal to stop it.
 
-**From source:** `scripts/fetch-native` (once), then `scripts/install-dev`, which installs into `~/.local`.
+**From source:** `scripts/fetch-native` (once), then `scripts/install-dev`, which installs into `~/.local`. On Fedora, also install the udev rule it prints (one `sudo` step) or the trigger key can't be read. Fedora builds need `gcc-c++`, `libstdc++-static`, `cmake`, `clang-devel` and `rustup` (the spec's `BuildRequires` has the full list).
 
 The goal is not another chatbot with a mic glued on. The goal is a Jarvis: fast enough that commands feel like reflexes, honest enough that it never runs anything scary without asking, and polished enough that it looks like it belongs on COSMIC. It speaks in a voice *you* picked, including an actual accent rather than the five voices an API decided to offer.
 

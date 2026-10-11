@@ -28,6 +28,8 @@ BuildRequires:  cargo >= 1.94
 BuildRequires:  rust >= 1.94
 BuildRequires:  gcc
 BuildRequires:  gcc-c++
+# fetch-native links sherpa-onnx with -static-libstdc++
+BuildRequires:  libstdc++-static
 BuildRequires:  make
 BuildRequires:  cmake
 BuildRequires:  clang
@@ -102,15 +104,22 @@ install -Dm0644 packaging/systemd/cosmo.service %{buildroot}%{_userunitdir}/cosm
 # fedora-release). It starts with each user's graphical session.
 install -dm0755 %{buildroot}%{_userpresetdir}
 echo "enable cosmo.service" >%{buildroot}%{_userpresetdir}/80-cosmo.preset
+%{_udevrulesdir}/70-cosmo-trigger.rules
 install -Dm0644 packaging/desktop/%{appid}.CosmoOverlay.desktop \
     %{buildroot}%{_sysconfdir}/xdg/autostart/%{appid}.CosmoOverlay.desktop
 install -Dm0644 packaging/desktop/%{appid}.CosmoApplet.desktop \
     %{buildroot}%{_datadir}/applications/%{appid}.CosmoApplet.desktop
 install -Dm0644 assets/icons/%{appid}.Cosmo.svg \
     %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/%{appid}.Cosmo.svg
+# The trigger key: keyboards get logind's uaccess ACL (Fedora doesn't).
+install -Dm0644 packaging/udev/70-cosmo-trigger.rules \
+    %{buildroot}%{_udevrulesdir}/70-cosmo-trigger.rules
 
 %post
 %systemd_user_post cosmo.service
+# udev rereads its rules by itself; this applies the ACL to keyboards
+# already plugged in, not just the next ones.
+udevadm trigger --subsystem-match=input --action=change >/dev/null 2>&1 || :
 
 %preun
 %systemd_user_preun cosmo.service

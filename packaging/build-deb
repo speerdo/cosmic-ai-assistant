@@ -70,6 +70,7 @@ S="$(stage cosmo)"
 install -Dm0755 -t "$S/usr/bin" "$REL/cosmod" "$REL/cosmo" "$REL/cosmo-overlay"
 install -Dm0755 "$ROOT/scripts/fetch-models" "$S/usr/libexec/cosmo/fetch-models"
 install -Dm0644 "$PKG/systemd/cosmo.service" "$S/usr/lib/systemd/user/cosmo.service"
+install -Dm0644 "$PKG/udev/70-cosmo-trigger.rules" "$S/usr/lib/udev/rules.d/70-cosmo-trigger.rules"
 install -Dm0644 "$PKG/desktop/io.github.speerdo.CosmoOverlay.desktop" \
     "$S/etc/xdg/autostart/io.github.speerdo.CosmoOverlay.desktop"
 DOC="$S/usr/share/doc/cosmo"
@@ -127,6 +128,10 @@ cat >"$S/DEBIAN/postinst" <<'EOF'
 set -e
 if [ "$1" = configure ] && command -v systemctl >/dev/null; then
     systemctl --global enable cosmo.service >/dev/null 2>&1 || true
+fi
+if [ "$1" = configure ] && command -v udevadm >/dev/null; then
+    udevadm control --reload-rules >/dev/null 2>&1 || true
+    udevadm trigger --subsystem-match=input --action=change >/dev/null 2>&1 || true
 fi
 EOF
 cat >"$S/DEBIAN/prerm" <<'EOF'

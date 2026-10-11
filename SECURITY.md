@@ -65,6 +65,13 @@ output, tool results). Any of them can try to steer the model.
 - **The trigger key is read from evdev** through logind's `uaccess` ACL,
   not the `input` group. The daemon sees only the trigger keycode; it is
   not a keylogger and says so in code (`docs/cosmo-blueprint.md`).
+- **The packages ship a udev rule** (`packaging/udev/70-cosmo-trigger.rules`)
+  that tags keyboards `uaccess`, because Fedora doesn't. The ACL goes only
+  to the user at the active local seat and moves on a user switch, but
+  while they have it, *any* program they run can read raw keystrokes from
+  those nodes, as members of the `input` group can. That is the cost of
+  hold-to-talk on such systems. Pop!_OS already grants it; removing the
+  rule there changes nothing. Without the rule, use the wake word.
 
 ## For users
 

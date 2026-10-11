@@ -1,0 +1,13 @@
+# cosmo's trigger key: let the user at the active local seat open keyboard
+# event nodes, so the daemon can read the hold-to-talk key without root or
+# the `input` group. Pop!_OS grants this already; Fedora's systemd does not.
+#
+# `uaccess` is an ACL logind gives only to the active session's user on
+# this seat, and moves on a user switch. It must sort before
+# 73-seat-late.rules, which applies the tag.
+#
+# What this opens up: any program that user runs can read raw keystrokes
+# from these nodes, as programs in the `input` group can. cosmod itself
+# masks its descriptor to the trigger keycode (EVIOCSMASK) and sees nothing
+# else (SECURITY.md).
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_KEYBOARD}=="1", TAG+="uaccess"
