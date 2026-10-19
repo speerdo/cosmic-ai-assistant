@@ -11,7 +11,7 @@ use tokio::net::TcpListener;
 use cosmo_gate::Gate;
 use cosmo_reason::secret::{KeySource, SecretKey};
 use cosmo_reason::tools::{ToolHost, function_schema};
-use cosmo_reason::{ReasonError, Reasoner, ToolOutcome};
+use cosmo_reason::{ReasonError, Reasoner, Timeouts, ToolOutcome};
 
 /// One scripted response: SSE payloads, sent `gap` apart. `cut` closes the
 /// connection early, after that many payloads.
@@ -310,6 +310,35 @@ async fn a_cut_off_stream_runs_nothing() {
         .unwrap_err();
     assert!(err.to_string().contains("cut off"), "{err}");
     assert!(host.ran.lock().unwrap().is_empty());
+}
+
+/// A stream that goes quiet is an error after the idle timeout, instead of
+/// holding the turn (and everything queued behind it) forever.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stalled_stream_times_out() {
+    let _turn = exclusive().await;
+    let (base, _) = fake_api(vec![Script {
+        payloads: vec![text_chunk("Hel"), text_chunk("lo"), finish("stop")],
+        gap: Duration::from_secs(5),
+        cut: None,
+    }])
+    .await;
+    let mut r = reasoner(&base);
+    r.set_timeouts(Timeouts {
+        first_byte: Duration::from_secs(5),
+        idle: Duration::from_millis(150),
+    });
+    let host = Host::default();
+    let started = Instant::now();
+    let err = r
+        .turn_streaming("hi", &Gate::new(), &host, &mut Vec::new(), &|_| {})
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("stopped responding"), "{err}");
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "gave up promptly"
+    );
 }
 
 /// A model that never stops calling tools (the disk again, and again) is cut

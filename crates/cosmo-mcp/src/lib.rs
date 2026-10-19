@@ -12,14 +12,20 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult, ClientCapabilities, JsonObject, Tool};
-use rmcp::service::{RoleClient, RunningService};
+use rmcp::service::{RoleClient, RunningService, ServiceError};
 use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
 use serde_json::Value;
 
 use cosmo_config::Config;
+
+/// How long an agent tool call may take before the turn moves on. A portal
+/// consent dialog nobody answers, or a hung agent, must not hold the turn.
+const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// One registered tool: MCP tool metadata + gate verdicts already resolved.
 #[derive(Debug, Clone)]
@@ -56,15 +62,22 @@ pub enum HostError {
     Protocol(String),
     #[error("tool `{0}` is not in the configured allowlist")]
     NotAllowed(String),
+    #[error("tool `{0}` did not answer within {1} s")]
+    Timeout(String, u64),
 }
 
 /// The running MCP host: one or more agent connections + the native tools.
 pub struct McpHost {
-    /// Kept for the doctor snapshot and future re-discovery (config, not
+    /// Kept to respawn the agent, and for future re-discovery (config, not
     /// code, when a second agent is added).
-    #[allow(dead_code)]
     cfg: Arc<Config>,
-    agent: AgentConnection,
+    /// The live connection. Calls clone it out, so a slow call never blocks
+    /// the swap to a fresh one.
+    agent: tokio::sync::Mutex<Arc<AgentConnection>>,
+    /// The last call showed the agent's transport is gone: spawn a new
+    /// agent before the next call.
+    broken: AtomicBool,
+    call_timeout: Duration,
     /// Tools allowed from the agent (config allowlist), keyed by name.
     agent_tools: BTreeMap<String, RegisteredTool>,
 }
@@ -82,9 +95,16 @@ impl McpHost {
         let agent_tools = agent.discover(&cfg.allowed_tools).await?;
         Ok(Self {
             cfg,
-            agent,
+            agent: tokio::sync::Mutex::new(Arc::new(agent)),
+            broken: AtomicBool::new(false),
+            call_timeout: CALL_TIMEOUT,
             agent_tools,
         })
+    }
+
+    /// Change how long an agent call may take (tests use a short one).
+    pub fn set_call_timeout(&mut self, timeout: Duration) {
+        self.call_timeout = timeout;
     }
 
     /// Snapshot of registered tools (agent + native) for `cosmo doctor`.
@@ -97,7 +117,32 @@ impl McpHost {
         if !self.agent_tools.contains_key(name) {
             return Err(HostError::NotAllowed(name.to_owned()));
         }
-        self.agent.call(name, args).await
+        let agent = self.live_agent().await?;
+        match tokio::time::timeout(self.call_timeout, agent.call(name, args)).await {
+            Ok(Ok(text)) => Ok(text),
+            Ok(Err(e)) => {
+                if is_transport_failure(&e) {
+                    tracing::warn!(error = %e, "MCP agent connection lost; will respawn it");
+                    self.broken.store(true, Ordering::SeqCst);
+                }
+                Err(HostError::Protocol(e.to_string()))
+            }
+            Err(_) => Err(HostError::Timeout(
+                name.to_owned(),
+                self.call_timeout.as_secs(),
+            )),
+        }
+    }
+
+    /// The agent connection, spawned afresh first if the last one died.
+    async fn live_agent(&self) -> Result<Arc<AgentConnection>, HostError> {
+        let mut slot = self.agent.lock().await;
+        if self.broken.load(Ordering::SeqCst) || slot.service.is_transport_closed() {
+            tracing::info!("respawning MCP agent");
+            *slot = Arc::new(AgentConnection::spawn(&self.cfg).await?);
+            self.broken.store(false, Ordering::SeqCst);
+        }
+        Ok(Arc::clone(&slot))
     }
 
     pub fn shutdown(&self) {
@@ -175,15 +220,20 @@ impl AgentConnection {
         Ok(tools)
     }
 
-    async fn call(&self, name: &str, args: JsonObject) -> Result<String, HostError> {
+    async fn call(&self, name: &str, args: JsonObject) -> Result<String, ServiceError> {
         let params = CallToolRequestParams::new(name.to_owned()).with_arguments(args);
-        let result = self
-            .service
-            .call_tool(params)
-            .await
-            .map_err(|e| HostError::Protocol(e.to_string()))?;
+        let result = self.service.call_tool(params).await?;
         Ok(render_result(&result))
     }
+}
+
+/// The agent can't be reached any more (as opposed to answering with an
+/// error of its own).
+fn is_transport_failure(e: &ServiceError) -> bool {
+    matches!(
+        e,
+        ServiceError::TransportClosed | ServiceError::TransportSend(_)
+    )
 }
 
 /// Extract gate-relevant annotations, defaulting conservatively: missing

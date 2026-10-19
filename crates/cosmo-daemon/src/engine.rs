@@ -100,6 +100,9 @@ enum LockMode {
     CosmicDenyAll,
 }
 
+/// The `Failed` reason of a reasoning turn cancelled by a barge-in.
+const INTERRUPTED: &str = "interrupted";
+
 /// Where to start the retained tail of `history` so the result is a *valid*
 /// conversation, keeping at most `keep` messages.
 ///
@@ -240,6 +243,10 @@ pub struct Engine {
     /// switchable while running (`Command::ReasoningSet`), unlike the rest
     /// of `cfg`. Everything reasoning reads them from here.
     reasoning_cfg: Mutex<Config>,
+    /// Counts new turns (`barge_in`). A reasoning turn notes the count when
+    /// it starts and gives up when it changes: the user has moved on, and
+    /// the turn must not keep acting or hold the reasoner.
+    barge: tokio::sync::watch::Sender<u64>,
     /// A browser sign-in waiting for its browser; a new one replaces it.
     sign_in: Mutex<Option<tokio::task::AbortHandle>>,
     /// COSMIC's lock state, tracked live (`crate::lock`) once started. It
@@ -256,6 +263,7 @@ impl Engine {
         };
         Self {
             reasoning_cfg: Mutex::new(cfg.clone()),
+            barge: tokio::sync::watch::channel(0).0,
             sign_in: Mutex::new(None),
             lock_tracker: OnceLock::new(),
             cfg,
@@ -418,10 +426,11 @@ impl Engine {
             };
             let key = if keyboards == 0 {
                 format!(
-                    "trigger key {}: no readable keyboard has it — the \
-                     /dev/input/event* nodes need the logind uaccess ACL \
-                     (a local seat session); `cosmo listen` still works",
-                    self.cfg.trigger_key
+                    "trigger key {}: no readable keyboard has it — if \
+                     /dev/input/event* is permission denied, {}; \
+                     `cosmo listen` still works",
+                    self.cfg.trigger_key,
+                    cosmo_hotkey::ACCESS_HINT
                 )
             } else {
                 format!(
@@ -518,7 +527,16 @@ impl Engine {
         }
     }
 
-    /// Cut off any reply still being spoken: a new turn has begun.
+    /// A new turn has begun: cut off any reply still being spoken, and
+    /// cancel any reasoning turn still running.
+    fn barge_in(&self) {
+        self.barge.send_modify(|n| *n += 1);
+        self.interrupt_speech();
+    }
+
+    /// Cut off any reply still being spoken. Only that: a trigger-key press
+    /// alone is also the user's Right Ctrl (a stray Ctrl+C), so the turn in
+    /// flight is cancelled only once a new turn actually arrives.
     fn interrupt_speech(&self) {
         if let Some(speech) = &self.speech {
             speech.interrupt();
@@ -1200,7 +1218,10 @@ impl Engine {
         // A typed turn's failure is printed by the CLI. A spoken one has no
         // terminal waiting on it, so it is answered aloud (spec §4.5).
         let no_key = self.no_key_hit.swap(false, Ordering::SeqCst);
-        if source != UtteranceSource::Typed && matches!(result, TurnResult::Failed { .. }) {
+        // A turn the user talked over isn't a failure to apologise for.
+        if source != UtteranceSource::Typed
+            && matches!(&result, TurnResult::Failed { reason } if reason != INTERRUPTED)
+        {
             self.say_failure(no_key);
         }
         result
@@ -1225,7 +1246,9 @@ impl Engine {
         }
 
         let turn_span = tracing::info_span!("turn");
-        self.interrupt_speech();
+        self.barge_in();
+        // A newer turn arriving after this point cancels this one.
+        let barge_at = *self.barge.borrow();
         self.gate.begin_turn();
         // Refresh lock state before every turn (plan §1.2: between turns
         // and on lock-source signals).
@@ -1312,10 +1335,32 @@ impl Engine {
                 stream.push(t);
             }
         };
-        let outcome = reasoner
-            .turn_streaming(&text, &self.gate, tools.as_ref(), &mut history, &on_text)
-            .instrument(turn_span)
-            .await;
+        // Cancellable: if a newer turn arrives (spoken or typed), this one
+        // is dropped where it stands, between awaits, so the reasoner is
+        // free for the next turn at once. A tool call in flight is
+        // abandoned mid-await; the tools are short and mostly idempotent
+        // (an app launch, a window verb), and agent calls time out anyway.
+        // `history` here is this turn's copy and is never saved on a cancel,
+        // so the stored conversation can't end on a tool call with no
+        // result: the whole turn, the user's message included, is forgotten.
+        let mut barged = self.barge.subscribe();
+        let outcome = tokio::select! {
+            biased;
+            _ = barged.wait_for(|n| *n != barge_at) => None,
+            o = reasoner
+                .turn_streaming(&text, &self.gate, tools.as_ref(), &mut history, &on_text)
+                .instrument(turn_span) => Some(o),
+        };
+        let Some(outcome) = outcome else {
+            drop(slot);
+            if let Some(stream) = spoken {
+                stream.finish();
+            }
+            tracing::info!("reasoning turn cancelled by barge-in");
+            return cosmo_ipc::TurnResult::Failed {
+                reason: INTERRUPTED.into(),
+            };
+        };
         let usage = reasoner.last_usage().clone();
         drop(slot);
         if usage.requests > 0 {

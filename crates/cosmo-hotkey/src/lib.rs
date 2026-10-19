@@ -16,7 +16,10 @@
 //!   down. For a modifier trigger (Right Ctrl, the chosen default) that is a
 //!   stuck Ctrl turning later typing into shortcuts. Instead the trigger is
 //!   a key inert on its own, and its press and release flow normally.
-//! - No root, no `input` group: logind's `uaccess` ACL on the node suffices.
+//! - No root, no `input` group, once the packaged udev rule
+//!   (`packaging/udev/70-cosmo-trigger.rules`) tags keyboards `uaccess`.
+//!   Stock systemd does not (Fedora), so without the rule, or `input`
+//!   membership, no keyboard can be opened ([`ACCESS_HINT`]).
 //! - Autorepeat (`value == 2`) is ignored; only edges count.
 //! - Hotplug by inotify on `/dev/input` (no libudev): a replugged keyboard
 //!   is re-attached, and a device vanishing mid-hold counts as a release.
@@ -108,6 +111,14 @@ impl Drop for Watcher {
     }
 }
 
+/// What to do when no keyboard can be opened for want of permission. The
+/// doctor says the same.
+pub const ACCESS_HINT: &str = "install the trigger-key udev rule \
+    (the rpm/deb do; from a checkout: sudo install -Dm0644 \
+    packaging/udev/70-cosmo-trigger.rules /etc/udev/rules.d/ && \
+    sudo udevadm trigger --subsystem-match=input --action=change), \
+    or add your user to the `input` group";
+
 /// How often the loop wakes with nothing to read, to notice `stop`.
 const TICK: Duration = Duration::from_millis(250);
 
@@ -121,9 +132,11 @@ fn run(
     let mut devices: Vec<evdev::Device> = Vec::new();
     let mut state = TriggerState::default();
     let mut rescan = true;
+    let mut warned = false;
     while !stop.load(Ordering::Relaxed) {
         if rescan {
             rescan = false;
+            let mut denied = 0;
             for path in evdev::candidates() {
                 if devices.iter().any(|d| d.path == path) {
                     continue;
@@ -137,9 +150,20 @@ fn run(
                     // Not yet accessible (the uaccess ACL lands just after
                     // the node appears): the IN_ATTRIB that follows rescans.
                     Err(e) => {
+                        if e.kind() == std::io::ErrorKind::PermissionDenied {
+                            denied += 1;
+                        }
                         tracing::debug!(device = %path.display(), error = %e, "not attachable yet")
                     }
                 }
+            }
+            // Said once: the rescans on every hotplug would repeat it.
+            if devices.is_empty() && denied > 0 && !warned {
+                warned = true;
+                tracing::warn!(
+                    denied,
+                    "no keyboard could be opened (permission denied): {ACCESS_HINT}"
+                );
             }
             *listing.lock().unwrap_or_else(|p| p.into_inner()) =
                 devices.iter().map(|d| d.path.clone()).collect();

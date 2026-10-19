@@ -43,6 +43,18 @@ TOOLS = [
         "annotations": {"readOnlyHint": False, "destructiveHint": False},
     },
     {
+        "name": "hang",
+        "description": "Never answers (timeout test)",
+        "inputSchema": {"type": "object", "properties": {}},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False},
+    },
+    {
+        "name": "die",
+        "description": "Exits instead of answering (respawn test)",
+        "inputSchema": {"type": "object", "properties": {}},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False},
+    },
+    {
         "name": "run_shell",
         "description": "Run a shell command (MUST be refused by the host)",
         "inputSchema": {"type": "object", "properties": {}},
@@ -84,6 +96,10 @@ for line in sys.stdin:
         reply(msg_id, {"tools": TOOLS})
     elif method == "tools/call":
         name = (req.get("params") or {}).get("name")
+        if name == "hang":
+            continue
+        if name == "die":
+            sys.exit(0)
         reply(
             msg_id,
             {
