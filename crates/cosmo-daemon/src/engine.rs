@@ -243,9 +243,9 @@ pub struct Engine {
     /// switchable while running (`Command::ReasoningSet`), unlike the rest
     /// of `cfg`. Everything reasoning reads them from here.
     reasoning_cfg: Mutex<Config>,
-    /// Counts barge-ins (`interrupt_speech`). A reasoning turn notes the
-    /// count when it starts and gives up when it changes: the user has
-    /// moved on, and the turn must not keep acting or hold the reasoner.
+    /// Counts new turns (`barge_in`). A reasoning turn notes the count when
+    /// it starts and gives up when it changes: the user has moved on, and
+    /// the turn must not keep acting or hold the reasoner.
     barge: tokio::sync::watch::Sender<u64>,
     /// A browser sign-in waiting for its browser; a new one replaces it.
     sign_in: Mutex<Option<tokio::task::AbortHandle>>,
@@ -527,10 +527,17 @@ impl Engine {
         }
     }
 
-    /// Cut off any reply still being spoken, and any reasoning turn still
-    /// running: a new turn has begun.
-    fn interrupt_speech(&self) {
+    /// A new turn has begun: cut off any reply still being spoken, and
+    /// cancel any reasoning turn still running.
+    fn barge_in(&self) {
         self.barge.send_modify(|n| *n += 1);
+        self.interrupt_speech();
+    }
+
+    /// Cut off any reply still being spoken. Only that: a trigger-key press
+    /// alone is also the user's Right Ctrl (a stray Ctrl+C), so the turn in
+    /// flight is cancelled only once a new turn actually arrives.
+    fn interrupt_speech(&self) {
         if let Some(speech) = &self.speech {
             speech.interrupt();
         }
@@ -1239,8 +1246,8 @@ impl Engine {
         }
 
         let turn_span = tracing::info_span!("turn");
-        self.interrupt_speech();
-        // Anything that interrupts after this point cancels this turn.
+        self.barge_in();
+        // A newer turn arriving after this point cancels this one.
         let barge_at = *self.barge.borrow();
         self.gate.begin_turn();
         // Refresh lock state before every turn (plan §1.2: between turns
@@ -1328,9 +1335,9 @@ impl Engine {
                 stream.push(t);
             }
         };
-        // Cancellable: if the user barges in (a key press, a newer turn) the
-        // turn is dropped where it stands, between awaits, so the reasoner
-        // is free for the next turn at once. A tool call in flight is
+        // Cancellable: if a newer turn arrives (spoken or typed), this one
+        // is dropped where it stands, between awaits, so the reasoner is
+        // free for the next turn at once. A tool call in flight is
         // abandoned mid-await; the tools are short and mostly idempotent
         // (an app launch, a window verb), and agent calls time out anyway.
         // `history` here is this turn's copy and is never saved on a cancel,
