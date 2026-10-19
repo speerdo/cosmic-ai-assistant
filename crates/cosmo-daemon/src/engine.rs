@@ -426,10 +426,11 @@ impl Engine {
             };
             let key = if keyboards == 0 {
                 format!(
-                    "trigger key {}: no readable keyboard has it — the \
-                     /dev/input/event* nodes need the logind uaccess ACL \
-                     (a local seat session); `cosmo listen` still works",
-                    self.cfg.trigger_key
+                    "trigger key {}: no readable keyboard has it — if \
+                     /dev/input/event* is permission denied, {}; \
+                     `cosmo listen` still works",
+                    self.cfg.trigger_key,
+                    cosmo_hotkey::ACCESS_HINT
                 )
             } else {
                 format!(
