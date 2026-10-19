@@ -2,6 +2,7 @@
 //! mapping must be testable without the real agent.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use cosmo_config::Config;
 use cosmo_gate::{Annotations, LockState, Verdict};
@@ -110,4 +111,45 @@ async fn fake_agent_discovery_and_gate_mapping() {
     assert!(err.to_string().contains("not in the configured allowlist"));
 
     host.shutdown();
+}
+
+fn hang_and_die_config() -> Config {
+    Config {
+        allowed_tools: vec!["list_windows".into(), "hang".into(), "die".into()],
+        ..test_config()
+    }
+}
+
+fn no_args() -> serde_json::Map<String, serde_json::Value> {
+    serde_json::json!({}).as_object().unwrap().clone()
+}
+
+#[tokio::test]
+async fn a_tool_that_never_answers_times_out() {
+    let mut host = McpHost::connect(Arc::new(hang_and_die_config()))
+        .await
+        .unwrap();
+    host.set_call_timeout(Duration::from_millis(300));
+    let err = host.call_agent_tool("hang", no_args()).await.unwrap_err();
+    assert!(err.to_string().contains("did not answer"), "{err}");
+    // The host is still usable.
+    let ok = host.call_agent_tool("list_windows", no_args()).await;
+    assert!(ok.is_ok(), "{ok:?}");
+}
+
+#[tokio::test]
+async fn a_dead_agent_is_respawned_on_the_next_call() {
+    let host = McpHost::connect(Arc::new(hang_and_die_config()))
+        .await
+        .unwrap();
+    // The agent exits mid-call: that call fails...
+    host.call_agent_tool("die", no_args())
+        .await
+        .expect_err("the agent died");
+    // ...and the next one reaches a fresh agent.
+    let ok = host
+        .call_agent_tool("list_windows", no_args())
+        .await
+        .expect("respawned agent must answer");
+    assert!(ok.contains("fake-executed list_windows"));
 }

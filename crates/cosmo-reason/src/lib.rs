@@ -25,6 +25,7 @@ pub mod stream;
 pub mod tools;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::{Value, json};
 use tracing::Instrument;
@@ -41,6 +42,32 @@ pub enum ToolOutcome {
     ToolRan { call_id: String, result: String },
     /// A tool call was parked by the gate awaiting local confirmation.
     Held { token: String, tool: String },
+}
+
+/// How long to wait for a connection to the provider.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long to wait for the response to start (its headers). Not a total
+/// timeout: a long but healthy stream must not be cut off.
+const FIRST_BYTE_TIMEOUT: Duration = Duration::from_secs(45);
+/// How long a started response may go quiet between chunks.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long the client waits on a provider before giving up on the turn.
+#[derive(Debug, Clone, Copy)]
+pub struct Timeouts {
+    /// For the response to start.
+    pub first_byte: Duration,
+    /// Between chunks of a response that has started.
+    pub idle: Duration,
+}
+
+impl Default for Timeouts {
+    fn default() -> Self {
+        Self {
+            first_byte: FIRST_BYTE_TIMEOUT,
+            idle: IDLE_TIMEOUT,
+        }
+    }
 }
 
 /// Errors from the reasoning client.
@@ -97,6 +124,7 @@ pub struct Reasoner {
     /// Static prompt (system role) — no live desktop state (invariant #7).
     static_prompt: String,
     usage: TurnUsage,
+    timeouts: Timeouts,
 }
 
 impl Reasoner {
@@ -121,6 +149,7 @@ impl Reasoner {
         };
         let http = reqwest::Client::builder()
             .user_agent(provider::user_agent())
+            .connect_timeout(CONNECT_TIMEOUT)
             .build()
             .map_err(|e| ReasonError::Http(e.to_string()))?;
         let session = format!(
@@ -138,7 +167,13 @@ impl Reasoner {
             key,
             static_prompt: static_prompt(),
             usage: TurnUsage::default(),
+            timeouts: Timeouts::default(),
         })
+    }
+
+    /// Replace the provider timeouts (tests use short ones).
+    pub fn set_timeouts(&mut self, timeouts: Timeouts) {
+        self.timeouts = timeouts;
     }
 
     /// Where requests go, and as what.
@@ -409,12 +444,21 @@ impl Reasoner {
         on_text: &(dyn Fn(&str) + Send + Sync),
     ) -> Result<stream::Completed, ReasonError> {
         let anthropic_format = self.endpoint.format == provider::Format::AnthropicMessages;
-        let mut response = self.request(history, tools).send().await.map_err(|e| {
-            let src = std::error::Error::source(&e)
-                .map(|s| s.to_string())
-                .unwrap_or_default();
-            ReasonError::Http(format!("{e} (source: {src})"))
-        })?;
+        let Timeouts { first_byte, idle } = self.timeouts;
+        let mut response = tokio::time::timeout(first_byte, self.request(history, tools).send())
+            .await
+            .map_err(|_| {
+                ReasonError::Http(format!(
+                    "the model did not respond within {} s",
+                    first_byte.as_secs_f32()
+                ))
+            })?
+            .map_err(|e| {
+                let src = std::error::Error::source(&e)
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+                ReasonError::Http(format!("{e} (source: {src})"))
+            })?;
 
         // Rate-limit headers, every turn (invariant #7). The Authorization
         // header never reaches a log — we log only these response headers.
@@ -449,9 +493,9 @@ impl Reasoner {
             .is_some_and(|v| v.starts_with("text/event-stream"));
 
         if !status.is_success() || !streamed {
-            let text = response
-                .text()
+            let text = tokio::time::timeout(idle, response.text())
                 .await
+                .map_err(|_| stalled(idle))?
                 .map_err(|e| ReasonError::Http(e.to_string()))?;
             if !status.is_success() {
                 return Err(ReasonError::Http(format!("{status}: {text}")));
@@ -482,9 +526,9 @@ impl Reasoner {
         let mut acc = Acc::new(anthropic_format);
         let bad = ReasonError::BadResponse;
         loop {
-            let chunk = response
-                .chunk()
+            let chunk = tokio::time::timeout(idle, response.chunk())
                 .await
+                .map_err(|_| stalled(idle))?
                 .map_err(|e| ReasonError::Http(format!("stream interrupted: {e}")))?;
             let payloads = match &chunk {
                 Some(bytes) => decoder.push(bytes),
@@ -506,6 +550,14 @@ impl Reasoner {
         }
         Ok(done)
     }
+}
+
+/// The error for a response that started and then went quiet.
+fn stalled(idle: Duration) -> ReasonError {
+    ReasonError::Http(format!(
+        "the model stopped responding (stalled for {} s)",
+        idle.as_secs_f32()
+    ))
 }
 
 /// A `role: "tool"` history entry.
