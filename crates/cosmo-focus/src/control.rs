@@ -28,7 +28,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::mpsc;
 
 use anyhow::{Context as _, bail};
-use wayland_client::backend::ObjectId;
+use wayland_client::backend::{ObjectId, WaylandError};
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::{wl_output, wl_registry, wl_seat};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, event_created_child};
@@ -388,6 +388,17 @@ impl WindowControl {
     }
 }
 
+/// A read error that only means "nothing to read yet": try again.
+fn is_spurious(e: &WaylandError) -> bool {
+    matches!(
+        e,
+        WaylandError::Io(io) if matches!(
+            io.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+        )
+    )
+}
+
 type Job = Box<dyn FnOnce(&mut WindowControl) + Send>;
 
 impl WindowControl {
@@ -425,6 +436,11 @@ impl WindowControl {
             };
             if wl_ready {
                 if let Err(e) = guard.read() {
+                    // A spurious wakeup, not a lost connection (wayland-backend
+                    // documents WouldBlock as a normal result of read).
+                    if is_spurious(&e) {
+                        continue;
+                    }
                     tracing::warn!(error = %e, "window service: connection lost");
                     return;
                 }
@@ -477,6 +493,12 @@ impl WindowService {
             wake,
             thread: Some(thread),
         })
+    }
+
+    /// Whether the service thread is still running. It ends if the
+    /// compositor connection is lost; callers then start a new service.
+    pub fn is_alive(&self) -> bool {
+        self.thread.as_ref().is_some_and(|t| !t.is_finished())
     }
 
     fn call<R: Send + 'static>(
@@ -785,6 +807,16 @@ impl Dispatch<ext_ws::ExtWorkspaceHandleV1, ()> for State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn would_block_and_interrupted_are_spurious() {
+        use std::io::{Error, ErrorKind};
+        let io = |k| WaylandError::Io(Error::from(k));
+        assert!(is_spurious(&io(ErrorKind::WouldBlock)));
+        assert!(is_spurious(&io(ErrorKind::Interrupted)));
+        assert!(!is_spurious(&io(ErrorKind::BrokenPipe)));
+        assert!(!is_spurious(&io(ErrorKind::ConnectionReset)));
+    }
 
     #[test]
     fn app_ids_match_across_forms() {

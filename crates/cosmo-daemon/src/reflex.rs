@@ -6,7 +6,7 @@
 //! a recording fake, so the engine's reflex path is testable without
 //! touching a real desktop.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use cosmo_focus::control::WindowService;
 use cosmo_reflex::{AppIndex, Intent, Matcher};
@@ -51,7 +51,13 @@ impl Reflex {
             windows = windows.is_some(),
             "reflex ready"
         );
-        Self::new(Matcher::new(apps), Arc::new(Desktop { windows }))
+        Self::new(
+            Matcher::new(apps),
+            Arc::new(Desktop {
+                available: windows.is_some(),
+                windows: Mutex::new(windows.map(Arc::new)),
+            }),
+        )
     }
 }
 
@@ -67,21 +73,46 @@ fn window_ids(desktop_id: &str) -> Vec<String> {
 
 /// The production actuator.
 pub struct Desktop {
-    windows: Option<WindowService>,
+    /// The compositor offered the protocols at startup. If not, there is
+    /// nothing to restart.
+    available: bool,
+    windows: Mutex<Option<Arc<WindowService>>>,
 }
 
 impl Desktop {
-    fn windows(&self) -> Result<&WindowService, String> {
-        self.windows
-            .as_ref()
-            .ok_or_else(|| "no window control on this compositor".to_owned())
+    /// The running window service, started again if its thread has died
+    /// (the compositor connection was lost).
+    fn windows(&self) -> Result<Arc<WindowService>, String> {
+        if !self.available {
+            return Err("no window control on this compositor".to_owned());
+        }
+        let mut slot = self.windows.lock().unwrap();
+        if let Some(w) = slot.as_ref().filter(|w| w.is_alive()) {
+            return Ok(Arc::clone(w));
+        }
+        tracing::info!("window service stopped; restarting it");
+        let w = Arc::new(WindowService::start().map_err(|e| e.to_string())?);
+        *slot = Some(Arc::clone(&w));
+        Ok(w)
+    }
+
+    /// Run a window verb. If the service died under it, start a new one and
+    /// try once more. Other failures (no such window) are the verb's answer.
+    fn window_call<R>(&self, f: impl Fn(&WindowService) -> anyhow::Result<R>) -> Result<R, String> {
+        let w = self.windows()?;
+        match f(&w) {
+            Err(_) if !w.is_alive() => {
+                drop(w);
+                f(&*self.windows()?).map_err(|e| e.to_string())
+            }
+            r => r.map_err(|e| e.to_string()),
+        }
     }
 }
 
 impl Actuator for Desktop {
     fn act<'a>(&'a self, intent: &'a Intent) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async move {
-            let e = |e: anyhow::Error| e.to_string();
             match intent {
                 Intent::Media(cmd) => cosmo_tools::media::control(cmd.as_str())
                     .await
@@ -100,34 +131,26 @@ impl Actuator for Desktop {
                     cosmo_tools::launch::launch(&app.id).map_err(|e| e.to_string())
                 }
                 Intent::LaunchOnNewWorkspace(app) => {
-                    self.windows()?.switch_new_workspace().map_err(e)?;
+                    self.window_call(|w| w.switch_new_workspace())?;
                     cosmo_tools::launch::launch(&app.id).map_err(|e| e.to_string())
                 }
-                Intent::Focus(app) => self
-                    .windows()?
-                    .focus_app(&window_ids(&app.id))
-                    .map(|title| format!("focused {title}"))
-                    .map_err(e),
+                Intent::Focus(app) => {
+                    let ids = window_ids(&app.id);
+                    self.window_call(|w| w.focus_app(&ids))
+                        .map(|title| format!("focused {title}"))
+                }
                 Intent::SwitchWorkspace(n) => self
-                    .windows()?
-                    .switch_workspace(*n)
-                    .map(|()| format!("workspace {n}"))
-                    .map_err(e),
+                    .window_call(|w| w.switch_workspace(*n))
+                    .map(|()| format!("workspace {n}")),
                 Intent::MoveToWorkspace(n) => self
-                    .windows()?
-                    .move_focused_to_workspace(*n)
-                    .map(|()| format!("moved to workspace {n}"))
-                    .map_err(e),
+                    .window_call(|w| w.move_focused_to_workspace(*n))
+                    .map(|()| format!("moved to workspace {n}")),
                 Intent::Maximize => self
-                    .windows()?
-                    .maximize_focused()
-                    .map(|()| "maximized".into())
-                    .map_err(e),
+                    .window_call(|w| w.maximize_focused())
+                    .map(|()| "maximized".into()),
                 Intent::Minimize => self
-                    .windows()?
-                    .minimize_focused()
-                    .map(|()| "minimized".into())
-                    .map_err(e),
+                    .window_call(|w| w.minimize_focused())
+                    .map(|()| "minimized".into()),
             }
         })
     }
