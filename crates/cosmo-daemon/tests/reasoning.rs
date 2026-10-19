@@ -285,3 +285,96 @@ async fn remembered_notes_reach_the_system_prompt() {
     );
     let _ = std::fs::remove_dir_all(&state);
 }
+
+/// A tool that starts and never finishes, until the test lets go.
+struct SlowTools {
+    started: tokio::sync::Notify,
+}
+
+impl ToolHost for SlowTools {
+    fn tool_schemas(&self) -> Vec<Value> {
+        vec![function_schema(
+            "slow",
+            "Takes forever",
+            json!({"type": "object", "properties": {}}),
+        )]
+    }
+    fn annotations_of(&self, _: &str) -> cosmo_gate::Annotations {
+        cosmo_gate::Annotations {
+            read_only: true,
+            destructive: false,
+        }
+    }
+    fn execute(
+        &self,
+        _: &str,
+        _: Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + '_>> {
+        Box::pin(async {
+            self.started.notify_one();
+            std::future::pending::<String>().await
+        })
+    }
+}
+
+/// A new turn cancels the reasoning turn in flight: the old turn stops at
+/// its tool call instead of holding the reasoner, the new turn runs at
+/// once, and the abandoned turn leaves nothing in the history (no tool
+/// call without a result).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_turn_cancels_the_turn_in_flight() {
+    let _turn = exclusive().await;
+    let (base, _, bodies) = fake_api_recording(vec![
+        vec![
+            chunk(
+                json!({"tool_calls": [{"index": 0, "id": "c1", "type": "function",
+                    "function": {"name": "slow", "arguments": "{}"}}]}),
+                None,
+            ),
+            chunk(json!({}), Some("tool_calls")),
+        ],
+        vec![
+            chunk(json!({"content": "Hello."}), None),
+            chunk(json!({}), Some("stop")),
+        ],
+    ])
+    .await;
+    let (engine, _, _rx) = engine(&base).await;
+    let slow = Arc::new(SlowTools {
+        started: tokio::sync::Notify::new(),
+    });
+    engine.attach_tools(Arc::clone(&slow) as Arc<dyn ToolHost>, 1);
+    let engine = Arc::new(engine);
+
+    let first = tokio::spawn({
+        let engine = Arc::clone(&engine);
+        async move {
+            engine
+                .utterance("do the slow thing".into(), UtteranceSource::Typed)
+                .await
+        }
+    });
+    slow.started.notified().await;
+
+    let second = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        engine.utterance("never mind, hello".into(), UtteranceSource::Typed),
+    )
+    .await
+    .expect("the new turn must not wait on the old one");
+    assert!(
+        matches!(&second, TurnResult::Completed { reply, .. } if reply == "Hello."),
+        "{second:?}"
+    );
+    let first = first.await.unwrap();
+    assert!(
+        matches!(&first, TurnResult::Failed { reason } if reason == "interrupted"),
+        "{first:?}"
+    );
+
+    // The second request carries only the second turn.
+    let bodies = bodies.lock().unwrap();
+    let sent = bodies[1]["messages"].to_string();
+    assert!(!sent.contains("tool_call"), "{sent}");
+    assert!(!sent.contains("do the slow thing"), "{sent}");
+}
