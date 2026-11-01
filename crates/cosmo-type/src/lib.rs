@@ -10,6 +10,15 @@
 //!   reports `key` sent before keymap — its compile failed silently).
 //! - Keep keycode names ≤ 4 characters (`<SHFT>`, not `<LSHIFT>`) — the
 //!   xkbcomp grammar rejects longer names in custom sections.
+//! - `xkb_types` and `xkb_compatibility` must `include "complete"`. With
+//!   hand-written bare sections libxkbcommon (the compositor, native
+//!   Wayland clients) is happy, but Xwayland keeps the user's layout, so an
+//!   X11 client reads our keycodes through it and `hello` arrives as
+//!   `1223` (2026-11-01, Buzz desktop under `GDK_BACKEND=x11`).
+//! - Characters ride only keycodes that are printable on a real keyboard
+//!   ([`TEXT_KEYCODES`]). Chromium and others act on the physical meaning
+//!   of evdev Esc/Backspace/Tab/Enter/Ctrl/Shift whatever keysym they
+//!   carry; the same lesson wtype learned (atx/wtype 82bca82).
 //! - The `modifiers` request does NOT reach clients on this cosmic-comp
 //!   build; only real key events of keys with `modifier_map` bindings
 //!   would — but the compositor's shortcut engine ignores virtual-keyboard
@@ -41,9 +50,22 @@ use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
     zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
 };
 
-/// Distinct characters a single synthesised keymap can carry. XKB keycodes
-/// run 8..=255 and we start at 9, so the true bound is 247; headroom is free.
-const KEYMAP_BUDGET: usize = 200;
+/// The evdev codes characters are typed on: the printable keys of a US
+/// keyboard (digit row, three letter rows, space), never a control or
+/// modifier key. Same set as wtype's.
+const TEXT_KEYCODES: [u32; 48] = [
+    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, //
+    16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, //
+    30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, //
+    43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 57,
+];
+
+/// Distinct characters a single synthesised keymap can carry: one per
+/// printable keycode. Longer texts swap keymaps between segments.
+const KEYMAP_BUDGET: usize = TEXT_KEYCODES.len();
+
+/// How long the previous segment gets to be read before the next keymap.
+const SEGMENT_PAUSE: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Wayland protocol state (virtual keyboard only — there is nothing else).
 struct State;
@@ -160,14 +182,21 @@ impl Keyboard {
         if text.is_empty() {
             return Ok(());
         }
-        for segment in segment_by_distinct(text, KEYMAP_BUDGET) {
-            self.type_segment(&segment)?;
+        for (i, segment) in segment_by_distinct(text, KEYMAP_BUDGET).iter().enumerate() {
+            if i > 0 {
+                // An X11 client turns keycodes into characters when it reads
+                // them, through whatever keymap Xwayland holds by then; swap
+                // too soon and the tail of the last segment reads through
+                // the next segment's keymap.
+                std::thread::sleep(SEGMENT_PAUSE);
+            }
+            self.type_segment(segment)?;
         }
         Ok(())
     }
 
     fn type_segment(&mut self, text: &str) -> Result<()> {
-        // Keycodes by first appearance. XKB code 9 is first; the wire
+        // Keycodes by first appearance, from TEXT_KEYCODES. The wire
         // carries evdev codes, which are the XKB code minus 8.
         let mut order: Vec<char> = Vec::new();
         for ch in text.chars() {
@@ -193,7 +222,7 @@ impl Keyboard {
                 .iter()
                 .position(|&c| c == ch)
                 .expect("segment built from this text");
-            let code = idx as u32 + 1; // evdev code; XKB sees +8 = 9..
+            let code = TEXT_KEYCODES[idx];
             let t = self.epoch.elapsed().as_millis() as u32;
             self.vk.key(t, code, 1);
             self.vk.key(t, code, 0);
@@ -225,14 +254,15 @@ pub fn segment_by_distinct(text: &str, budget: usize) -> Vec<String> {
     out
 }
 
-/// Renders an XKB keymap mapping keycode 9+n to the nth character.
+/// Renders an XKB keymap putting the nth character on the nth of
+/// [`TEXT_KEYCODES`]. At most [`KEYMAP_BUDGET`] characters.
 fn build_keymap(chars: &[char]) -> String {
     use std::fmt::Write;
 
     let mut codes = String::new();
     let mut syms = String::new();
     for (i, &ch) in chars.iter().enumerate() {
-        let code = i + 9;
+        let code = TEXT_KEYCODES[i] + 8;
         let _ = writeln!(codes, "\t\t<K{i}> = {code};");
         let _ = writeln!(syms, "\t\tkey <K{i}> {{ [ {} ] }};", keysym(ch));
     }
@@ -244,10 +274,8 @@ fn build_keymap(chars: &[char]) -> String {
          \t\tmaximum = 255;\n\
          {codes}\
          \t}};\n\
-         \txkb_types \"cosmo\" {{\n\
-         \t\ttype \"ONE_LEVEL\" {{ modifiers = none; map[none] = Level1; }};\n\
-         \t}};\n\
-         \txkb_compatibility \"cosmo\" {{ }};\n\
+         \txkb_types \"cosmo\" {{ include \"complete\" }};\n\
+         \txkb_compatibility \"cosmo\" {{ include \"complete\" }};\n\
          \txkb_symbols \"cosmo\" {{\n\
          {syms}\
          \t}};\n\
@@ -307,14 +335,32 @@ mod tests {
     fn keymap_carries_all_chars() {
         let chars: Vec<char> = "aÉ7\n".chars().collect();
         let keymap = build_keymap(&chars);
-        assert!(keymap.contains("<K0> = 9;"));
+        assert!(keymap.contains("<K0> = 10;"));
         assert!(keymap.contains("[ U0061 ]"));
         assert!(keymap.contains("[ U00C9 ]"));
         assert!(keymap.contains("[ U0037 ]"));
         assert!(keymap.contains("[ Return ]"));
         // Every keycode distinct and within XKB bounds.
-        assert!(keymap.contains("<K3> = 12;"));
+        assert!(keymap.contains("<K3> = 13;"));
         assert!(keymap.starts_with("xkb_keymap {"));
+        // Xwayland ignores a keymap without the stock types and compat.
+        assert!(keymap.contains("xkb_types \"cosmo\" { include \"complete\" };"));
+        assert!(keymap.contains("xkb_compatibility \"cosmo\" { include \"complete\" };"));
+    }
+
+    #[test]
+    fn characters_never_land_on_control_or_modifier_keys() {
+        // evdev Esc, Backspace, Tab, Enter, Ctrl, Shifts, Alt, CapsLock.
+        for control in [1, 14, 15, 28, 29, 42, 54, 56, 58] {
+            assert!(!TEXT_KEYCODES.contains(&control), "{control}");
+        }
+        let mut seen = TEXT_KEYCODES.to_vec();
+        seen.dedup();
+        assert_eq!(seen.len(), KEYMAP_BUDGET);
+        // A full keymap compiles every character onto its own keycode.
+        let chars: Vec<char> = ('!'..).take(KEYMAP_BUDGET).collect();
+        let keymap = build_keymap(&chars);
+        assert!(keymap.contains(&format!("<K47> = {};", 57 + 8)));
     }
 
     #[test]
