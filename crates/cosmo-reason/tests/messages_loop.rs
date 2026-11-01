@@ -219,7 +219,7 @@ async fn a_tool_call_and_reply_over_the_messages_api() {
         first.head
     );
     assert_eq!(
-        first.body["model"], "claude-haiku-4-5",
+        first.body["model"], "claude-haiku-5-5",
         "the provider's default"
     );
     assert_eq!(first.body["stream"], true);

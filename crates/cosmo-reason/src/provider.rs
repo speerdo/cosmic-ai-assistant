@@ -73,7 +73,8 @@ pub struct Preset {
     pub default_model: &'static str,
     /// Whether `/v1/models` lists models worth choosing from. False where
     /// the list is hundreds long or mixes in non-chat models (OpenAI,
-    /// OpenRouter), so only the default is offered there.
+    /// OpenRouter), so only the default is offered there. Asked of the chat
+    /// endpoint when there is one, else of Anthropic's Messages API.
     pub lists_models: bool,
     /// A short list worth choosing from, for a provider whose own list is
     /// too long to browse (and `lists_models` is false): fast models that
@@ -110,9 +111,16 @@ pub const PRESETS: &[Preset] = &[
         messages_auth: Auth::XApiKey,
         key_page: "https://platform.claude.com/settings/keys",
         browser_login: None,
-        default_model: "claude-haiku-4-5",
-        lists_models: false,
-        suggested_models: &[],
+        default_model: "claude-haiku-5-5",
+        lists_models: true,
+        // Offered when the key's own list can't be fetched.
+        suggested_models: &[
+            "claude-haiku-5-5",
+            "claude-sonnet-5-5",
+            "claude-opus-5-5",
+            "claude-fable-5-1",
+            "claude-haiku-4-5",
+        ],
         note: Some(
             "needs an API key from the Claude Console; a Claude Pro/Max subscription is not one",
         ),
@@ -266,14 +274,41 @@ pub async fn list_models(chat_url: &str, key: Option<&str>) -> Result<Vec<String
         return Err(format!("{url}: {}", resp.status()));
     }
     let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    let mut ids: Vec<String> = body["data"]
+    let mut ids = model_ids(&body);
+    ids.sort();
+    Ok(ids)
+}
+
+/// Where Anthropic's Messages API lists its models.
+pub const ANTHROPIC_MODELS_URL: &str = "https://api.anthropic.com/v1/models?limit=1000";
+
+/// The Claude models an Anthropic key can use, newest first (the order the
+/// API returns them in). Same short timeout as [`list_models`].
+pub async fn anthropic_models(key: &str) -> Result<Vec<String>, String> {
+    let resp = reqwest::Client::new()
+        .get(ANTHROPIC_MODELS_URL)
+        .header("User-Agent", user_agent())
+        .header("x-api-key", key)
+        .header("anthropic-version", crate::anthropic::VERSION)
+        .timeout(std::time::Duration::from_secs(3))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("{ANTHROPIC_MODELS_URL}: {}", resp.status()));
+    }
+    let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    Ok(model_ids(&body))
+}
+
+/// The ids in a `/v1/models` body (`{"data": [{"id": …}, …]}`), in order.
+fn model_ids(body: &serde_json::Value) -> Vec<String> {
+    body["data"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|m| m["id"].as_str().map(str::to_owned))
-        .collect();
-    ids.sort();
-    Ok(ids)
+        .collect()
 }
 
 /// The model ids a local server offers.
@@ -413,11 +448,27 @@ mod tests {
     }
 
     #[test]
-    fn a_model_list_is_only_asked_of_a_chat_endpoint_that_has_one() {
+    fn a_model_list_is_only_asked_of_an_endpoint_that_has_one() {
         for p in PRESETS.iter().filter(|p| p.lists_models) {
-            let url = p.chat_url.expect(p.name);
-            assert!(models_url(url).is_some(), "{}", p.name);
+            match p.chat_url {
+                Some(url) => assert!(models_url(url).is_some(), "{}", p.name),
+                None => assert_eq!(p.messages_auth, Auth::XApiKey, "{}", p.name),
+            }
         }
+    }
+
+    #[test]
+    fn anthropic_lists_its_models_newest_first_with_a_shortlist_behind() {
+        let a = preset("anthropic").unwrap();
+        assert!(a.lists_models);
+        assert!(a.suggested_models.contains(&a.default_model));
+        let body = serde_json::json!({"data": [
+            {"type": "model", "id": "claude-opus-5-5"},
+            {"type": "model", "id": "claude-haiku-4-5"},
+        ], "has_more": false});
+        assert_eq!(model_ids(&body), ["claude-opus-5-5", "claude-haiku-4-5"]);
+        // A failed fetch still offers more than the default.
+        assert!(choices(a, vec![], None).len() > 1);
     }
 
     #[test]
