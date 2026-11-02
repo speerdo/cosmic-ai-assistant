@@ -352,7 +352,7 @@ pub fn commented_default() -> String {
     // your browser; the others take a pasted API key.
     // provider: "{provider}",
     // An empty model is the provider's default (openai: gpt-4o-mini,
-    // anthropic: claude-haiku-4-5, openrouter: anthropic/claude-haiku-4.5,
+    // anthropic: claude-haiku-5-5, openrouter: anthropic/claude-haiku-4.5,
     // opencode-go and zai: glm-5.3-flash, ollama: gpt-oss:120b,
     // local: granite4.1:8b).
     // model: "{model}",

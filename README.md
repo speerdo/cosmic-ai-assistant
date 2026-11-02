@@ -116,7 +116,7 @@ Why only OpenRouter: browser sign-in has to be a flow the provider publishes for
 |---|---|---|---|---|
 | `openrouter` | **browser sign-in** | chat completions | `anthropic/claude-haiku-4.5` | one account, many models |
 | `openai` | API key | chat completions | `gpt-4o-mini` | a ChatGPT subscription isn't an API key |
-| `anthropic` | API key | Messages API | `claude-haiku-4-5` | needs a Claude Console API key; a Claude Pro/Max subscription isn't one |
+| `anthropic` | API key | Messages API | `claude-haiku-5-5` | needs a Claude Console API key; a Claude Pro/Max subscription isn't one; full model list in the applet |
 | `opencode-go` | API key | chat completions, or Messages with `api_format: "anthropic"` (Qwen, MiniMax) | `glm-5.3-flash` | full model list in the applet; its terms say it's designed for coding agents, so check them before using it for a voice assistant |
 | `ollama` | API key | chat completions (Ollama Cloud) | `gpt-oss:120b` | full model list in the applet |
 | `zai` | API key | chat completions (pay-as-you-go) | `glm-5.3-flash` | a GLM *Coding Plan* is meant for coding tools |

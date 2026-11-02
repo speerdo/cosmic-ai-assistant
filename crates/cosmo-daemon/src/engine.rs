@@ -759,7 +759,8 @@ impl Engine {
     async fn reasoning_info(&self) -> cosmo_ipc::ReasoningInfo {
         use cosmo_ipc::{Connect, ProviderInfo};
         use cosmo_reason::provider::{
-            Endpoint, PRESETS, choices, list_models, local_models, runs_remotely,
+            Auth, Endpoint, PRESETS, anthropic_models, choices, list_models, local_models,
+            runs_remotely,
         };
         let rcfg = self.reasoning_cfg.lock().unwrap().clone();
         let model = Endpoint::resolve(&rcfg, None)
@@ -777,12 +778,16 @@ impl Engine {
                     match stored {
                         Ok(Ok(key)) => {
                             // A cloud provider's own model list; failing to
-                            // fetch it leaves just the default to choose.
-                            let models = match p.chat_url.filter(|_| p.lists_models) {
-                                Some(url) => list_models(url, Some(key.expose()))
+                            // fetch it leaves its shortlist (or default).
+                            let models = match (p.lists_models, p.chat_url) {
+                                (false, _) => Vec::new(),
+                                (true, Some(url)) => list_models(url, Some(key.expose()))
                                     .await
                                     .unwrap_or_default(),
-                                None => Vec::new(),
+                                (true, None) if p.messages_auth == Auth::XApiKey => {
+                                    anthropic_models(key.expose()).await.unwrap_or_default()
+                                }
+                                (true, None) => Vec::new(),
                             };
                             (true, models, None)
                         }
